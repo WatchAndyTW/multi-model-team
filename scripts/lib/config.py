@@ -2,11 +2,12 @@
 """config.py — emit roster.toml values as a bash-sourceable snippet.
 
 Usage:
-    config.py <roster.toml> agy-env     # backends.agy + defaults as shell assignments
+    config.py <roster.toml> agy-env        # backends.agy + defaults as shell assignments
+    config.py <roster.toml> proactive-env  # [proactive] hook config as shell assignments
 
 Scalars become  KEY='value'  and arrays become  KEY=( 'a' 'b' )  with safe quoting,
-so backends.sh / run.sh can `eval "$(config.py roster.toml agy-env)"` and read config
-without a TOML parser. Array element values are kept literal (single-quoted); any
+so backends.sh / run.sh / the hooks can `eval "$(config.py roster.toml <mode>)"` and read
+config without a TOML parser. Array element values are kept literal (single-quoted); any
 '$VAR' inside bin_candidates is substituted by bash later, on purpose.
 """
 import shlex
@@ -22,14 +23,14 @@ def emit_array(name, values):
     print(f"{name}=( {quoted} )")
 
 
-def main():
-    if len(sys.argv) < 3 or sys.argv[2] != "agy-env":
-        sys.stderr.write("usage: config.py <roster.toml> agy-env\n")
-        return 2
-    import tomllib
-    with open(sys.argv[1], "rb") as f:
-        cfg = tomllib.load(f)
+def _int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
+
+def emit_agy_env(cfg):
     defaults = cfg.get("defaults", {})
     agy = cfg.get("backends", {}).get("agy", {})
     models = agy.get("models", {})
@@ -53,6 +54,27 @@ def main():
     emit_scalar("MMT_AGY_HARD_TIMEOUT", agy.get("hard_timeout", "6m"))
     emit_array("MMT_AGY_QUOTA_PATTERNS", agy.get("quota_patterns", []))
     emit_array("MMT_AGY_QUOTA_EXIT_CODES", [str(c) for c in agy.get("quota_exit_codes", [])])
+
+
+def emit_proactive_env(cfg):
+    p = cfg.get("proactive", {})
+    emit_scalar("MMT_PROACTIVE_ENABLED", "1" if p.get("enabled", False) else "0")
+    emit_scalar("MMT_PROACTIVE_MAX_CHARS", str(_int(p.get("max_chars", 0))))
+    emit_scalar("MMT_PROACTIVE_MIN_CHARS", str(_int(p.get("min_chars", 0))))
+    emit_scalar("MMT_PROACTIVE_RULES", p.get("rules", "") or "")
+
+
+MODES = {"agy-env": emit_agy_env, "proactive-env": emit_proactive_env}
+
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[2] not in MODES:
+        sys.stderr.write("usage: config.py <roster.toml> {agy-env|proactive-env}\n")
+        return 2
+    import tomllib
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+    MODES[sys.argv[2]](cfg)
     return 0
 
 

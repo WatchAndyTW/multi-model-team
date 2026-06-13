@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "multi-model-team",
   "displayName": "Multi-Model Team",
-  "version": "0.3.0",
-  "description": "Delegates token-heavy, self-contained tasks to a local pre-authed agy (Gemini) CLI, choosing backend/model by task size and type, with credit-exhaustion fallback to native Claude and a glanceable statusline HUD. /team runs a decompose → dispatch (parallel agy + native) → verify → fix → synthesize pipeline with per-backend caps, dependency ordering, and an Ultracode dynamic-workflow path.",
+  "version": "0.4.0",
+  "description": "Delegates token-heavy, self-contained tasks to a local pre-authed agy (Gemini) CLI, choosing backend/model by task size and type, with credit-exhaustion fallback to native Claude and a glanceable statusline HUD. /team runs a decompose → dispatch (parallel agy + native) → verify → fix → synthesize pipeline with per-backend caps, dependency ordering, and an Ultracode dynamic-workflow path. An optional, config-gated UserPromptSubmit hook can proactively nudge delegation of agy-routable prompts.",
   "author": {
     "name": "WatchAndyTW",
     "email": "watchandytw@gmail.com"

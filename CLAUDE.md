@@ -63,7 +63,7 @@ return crossing back to Claude.
 ```
 .claude-plugin/plugin.json   manifest (auto-discovers commands/ agents/ hooks/hooks.json)
 settings.json                reference statusLine (see HUD note below)
-config/roster.toml           routing rules + agy backend + thresholds + quota patterns
+config/roster.toml           routing rules + agy backend + thresholds + quota + [proactive] hook cfg
 config/tags.txt              task-type classifier — `<type> <ERE>` per line
 scripts/route.sh             decision only
 scripts/run.sh               executor + fallback chain + HUD state (one task)
@@ -71,11 +71,12 @@ scripts/team.sh              /team fan-out — run a plan's agy subtasks via run
 scripts/lib/{score.sh,match.py,config.py,backends.sh,state.sh,common.sh}
 scripts/lib/{team_spec.py,team_plan.py}   cap-spec parser; plan.json -> per-subtask files
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
+scripts/hooks/proactive-route.sh    UserPromptSubmit nudge: agy-routable prompt -> suggest delegating
 statusline/statusline.sh     fork-free HUD
 agents/{delegate,av-research,bulk-summarizer}.md
 commands/{team,route-test}.md    /team = multi-agent fan-out; /route-test = dry-run router
 workflows/team.mjs           Ultracode dynamic-workflow fan-out (Workflow tool)
-hooks/hooks.json             PreToolUse matcher (Read only, narrow on purpose)
+hooks/hooks.json             PreToolUse (Read guard) + UserPromptSubmit (proactive nudge)
 tests/run_tests.sh           offline suite + opt-in live agy smoke (MMT_LIVE=1)
 docs/PLAN.md                 original implementation plan (historical)
 ```
@@ -149,6 +150,23 @@ shell out to `run.sh`, native agents solve, upstream results injected as context
 `{task, caps, pluginRoot, verify?=true, maxFixLoops?=1 (max 3)}`. Returns
 `{plan, counts:{agy,native,verified,failed}, results, final}`. Determinism-safe (no
 Date/random APIs — they break Workflow resume) and tolerates `args` as object **or** JSON string.
+
+## Proactive delegation hook (opt-in)
+
+`scripts/hooks/proactive-route.sh` is a **UserPromptSubmit** hook (registered in
+`hooks/hooks.json`). When `[proactive].enabled = true` in `roster.toml`, it runs each submitted
+prompt through `route.sh`; if the decision is `backend=agy`, it injects a one-shot reminder
+(`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
+`multi-model-team:delegate` agent / `/team` instead of solving inline. **Deterministic firing,
+soft compliance** — the reminder always appears under the conditions; acting on it stays Claude's
+call. It never fires for slash commands or prompts that route to native (judgment/RE/systems).
+
+Config lives in `[proactive]` (`enabled`, `max_chars`, `min_chars`, `rules` CSV allowlist);
+`config.py proactive-env` emits these as `MMT_PROACTIVE_*`. **Cost discipline:** when disabled
+(the default) the hook bails via a pure-bash `[proactive].enabled` pre-check **before spawning any
+python** — so installing it costs ~nothing until opted in. Hard kill switch: `MMT_PROACTIVE_DISABLE=1`.
+Injection-safe: the prompt reaches `route.sh` only on stdin, never as an argument, and is never
+echoed back into the reminder. Tests live under `── Unit: proactive hook` in `tests/run_tests.sh`.
 
 ## Conventions & constraints (Windows / msys)
 

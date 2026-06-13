@@ -224,6 +224,25 @@ else
   ok "team.mjs harness: skipped (node not found)"
 fi
 
+echo "── Unit: proactive hook (UserPromptSubmit) ────────────"
+PHOOK="$MMT_ROOT/scripts/hooks/proactive-route.sh"
+PTMP="$(mktemp -d)"
+# Temp rosters: same routing rules, [proactive] flipped on (and one with a tiny size cap).
+sed 's/^enabled   = false/enabled   = true/' "$MMT_ROOT/config/roster.toml" > "$PTMP/on.toml"
+sed -e 's/^enabled   = false/enabled   = true/' -e 's/^max_chars = 0/max_chars = 10/' \
+  "$MMT_ROOT/config/roster.toml" > "$PTMP/cap.toml"
+hookrun() { printf '%s' "$1" | MMT_ROSTER="$2" bash "$PHOOK" 2>/dev/null; }   # payload roster
+SQLP='{"prompt":"Write a SQL query to join users and orders tables"}'
+
+assert_eq       "proactive: disabled -> silent"        "$(hookrun "$SQLP" "$MMT_ROOT/config/roster.toml")" ""
+assert_contains "proactive: enabled+agy -> nudge"      "$(hookrun "$SQLP" "$PTMP/on.toml")" "routes to agy"
+assert_contains "proactive: nudge names delegate"      "$(hookrun "$SQLP" "$PTMP/on.toml")" "multi-model-team:delegate"
+assert_eq       "proactive: opus task -> silent"       "$(hookrun '{"prompt":"Reverse engineer the IL2CPP dump and extract protobuf"}' "$PTMP/on.toml")" ""
+assert_eq       "proactive: slash command -> silent"   "$(hookrun '{"prompt":"/team build a thing"}' "$PTMP/on.toml")" ""
+assert_eq       "proactive: max_chars cap -> silent"   "$(hookrun "$SQLP" "$PTMP/cap.toml")" ""
+assert_eq       "proactive: env DISABLE -> silent"     "$(printf '%s' "$SQLP" | MMT_PROACTIVE_DISABLE=1 MMT_ROSTER="$PTMP/on.toml" bash "$PHOOK" 2>/dev/null)" ""
+rm -rf "$PTMP"
+
 # ---- live agy smoke tests (opt-in) ----------------------------------------
 if [ "${MMT_LIVE:-0}" = "1" ]; then
   echo "── LIVE: agy smoke tests ──────────────────────────────"

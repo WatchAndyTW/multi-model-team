@@ -120,6 +120,30 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 
 There is intentionally **no** RE/injection agent — that work is Opus-only and never offloaded.
 
+### Proactive delegation (opt-in)
+
+By default the model only offloads to agy when *it* decides to spawn one of the agents above, or
+when you run `/team` — it won't reach for agy on its own for small tasks. If you want it to,
+there's a config-gated **`UserPromptSubmit` hook** (`scripts/hooks/proactive-route.sh`): on every
+prompt you submit, it runs the same router, and **when the prompt would route to agy it injects a
+one-shot reminder** nudging Claude to delegate it (the `delegate` agent / `/team`) instead of
+solving it inline. The reminder firing is deterministic; whether Claude takes the hint is still its
+judgment.
+
+It's **off by default**. Turn it on and tune it in `config/roster.toml`:
+
+```toml
+[proactive]
+enabled   = true      # master switch (default false)
+max_chars = 0         # only nudge when the prompt is <= N chars (0 = no cap) — e.g. 1500 for "small tasks only"
+min_chars = 0         # only nudge when the prompt is >= N chars (0 = no floor)
+rules     = ""        # CSV allowlist of route rules to nudge on (e.g. "bulk-ingest,grounded-research"); empty = any agy rule
+```
+
+Slash commands and prompts that route to native Claude (judgment / RE / systems) are never nudged.
+When disabled it bails in pure bash (no Python spawned), so it costs ~nothing. Hard kill switch:
+`MMT_PROACTIVE_DISABLE=1`.
+
 ---
 
 ## How routing works

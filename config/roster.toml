@@ -8,6 +8,17 @@ fallback       = "native:sonnet"     # final hop when CLI options exhausted
 # When the preferred backend reports quota exhaustion, try these in order.
 quota_fallback = ["agy", "native:sonnet"]
 
+# Proactive delegation hook (UserPromptSubmit). When ON, any submitted prompt that the router
+# would send to agy gets a one-shot reminder injected, nudging Claude to delegate it (the
+# multi-model-team:delegate agent / /team) instead of solving it inline. The reminder ALWAYS
+# fires when the conditions below hold — that part is deterministic; whether Claude takes the
+# hint stays its judgment. OFF by default; opt in by setting enabled = true.
+[proactive]
+enabled   = false     # master switch for the proactive nudge
+max_chars = 0         # only nudge when the prompt is <= this many chars (0 = no upper bound)
+min_chars = 0         # only nudge when the prompt is >= this many chars (0 = no lower bound)
+rules     = ""        # CSV allowlist of route rules to nudge on; empty = any agy rule
+
 [backends.agy]
 cmd          = "agy"
 oneshot_flag = "--print"
