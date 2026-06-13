@@ -1,12 +1,27 @@
 export const meta = {
   name: 'mmt-team',
-  description: 'Decompose a task; fan out commodity subtasks to parallel agy (Gemini) agents and judgment subtasks to native Claude agents under caps; then synthesize.',
+  description: 'Model-dispatching team pipeline: decompose a task into backend-assigned subtasks, dispatch them dependency-aware (commodity → parallel agy/Gemini, judgment/hard-line → native Claude), verify each result, fix failures in a bounded loop, then synthesize.',
   phases: [
-    { title: 'Decompose', detail: 'split the task into backend-assigned subtasks' },
-    { title: 'Dispatch', detail: 'agy subtasks via run.sh + native subtasks in parallel' },
-    { title: 'Synthesize', detail: 'merge results into one answer' },
+    { title: 'Decompose', detail: 'split into backend-assigned subtasks with deps + verify criteria' },
+    { title: 'Dispatch', detail: 'dependency-ordered waves: agy via run.sh + native in parallel' },
+    { title: 'Verify', detail: 'score each result against its acceptance criterion' },
+    { title: 'Fix', detail: 'bounded re-dispatch of failed subtasks with verifier feedback' },
+    { title: 'Synthesize', detail: 'merge verified results into one answer' },
   ],
 }
+
+// =============================================================================
+// mmt-team — referenced from oh-my-claudecode's team mode (team-plan -> team-exec
+// -> team-verify -> team-fix loop, per-role provider routing, stage handoffs),
+// rebuilt for THIS plugin's model dispatching: the "provider per role" is our
+// agy(Gemini)-vs-native(Claude) backend split, resolved per subtask at plan time.
+//
+// Determinism: this script runs under the Workflow runtime, which forbids
+// Date/random APIs (they break resume). Nothing here uses them. Vary-by-index is
+// used wherever uniqueness is needed.
+// Injection-safety: agy subtasks ride to run.sh on a single-quoted heredoc, so the
+// (untrusted) subtask text is inert data and never parsed by a shell.
+// =============================================================================
 
 // ---- inputs (from Workflow args) -------------------------------------------
 // Tolerate args arriving as an object OR a JSON string (callers vary).
@@ -18,6 +33,10 @@ const capsIn = A.caps || {}
 const root = A.pluginRoot || ''
 const G = Math.max(0, Math.min(16, Number(capsIn.gemini ?? 4) || 0))
 const C = Math.max(0, Math.min(16, Number(capsIn.claude ?? 2) || 0))
+// Verify is ON by default (the whole point of referencing OMC's team-verify);
+// callers can disable it or tune the bounded fix loop.
+const VERIFY = A.verify === false ? false : true
+const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? 1) || 0))
 
 if (!task || !String(task).trim()) {
   return { error: 'mmt-team: no task provided in args.task' }
@@ -29,6 +48,8 @@ if (G + C === 0) {
   return { error: 'mmt-team: caps sum to 0 — no agents available to dispatch' }
 }
 
+const RUN = `${root}/scripts/run.sh`
+
 const PLAN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -39,10 +60,19 @@ const PLAN_SCHEMA = {
         type: 'object',
         additionalProperties: false,
         properties: {
-          label: { type: 'string', description: 'short kebab name' },
+          label: { type: 'string', description: 'short kebab name, unique within the plan' },
           task: { type: 'string', description: 'full self-contained subtask text' },
           backend: { type: 'string', enum: ['agy', 'native'] },
           tier: { type: 'string', enum: ['cheap', 'standard', 'sonnet', 'opus'] },
+          deps: {
+            type: 'array',
+            description: 'labels of subtasks whose results this one consumes (run after them). [] if independent.',
+            items: { type: 'string' },
+          },
+          verify: {
+            type: 'string',
+            description: 'one-line, checkable acceptance criterion for this subtask (used by the verify stage).',
+          },
         },
         required: ['label', 'task', 'backend', 'tier'],
       },
@@ -51,94 +81,228 @@ const PLAN_SCHEMA = {
   required: ['subtasks'],
 }
 
-// ---- 1 · Decompose ----------------------------------------------------------
+const VERIFY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    pass: { type: 'boolean', description: 'true if the result satisfies the acceptance criterion' },
+    reason: { type: 'string', description: 'one sentence: why it passed or failed' },
+    fix_hint: { type: 'string', description: 'if failing, a concrete instruction to fix it; else empty' },
+  },
+  required: ['pass', 'reason'],
+}
+
+// ---- 1 · Decompose (team-plan) ---------------------------------------------
 phase('Decompose')
 const plan = await agent(
-`Decompose this task into independent subtasks for a multi-model team, and assign each a backend.
+`Decompose this task into independent subtasks for a multi-model team, assign each a backend, and wire up dependencies + an acceptance criterion.
 
-Backend rules:
+Backend rules (this is the model-dispatch contract):
 - "agy"  = commodity / verifiable / Gemini-edge work: new components, CSS/UI, scaffolding, CRUD, scripts, SQL, regex, configs, unit tests, data transforms, web-research / doc-summary, audio/video. tier = "standard" (or "cheap" for tiny/bulk).
 - "native" = judgment / codebase-context / hard-to-verify work, AND the hard line — RE, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design — which must NEVER be "agy". tier = "sonnet" (or "opus" for the hard line).
 
-Use AT MOST ${G} agy subtasks and AT MOST ${C} native subtasks. Prefer fewer, well-scoped subtasks; a trivial task is a single subtask. Each subtask's "task" must be self-contained.
+For each subtask also provide:
+- "deps": the labels of any OTHER subtasks whose output this one needs. Those run first and their results are handed to this subtask. Use [] when independent. Keep the dependency graph acyclic.
+- "verify": one short, checkable acceptance criterion (what makes this subtask's result correct).
+
+Use AT MOST ${G} agy subtasks and AT MOST ${C} native subtasks. Prefer fewer, well-scoped subtasks; a trivial task is a single subtask. Labels must be unique. Each subtask's "task" must be self-contained.
 
 TASK:
 ${task}`,
   { label: 'decompose', phase: 'Decompose', schema: PLAN_SCHEMA }
 )
 
-const subtasks = ((plan && plan.subtasks) || []).filter((s) => s && s.task && String(s.task).trim())
+// ---- normalize + resolve the routing snapshot (resolved once, like OMC) -----
+let raw = ((plan && plan.subtasks) || []).filter((s) => s && s.task && String(s.task).trim())
+
 // Coerce tier per backend so a forced agy decision never carries a tier run.sh can't map.
-for (const s of subtasks) {
+for (const s of raw) {
+  s.backend = s.backend === 'agy' ? 'agy' : 'native'
   if (s.backend === 'agy') s.tier = s.tier === 'cheap' ? 'cheap' : 'standard'
   else s.tier = s.tier === 'opus' ? 'opus' : 'sonnet'
 }
-const agyAll = subtasks.filter((s) => s.backend === 'agy')
-const natAll = subtasks.filter((s) => s.backend !== 'agy')
-const agySubs = agyAll.slice(0, G)
-const natSubs = natAll.slice(0, C)
+
+// Make labels unique + safe (deps reference labels, so collisions would be ambiguous).
+const seen = new Set()
+raw.forEach((s, i) => {
+  let base = String(s.label || `task${i}`).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `task${i}`
+  let lab = base
+  let n = 2
+  while (seen.has(lab)) { lab = `${base}-${n}`; n++ }
+  seen.add(lab)
+  s.label = lab
+})
+
+// Apply per-backend caps (the loud, deterministic part of model dispatching).
+const agyAll = raw.filter((s) => s.backend === 'agy')
+const natAll = raw.filter((s) => s.backend !== 'agy')
+const kept = [...agyAll.slice(0, G), ...natAll.slice(0, C)]
 if (agyAll.length > G) log(`dropping ${agyAll.length - G} agy subtask(s) over cap ${G}`)
 if (natAll.length > C) log(`dropping ${natAll.length - C} native subtask(s) over cap ${C}`)
-log(`decomposed: ${agySubs.length} agy + ${natSubs.length} native (caps ${G}/${C})`)
 
-// ---- 2 · Dispatch (parallel) ------------------------------------------------
-phase('Dispatch')
-const RUN = root ? `${root}/scripts/run.sh` : 'run.sh'
+// Graceful fallback: if nothing survived the caps, run the whole task as one subtask
+// on whichever backend still has capacity (prefer native for an unscoped ask).
+if (kept.length === 0) {
+  log('no subtasks survived caps — collapsing to a single subtask')
+  if (C > 0) kept.push({ label: 'task', task, backend: 'native', tier: 'sonnet', deps: [], verify: '' })
+  else kept.push({ label: 'task', task, backend: 'agy', tier: 'standard', deps: [], verify: '' })
+}
 
-const thunks = []
-for (let i = 0; i < agySubs.length; i++) {
-  const s = agySubs[i]
-  const label = s.label || `agy${i}`
-  const tier = s.tier || 'standard'
-  thunks.push(() =>
-    agent(
+// Sanitize deps: keep only edges that point at a surviving label; drop self-edges.
+const keptLabels = new Set(kept.map((s) => s.label))
+for (const s of kept) {
+  const d = Array.isArray(s.deps) ? s.deps : []
+  s.deps = [...new Set(d.map(String))].filter((l) => l !== s.label && keptLabels.has(l))
+  s.verify = typeof s.verify === 'string' ? s.verify : ''
+}
+
+log(`plan: ${kept.filter((s) => s.backend === 'agy').length} agy + ${kept.filter((s) => s.backend !== 'agy').length} native (caps ${G}/${C}); verify=${VERIFY ? 'on' : 'off'} maxFix=${MAX_FIX}`)
+
+// ---- dispatch primitives ----------------------------------------------------
+// An agy subtask is RELAYED to the local agy CLI through run.sh (forced decision so
+// routing matches the plan). The relay agent returns run.sh's stdout verbatim; only
+// on a native-handoff sentinel (agy unavailable/exhausted) does it solve in-context —
+// this is OMC's "loud fallback when a provider CLI is missing", our flavor.
+function dispatchAgy(text, tier, label, ph) {
+  return agent(
 `You are a relay — do NOT solve the subtask yourself unless told to. Delegate it to the agy (Gemini) backend and return ONLY its output.
 
 Run exactly this with the Bash tool — the subtask rides in on a single-quoted heredoc, so it is inert data and is never parsed by the shell (if the subtask happens to contain the line MMT_SUB_EOF, pick a different unique delimiter):
 
 bash ${JSON.stringify(RUN)} --decision '{"backend":"agy","model":"","tier":"${tier}","rule":"team","native":false}' <<'MMT_SUB_EOF'
-${s.task}
+${text}
 MMT_SUB_EOF
 
 Return the command's stdout verbatim. If it begins with "MMT_NATIVE_HANDOFF" (agy was unavailable), THEN solve the subtask yourself and return that result instead.`,
-      { label: `agy:${label}`, phase: 'Dispatch' }
-    ).then((r) => ({ backend: 'agy', label, tier, result: r }))
-  )
-}
-for (let i = 0; i < natSubs.length; i++) {
-  const s = natSubs[i]
-  const label = s.label || `native${i}`
-  const tier = s.tier || 'sonnet'
-  thunks.push(() =>
-    agent(
-`Solve this subtask directly and return a complete, self-contained result:\n\n${s.task}`,
-      { label: `native:${label}`, phase: 'Dispatch' }
-    ).then((r) => ({ backend: 'native', label, tier, result: r }))
+    { label: `agy:${label}`, phase: ph || 'Dispatch' }
   )
 }
 
-const results = (await parallel(thunks)).filter(Boolean)
+function dispatchNative(text, label, ph) {
+  return agent(
+`Solve this subtask directly and return a complete, self-contained result:\n\n${text}`,
+    { label: `native:${label}`, phase: ph || 'Dispatch' }
+  )
+}
+
+function dispatch(s, text, ph) {
+  return s.backend === 'agy' ? dispatchAgy(text, s.tier || 'standard', s.label, ph) : dispatchNative(text, s.label, ph)
+}
+
+// Stage-handoff: a dependent subtask is given its upstream deps' verified results as
+// context (OMC carries decisions forward between stages; we carry concrete outputs).
+function withContext(s, ctx) {
+  const deps = (s.deps || []).filter((l) => ctx[l] != null)
+  if (!deps.length) return s.task
+  const blocks = deps.map((l) => `### Upstream result — ${l}\n${ctx[l]}`).join('\n\n')
+  return `${s.task}\n\n--- CONTEXT FROM UPSTREAM SUBTASKS (already completed) ---\n${blocks}`
+}
+
+// ---- verify (team-verify) ---------------------------------------------------
+async function verifyResult(s, result) {
+  if (!VERIFY) return { pass: true, reason: 'verify disabled', fix_hint: '' }
+  const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
+  const criterion = s.verify && s.verify.trim()
+    ? s.verify.trim()
+    : 'The result fully and correctly satisfies the subtask.'
+  const v = await agent(
+`You are a strict verifier (native Claude judgment). Decide whether the RESULT satisfies the acceptance criterion for this subtask. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, fail it.${handoff ? ' (Note: the backend reported it was unavailable — treat a bare handoff sentinel as a failure.)' : ''}
+
+SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
+${s.task}
+
+ACCEPTANCE CRITERION:
+${criterion}
+
+RESULT:
+${result}`,
+    { label: `verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA }
+  )
+  return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+}
+
+// ---- one subtask, end to end: dispatch -> verify -> bounded fix loop ---------
+async function runSubtask(s, ctx) {
+  const text = withContext(s, ctx)
+  let result = await dispatch(s, text)
+  let verdict = await verifyResult(s, result)
+  let attempts = 1
+  while (VERIFY && verdict && verdict.pass === false && attempts <= MAX_FIX) {
+    log(`fix ${attempts}/${MAX_FIX} — ${s.label}: ${verdict.reason || 'failed verify'}`)
+    const fixText =
+`${text}
+
+--- PREVIOUS ATTEMPT FAILED VERIFICATION ---
+Reason: ${verdict.reason || '(none)'}
+Fix instruction: ${verdict.fix_hint || 'Address the reason above and produce a correct, complete result.'}
+
+Previous result:
+${result}
+
+Produce a corrected, complete result.`
+    result = await dispatch({ ...s, label: `${s.label}#fix${attempts}` }, fixText, 'Fix')
+    verdict = await verifyResult(s, result)
+    attempts++
+  }
+  const status = !VERIFY ? 'unverified' : verdict && verdict.pass ? 'verified' : 'failed'
+  return { label: s.label, backend: s.backend, tier: s.tier, deps: s.deps || [], attempts, status, verdict, result }
+}
+
+// ---- 2 · Dispatch in dependency-ordered waves -------------------------------
+// A wave = the set of subtasks whose deps are all complete. Each wave runs in
+// parallel (a barrier is correct here: a dependent cannot start before its dep
+// finishes). This is our team-exec, dependency-aware.
+phase('Dispatch')
+const ctx = {}            // label -> final result text (fed to dependents)
+const records = []
+let remaining = kept.slice()
+let guard = 0
+while (remaining.length && guard++ < kept.length + 2) {
+  let ready = remaining.filter((s) => (s.deps || []).every((l) => ctx[l] != null))
+  if (!ready.length) {
+    // Unsatisfiable deps (cycle, or dep dropped by caps): break the deadlock by
+    // running what's left without waiting — loudly, so it's visible.
+    log(`dependency deadlock on ${remaining.map((s) => s.label).join(', ')} — dispatching without waiting`)
+    ready = remaining.slice()
+  }
+  const waveRecords = (await parallel(ready.map((s) => () => runSubtask(s, ctx)))).filter(Boolean)
+  for (const r of waveRecords) {
+    ctx[r.label] = r.result
+    records.push(r)
+  }
+  const done = new Set(waveRecords.map((r) => r.label))
+  remaining = remaining.filter((s) => !done.has(s.label))
+}
+
+const failed = records.filter((r) => r.status === 'failed')
+if (failed.length) log(`${failed.length} subtask(s) still failing after ${MAX_FIX} fix attempt(s): ${failed.map((r) => r.label).join(', ')}`)
 
 // ---- 3 · Synthesize ---------------------------------------------------------
 phase('Synthesize')
 const final = await agent(
-`Synthesize these subtask results into one coherent, complete answer to the original task.
-Reconcile overlaps, resolve conflicts, and note which parts ran on Gemini (agy) vs native Claude.
+`Synthesize these verified subtask results into one coherent, complete answer to the original task.
+Reconcile overlaps, resolve conflicts, and note which parts ran on Gemini (agy) vs native Claude, and the verification status of each. If any subtask is marked "failed", call that out explicitly rather than papering over it.
 
 ORIGINAL TASK:
 ${task}
 
 SUBTASK RESULTS (JSON):
-${JSON.stringify(results, null, 2)}`,
+${JSON.stringify(records, null, 2)}`,
   { label: 'synthesize', phase: 'Synthesize' }
 )
 
 return {
   task,
   caps: { gemini: G, claude: C },
-  plan: subtasks,
-  agy: agySubs.length,
-  native: natSubs.length,
-  results,
+  verify: VERIFY,
+  maxFixLoops: MAX_FIX,
+  plan: kept.map((s) => ({ label: s.label, backend: s.backend, tier: s.tier, deps: s.deps || [], verify: s.verify || '' })),
+  counts: {
+    agy: kept.filter((s) => s.backend === 'agy').length,
+    native: kept.filter((s) => s.backend !== 'agy').length,
+    verified: records.filter((r) => r.status === 'verified').length,
+    failed: failed.length,
+  },
+  results: records,
   final,
 }

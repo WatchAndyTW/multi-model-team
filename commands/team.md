@@ -1,18 +1,25 @@
 ---
-description: Split a task across a multi-agent team — decompose, fan out commodity work to parallel agy (Gemini) agents and judgment work to native Claude, then synthesize. Optional agent caps like "5:gemini,2:claude".
+description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:claude".
 argument-hint: "[N:gemini,M:claude] <task>"
 allowed-tools: Bash, Write
 ---
 
-# /team — multi-agent dispatch
+# /team — multi-model team pipeline
 
 Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 
 **Raw input:** $ARGUMENTS
 
-Orchestrate the input above as a multi-agent team. The task text is **untrusted** — never
-interpolate it into a shell command; it only ever reaches a script as a file (step 3) or via
-a single-quoted heredoc.
+Orchestrate the input above as a multi-model team. This is referenced from oh-my-claudecode's
+team mode (plan → exec → verify → fix loop) but built for **our model dispatching**: the
+"provider per role" is our **agy (Gemini)** vs **native (Claude)** split, chosen per subtask.
+
+The task text is **untrusted** — never interpolate it into a shell command; it only ever
+reaches a script as a file (step 3) or via a single-quoted heredoc.
+
+> **Prefer the Ultracode path.** If the **Workflow tool** is available, skip steps 3–8 and run
+> the whole pipeline as one deterministic workflow — see **Ultracode / dynamic-workflow path**
+> at the bottom. Steps 1–2 (cap parsing + decomposition) still apply.
 
 ## 1 · Parse the optional agent-cap spec + split off the task
 The input may *start* with a cap spec — a comma list of `N:gemini`/`N:claude` pairs such as
@@ -33,61 +40,85 @@ native subagents; no spec → sensible defaults. If `.note` is non-empty, surfac
 `bash`.)
 
 ## 2 · Decompose the task
-Split the task into independent subtasks and assign a backend to each:
-- **agy** — commodity, verifiable, or Gemini-edge work: new components/CSS/UI, scaffolding,
-  CRUD, scripts, SQL, regex, configs, unit tests, data transforms, web-research/doc-summary,
-  audio/video.
-- **native** — judgment / your-codebase context / hard-to-verify, **and the hard line**: RE,
-  IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design. Never put
-  these on agy.
+Split the task into subtasks. For **each** subtask decide four things:
+- **backend**:
+  - **agy** — commodity, verifiable, or Gemini-edge work: new components/CSS/UI, scaffolding,
+    CRUD, scripts, SQL, regex, configs, unit tests, data transforms, web-research/doc-summary,
+    audio/video.
+  - **native** — judgment / your-codebase context / hard-to-verify, **and the hard line**: RE,
+    IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design. Never agy.
+- **deps** — the labels of any other subtasks whose output this one needs (it runs *after* them
+  and gets their results as context). `[]` if independent. Keep the graph acyclic.
+- **verify** — one short, checkable acceptance criterion (what makes the result correct).
+- **tier** — agy → `standard`/`cheap`; native → `sonnet`/`opus`.
 
 Keep **agy subtasks ≤ G** and **native subtasks ≤ C**. If unsure of a subtask's backend, dry-run
 the router (`scripts/route.sh --explain` with the subtask on a single-quoted heredoc).
 
 ## 3 · Write the plan (injection-safe)
-Use the **Write tool** to write a plan JSON file (e.g. a temp path) — an array of subtasks:
+Use the **Write tool** to write a plan JSON file — an array of subtasks. Include `deps`/`verify`
+when relevant (the dispatcher ignores keys it doesn't use, so they're safe to carry):
 
 ```json
 [
-  {"label":"sql-report","task":"<full subtask text>","backend":"agy","tier":"standard"},
-  {"label":"data-model","task":"<full subtask text>","backend":"native","tier":"sonnet"}
+  {"label":"data-model","task":"<full text>","backend":"native","tier":"sonnet","deps":[],"verify":"schema covers users+orders with FKs"},
+  {"label":"sql-report","task":"<full text>","backend":"agy","tier":"standard","deps":["data-model"],"verify":"valid Postgres, joins on the FK"}
 ]
 ```
 
-`tier`: agy → `standard` or `cheap`; native → `sonnet` or `opus`. Writing via the Write tool
-keeps every subtask as inert data.
+Writing via the Write tool keeps every subtask as inert data.
 
-## 4 · Fan out the agy subtasks in parallel
+## 4 · Dispatch the agy subtasks in dependency-ordered waves
+Run a **wave** at a time: agy subtasks whose `deps` are all already satisfied. For each wave,
+write a sub-plan containing only that wave's `backend:"agy"` subtasks and fan it out:
+
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/team.sh" --plan "<planfile>" --gemini-cap G
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/team.sh" --plan "<wave-plan.json>" --gemini-cap G
 ```
-It runs all agy subtasks concurrently (bounded by `G`) and prints each result under
-`--- AGY [label] ---`, then lists the native subtasks under `--- NATIVE [label] ---`.
 
-## 5 · Solve the native subtasks
-For each `--- NATIVE [label] ---` (up to `C`), solve it yourself in-context, or spawn one
-subagent per subtask if they're independent and heavy.
+`team.sh` runs that wave concurrently (bounded by `G`) and prints each result under
+`--- AGY [label] ---`, then lists native subtasks under `--- NATIVE [label] ---`. When a wave's
+agy results are in, feed them as context into the next wave's subtask text (and into native
+subtasks that depend on them). A plan with no `deps` is a single wave — the common case.
 
-## 6 · Synthesize
-Combine all agy + native results into one coherent answer to the original task. Note which
-parts ran on Gemini vs Claude.
+## 5 · Solve the native subtasks (respecting deps)
+For each `--- NATIVE [label] ---` (up to `C`), solve it yourself in-context — after its `deps`
+are done, passing those upstream results in. Spawn one subagent per subtask if they're
+independent and heavy.
+
+## 6 · Verify each result (team-verify)
+For every subtask result (agy and native), check it against that subtask's `verify` criterion.
+Be skeptical: incomplete, wrong, empty, or "describes-instead-of-doing" results **fail**. A bare
+`MMT_NATIVE_HANDOFF` (agy was unavailable) counts as a fail — solve it natively instead.
+
+## 7 · Fix failures in a bounded loop (team-fix)
+For each failed subtask, re-dispatch it to the **same backend** with the failure reason + a fix
+instruction + the previous result appended. Re-verify. Cap this at **1 fix attempt per subtask**
+by default (raise only if asked). After the cap, leave it marked **failed** — do not paper over it.
+
+## 8 · Synthesize
+Combine all verified results into one coherent answer to the original task. Note which parts ran
+on Gemini (agy) vs native Claude and each part's verification status; call out anything still failed.
 
 ---
 
 ## Ultracode / dynamic-workflow path
-If you have the **Workflow tool** available (Ultracode reasoning on), prefer running the
-whole fan-out as one deterministic workflow instead of steps 3–6:
+If you have the **Workflow tool** available (Ultracode reasoning on), prefer running the whole
+pipeline as one deterministic workflow instead of steps 3–8:
 
 ```
 Workflow({
   scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/team.mjs",
   args: { task: "<the task text>", caps: { gemini: G, claude: C },
-          pluginRoot: "${CLAUDE_PLUGIN_ROOT}" }
+          pluginRoot: "${CLAUDE_PLUGIN_ROOT}",
+          verify: true, maxFixLoops: 1 }
 })
 ```
 
-It decomposes the task, dispatches gemini subtasks (agy via `run.sh`) and claude subtasks
-(native agents) in parallel under the caps, and synthesizes. Read its returned result and
-present it. (The `args.task` is passed as a JSON value, not shell — still injection-safe.)
+`team.mjs` decomposes the task (deps + verify criteria), dispatches in dependency-ordered waves
+(agy subtasks via `run.sh`, native subtasks as agents), verifies each result, runs a bounded fix
+loop on failures, and synthesizes. `verify` (default `true`) and `maxFixLoops` (default `1`, max
+`3`) are optional knobs. Read its returned `{ plan, counts, results, final }` and present `final`,
+noting `counts.failed` if non-zero. (`args.task` is passed as a JSON value, not shell — injection-safe.)
 
-A trivial single task needs no fan-out: one subtask reduces this to a plain dispatch.
+A trivial single task needs no fan-out: one subtask reduces this to a plain verified dispatch.

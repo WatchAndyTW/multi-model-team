@@ -83,17 +83,26 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 
 ### Commands
 
-- **`/multi-model-team:team [N:gemini,M:claude] <task>`** — **multi-agent dispatch.** Claude
-  splits the task into subtasks, fans the commodity ones out to **parallel agy (Gemini)**
-  agents and keeps judgment/hard-line ones on **native Claude**, then synthesizes one answer.
+- **`/multi-model-team:team [N:gemini,M:claude] <task>`** — **multi-model team pipeline.**
+  Referenced from oh-my-claudecode's team mode (plan → exec → verify → fix loop), rebuilt for
+  *our* model dispatching: the "provider per role" is the **agy (Gemini)** vs **native (Claude)**
+  split, chosen per subtask. Claude decomposes the task, **dispatches** commodity subtasks to
+  **parallel agy** agents and judgment/hard-line ones to **native Claude**, **verifies** each
+  result against an acceptance criterion, **fixes** failures in a bounded loop, then **synthesizes**.
+  - **Dependency-aware:** subtasks declare `deps`; dependents run *after* their upstreams and
+    receive those results as context (dispatch proceeds in waves, not one flat batch).
+  - **Verify → fix:** every result is checked; failures are re-dispatched to the same backend
+    with the verifier's feedback (default 1 fix attempt; still-failing subtasks are flagged, not
+    hidden). A bare `MMT_NATIVE_HANDOFF` (agy unavailable) counts as a fail and is solved natively.
   - Optional leading **agent cap** like `5:gemini,2:claude` (order-agnostic; `gemini`=agy,
     `claude`=native; aliases `agy`/`native`/`flash`/`pro`/`sonnet`/`opus`; default `4:gemini,2:claude`).
     It bounds how many agents of each kind run.
   - Examples: `/team scaffold a CRUD API, write its SQL, and design the data model` →
-    several agy agents (scaffold/SQL) + a native agent (data-model design), in parallel.
+    a native agent designs the data model, then agy agents scaffold + write SQL against it.
     `/team 6:gemini,1:claude build 6 UI components and review them` → 6 agy + 1 native.
-  - **Ultracode:** if the Workflow tool is available, `/team` runs the fan-out as a
-    deterministic dynamic workflow (`workflows/team.mjs`) instead of ad-hoc parallel calls.
+  - **Ultracode:** if the Workflow tool is available, `/team` runs the whole pipeline as a
+    deterministic dynamic workflow (`workflows/team.mjs`) — knobs `verify` (default on) and
+    `maxFixLoops` (default 1, max 3) — instead of ad-hoc parallel calls.
   - Task text is never shell-interpolated — it's written to a `plan.json` (data) and fed to
     `run.sh` on stdin, so it's injection-safe.
 - **`/multi-model-team:route-test <task>`** — dry-run the router. Prints the decision

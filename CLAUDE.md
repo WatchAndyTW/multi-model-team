@@ -116,26 +116,40 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 
 ---
 
-## /team — multi-agent fan-out (v0.2)
+## /team — multi-model team pipeline (v0.3)
 
-`/team [N:gemini,M:claude] <task>` decomposes a task and runs it across multiple agents:
-commodity subtasks fan out to parallel **agy** (Gemini) agents, judgment/hard-line subtasks
-go to **native** Claude, then Claude synthesizes. Flow (in `commands/team.md`):
+`/team [N:gemini,M:claude] <task>` runs a task through a pipeline **referenced from
+oh-my-claudecode's team mode** (plan → exec → verify → fix loop, per-role provider routing,
+stage handoffs) but rebuilt for **our model dispatching**: the "provider per role" is the
+**agy (Gemini)** vs **native (Claude)** backend split, chosen per subtask. The stages are
+**decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**. Flow
+(in `commands/team.md`):
 1. parse the optional cap spec via `scripts/lib/team_spec.py` → `{gemini, claude}` (caps =
    max agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
 2. Claude decomposes the task, then **writes a `plan.json`** (array of
-   `{label, task, backend, tier}`) via the Write tool — task text stays inert data, never
-   shell-parsed (this is the injection-safe boundary; same reason `/route-test` uses stdin).
+   `{label, task, backend, tier, deps?, verify?}`) via the Write tool — task text stays inert
+   data, never shell-parsed (injection-safe boundary; same reason `/route-test` uses stdin).
+   `deps` = labels this subtask consumes (run after them, results handed in); `verify` = a
+   one-line acceptance criterion. `team_plan.py` **ignores `deps`/`verify`** (they're inert),
+   so the script path tolerates the richer schema without change.
 3. `scripts/team.sh --plan <file> --gemini-cap G` runs the `backend:agy` subtasks through
    `run.sh` in parallel (bounded), printing `--- AGY [label] ---` blocks and listing
    `--- NATIVE [label] ---` subtasks; `team_plan.py` writes each subtask to `$WORK/<idx>.task`
    and team.sh addresses them by **msys-form `$WORK/<idx>.task`** (NOT the Windows-form path
-   python echoes back — short-name mismatch breaks the reopen).
-4. Claude solves the native subtasks (≤ claude cap) and synthesizes.
+   python echoes back — short-name mismatch breaks the reopen). Deps are honored by calling
+   team.sh once per dependency **wave**.
+4. Claude solves the native subtasks (≤ claude cap), **verifies** every result against its
+   criterion, **fixes** failures in a bounded loop (default 1 attempt; a bare
+   `MMT_NATIVE_HANDOFF` counts as a fail → solve natively), then synthesizes.
 
-**Ultracode path:** when the Workflow tool is available, `/team` instead runs
-`workflows/team.mjs` (decompose agent → parallel dispatch: agy agents shell out to `run.sh`,
-native agents solve → synthesize), passing `{task, caps, pluginRoot}` as `args`.
+**Ultracode path (the full implementation):** when the Workflow tool is available, `/team`
+runs `workflows/team.mjs`, which does the entire pipeline deterministically: decompose agent
+(emits `deps` + `verify`) → dependency-ordered **waves** (`parallel()` per wave; agy agents
+shell out to `run.sh`, native agents solve, upstream results injected as context) → per-result
+**verify** agent (`{pass, reason, fix_hint}`) → **bounded fix** re-dispatch → synthesize. Args:
+`{task, caps, pluginRoot, verify?=true, maxFixLoops?=1 (max 3)}`. Returns
+`{plan, counts:{agy,native,verified,failed}, results, final}`. Determinism-safe (no
+Date/random APIs — they break Workflow resume) and tolerates `args` as object **or** JSON string.
 
 ## Conventions & constraints (Windows / msys)
 

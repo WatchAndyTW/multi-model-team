@@ -183,6 +183,47 @@ assert_eq "plan: forged row neutralized (1 line)" "$(printf '%s\n' "$MANI" | gre
 assert_contains "plan: tier coerced to allowlist" "$MANI" "NATIVE"$'\t'"0"$'\t'"a"$'\t'"sonnet"$'\t'
 rm -rf "$PLANI"
 
+echo "── Unit: team_plan tolerates deps/verify keys ─────────"
+# The v0.3 plan schema adds deps + verify; team_plan.py must ignore them (inert) and still
+# emit the same manifest, so the script path tolerates the richer plan without change.
+PLAND2="$(mktemp -d)"
+cat > "$PLAND2/plan.json" <<'EOF'
+[
+  {"label":"m","task":"design model","backend":"native","tier":"sonnet","deps":[],"verify":"has schema"},
+  {"label":"s","task":"write sql","backend":"agy","tier":"standard","deps":["m"],"verify":"valid sql"}
+]
+EOF
+MAN2="$("$PY" "$MMT_ROOT/scripts/lib/team_plan.py" "$PLAND2/plan.json" "$PLAND2/w" 2>/dev/null)"
+assert_contains "plan(deps): native line" "$MAN2" "NATIVE"$'\t'"0"$'\t'"m"$'\t'"sonnet"
+assert_contains "plan(deps): agy line"    "$MAN2" "AGY"$'\t'"1"$'\t'"s"$'\t'"standard"
+assert_eq "plan(deps): 2 lines"           "$(printf '%s\n' "$MAN2" | grep -c .)" 2
+rm -rf "$PLAND2"
+
+echo "── Unit: team.mjs determinism + pipeline structure ────"
+MJS="$MMT_ROOT/workflows/team.mjs"
+# The Workflow runtime forbids Date/random APIs (they break resume) — even the literal
+# tokens trip its determinism guard. Assert none appear anywhere in the script.
+if grep -Eq 'Date\.now|Math\.random|new Date' "$MJS"; then
+  bad "team.mjs: no Date/random APIs" "found a forbidden token"
+else
+  ok "team.mjs: no Date/random APIs"
+fi
+# Structure: the staged pipeline + verify/fix machinery are present. Verify/Fix are tagged on
+# agents (interleaved per subtask), so they appear as `phase: '...'` opts, not phase() calls.
+for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix"; do
+  if grep -qF "$marker" "$MJS"; then ok "team.mjs has: $marker"; else bad "team.mjs missing: $marker"; fi
+done
+
+echo "── Unit: team.mjs stub harness (DAG+verify+fix) ───────"
+# Run the whole pipeline against stubbed Workflow globals: caps, dependency-ordered waves,
+# upstream-context injection, per-result verify, and one bounded fix loop. No live model.
+if command -v node >/dev/null 2>&1; then
+  H_OUT="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" 2>&1)"
+  assert_contains "team.mjs harness: pipeline ok" "$H_OUT" HARNESS_OK
+else
+  ok "team.mjs harness: skipped (node not found)"
+fi
+
 # ---- live agy smoke tests (opt-in) ----------------------------------------
 if [ "${MMT_LIVE:-0}" = "1" ]; then
   echo "── LIVE: agy smoke tests ──────────────────────────────"
