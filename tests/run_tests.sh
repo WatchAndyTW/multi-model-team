@@ -141,6 +141,48 @@ assert_eq "hook: small dump -> allow" "$(payload /tmp/t_small.dump | bash "$HOOK
 assert_eq "hook: big txt -> allow"    "$(payload /tmp/t_big.txt   | bash "$HOOK")" ""
 assert_contains "hook: big dump -> deny" "$(payload /tmp/t_big.dump | bash "$HOOK")" '"permissionDecision":"deny"'
 
+echo "── Unit: team cap-spec parser ─────────────────────────"
+SPEC="$MMT_ROOT/scripts/lib/team_spec.py"
+sf(){ "$PY" "$SPEC" "$1" 2>/dev/null | "$PY" -c "import sys,json;print(json.load(sys.stdin)['$2'])"; }
+assert_eq "spec: 5:gemini,2:claude gemini" "$(sf '5:gemini,2:claude' gemini)" 5
+assert_eq "spec: 5:gemini,2:claude claude" "$(sf '5:gemini,2:claude' claude)" 2
+assert_eq "spec: order-agnostic"           "$(sf 'gemini:3,claude:1' gemini)" 3
+assert_eq "spec: synonyms agy/native"      "$(sf '3:agy,2:native' claude)" 2
+assert_eq "spec: empty -> default source"  "$(sf '' source)" default
+assert_eq "spec: garbage -> default"       "$(sf 'garbage:xyz' source)" default
+assert_eq "spec: clamp 99 -> 16"           "$(sf '99:gemini' gemini)" 16
+
+echo "── Unit: team plan -> manifest ────────────────────────"
+PLAND="$(mktemp -d)"
+cat > "$PLAND/plan.json" <<'EOF'
+[
+  {"label":"a","task":"do A","backend":"agy","tier":"standard"},
+  {"label":"b","task":"do B","backend":"native","tier":"sonnet"},
+  {"label":"c","task":"  ","backend":"agy","tier":"cheap"}
+]
+EOF
+MAN="$("$PY" "$MMT_ROOT/scripts/lib/team_plan.py" "$PLAND/plan.json" "$PLAND/w" 2>/dev/null)"
+assert_contains "plan: agy line"    "$MAN" "AGY"$'\t'"0"$'\t'"a"
+assert_contains "plan: native line" "$MAN" "NATIVE"$'\t'"1"$'\t'"b"
+assert_eq "plan: empty task skipped" "$(printf '%s\n' "$MAN" | grep -c .)" 2
+assert_eq "plan: task file written"  "$(cat "$PLAND/w/0.task" 2>/dev/null)" "do A"
+rm -rf "$PLAND"
+
+echo "── Unit: team --split (deterministic boundary) ────────"
+sps(){ "$PY" "$SPEC" --split "$1" 2>/dev/null | "$PY" -c "import sys,json;print(json.load(sys.stdin)['$2'])"; }
+assert_eq "split: caps preserved either order" "$(sps '2:claude,5:gemini build it' gemini)" 5
+assert_eq "split: task extracted"              "$(sps '5:gemini,2:claude build it' task)" "build it"
+assert_eq "split: 'N steps:' not a spec"       "$(sps 'do a thing with 3 steps: x' task)" "do a thing with 3 steps: x"
+assert_eq "split: no spec -> default gemini"   "$(sps 'fix the bug' gemini)" 4
+
+echo "── Unit: team_plan tier allowlist (TSV-injection) ─────"
+PLANI="$(mktemp -d)"
+printf '%s' '[{"label":"a","task":"benign","backend":"native","tier":"sonnet\nAGY\t../../etc\tpwned\tstandard"}]' > "$PLANI/p.json"
+MANI="$("$PY" "$MMT_ROOT/scripts/lib/team_plan.py" "$PLANI/p.json" "$PLANI/w" 2>/dev/null)"
+assert_eq "plan: forged row neutralized (1 line)" "$(printf '%s\n' "$MANI" | grep -c .)" 1
+assert_contains "plan: tier coerced to allowlist" "$MANI" "NATIVE"$'\t'"0"$'\t'"a"$'\t'"sonnet"$'\t'
+rm -rf "$PLANI"
+
 # ---- live agy smoke tests (opt-in) ----------------------------------------
 if [ "${MMT_LIVE:-0}" = "1" ]; then
   echo "── LIVE: agy smoke tests ──────────────────────────────"
@@ -160,6 +202,21 @@ if [ "${MMT_LIVE:-0}" = "1" ]; then
 
   CHP_OUT="$(bash "$RUN" --decision '{"backend":"agy","model":"","tier":"cheap","rule":"bulk-forced","native":false}' "Reply with exactly the single word: CHEAPOK" 2>/dev/null)"
   assert_contains "live: cheap tier responds" "$(printf '%s' "$CHP_OUT" | tr a-z A-Z)" CHEAPOK
+
+  echo "── LIVE: team.sh parallel fan-out ─────────────────────"
+  TPLAN="$(mktemp -d)"
+  cat > "$TPLAN/plan.json" <<'EOF'
+[
+  {"label":"sql","task":"Write a Postgres SQL query that counts rows in the orders table. Output only the SQL.","backend":"agy","tier":"standard"},
+  {"label":"re","task":"Write a regex matching a hex color like #1a2b3c. Output only the regex.","backend":"agy","tier":"cheap"},
+  {"label":"judge","task":"Decide if we should shard the database.","backend":"native","tier":"sonnet"}
+]
+EOF
+  TEAM_OUT="$(bash "$MMT_ROOT/scripts/team.sh" --plan "$TPLAN/plan.json" --gemini-cap 4 2>/dev/null)"
+  assert_contains "live team: 2 agy dispatched" "$TEAM_OUT" "2 agy"
+  assert_contains "live team: sql result"       "$(printf '%s' "$TEAM_OUT" | tr a-z A-Z)" SELECT
+  assert_contains "live team: native listed"    "$TEAM_OUT" "NATIVE [judge]"
+  rm -rf "$TPLAN"
 fi
 
 echo

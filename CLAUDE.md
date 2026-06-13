@@ -66,12 +66,15 @@ settings.json                reference statusLine (see HUD note below)
 config/roster.toml           routing rules + agy backend + thresholds + quota patterns
 config/tags.txt              task-type classifier — `<type> <ERE>` per line
 scripts/route.sh             decision only
-scripts/run.sh               executor + fallback chain + HUD state
+scripts/run.sh               executor + fallback chain + HUD state (one task)
+scripts/team.sh              /team fan-out — run a plan's agy subtasks via run.sh in parallel
 scripts/lib/{score.sh,match.py,config.py,backends.sh,state.sh,common.sh}
+scripts/lib/{team_spec.py,team_plan.py}   cap-spec parser; plan.json -> per-subtask files
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
 statusline/statusline.sh     fork-free HUD
 agents/{delegate,av-research,bulk-summarizer}.md
-commands/{team,route-test}.md
+commands/{team,route-test}.md    /team = multi-agent fan-out; /route-test = dry-run router
+workflows/team.mjs           Ultracode dynamic-workflow fan-out (Workflow tool)
 hooks/hooks.json             PreToolUse matcher (Read only, narrow on purpose)
 tests/run_tests.sh           offline suite + opt-in live agy smoke (MMT_LIVE=1)
 docs/PLAN.md                 original implementation plan (historical)
@@ -112,6 +115,27 @@ Presets (`[defaults].preset` or `--preset`): `budget` pushes borderline judgment
 agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical edges).
 
 ---
+
+## /team — multi-agent fan-out (v0.2)
+
+`/team [N:gemini,M:claude] <task>` decomposes a task and runs it across multiple agents:
+commodity subtasks fan out to parallel **agy** (Gemini) agents, judgment/hard-line subtasks
+go to **native** Claude, then Claude synthesizes. Flow (in `commands/team.md`):
+1. parse the optional cap spec via `scripts/lib/team_spec.py` → `{gemini, claude}` (caps =
+   max agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
+2. Claude decomposes the task, then **writes a `plan.json`** (array of
+   `{label, task, backend, tier}`) via the Write tool — task text stays inert data, never
+   shell-parsed (this is the injection-safe boundary; same reason `/route-test` uses stdin).
+3. `scripts/team.sh --plan <file> --gemini-cap G` runs the `backend:agy` subtasks through
+   `run.sh` in parallel (bounded), printing `--- AGY [label] ---` blocks and listing
+   `--- NATIVE [label] ---` subtasks; `team_plan.py` writes each subtask to `$WORK/<idx>.task`
+   and team.sh addresses them by **msys-form `$WORK/<idx>.task`** (NOT the Windows-form path
+   python echoes back — short-name mismatch breaks the reopen).
+4. Claude solves the native subtasks (≤ claude cap) and synthesizes.
+
+**Ultracode path:** when the Workflow tool is available, `/team` instead runs
+`workflows/team.mjs` (decompose agent → parallel dispatch: agy agents shell out to `run.sh`,
+native agents solve → synthesize), passing `{task, caps, pluginRoot}` as `args`.
 
 ## Conventions & constraints (Windows / msys)
 

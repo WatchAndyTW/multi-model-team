@@ -1,8 +1,10 @@
 # multi-model-team
 
-A Claude Code plugin that lets Claude delegate token-heavy, self-contained tasks to a local
-pre-authed **`agy`** (Gemini) CLI — choosing the backend/model dynamically by task size and
-type, with credit-exhaustion fallback to native Claude, and a glanceable statusline HUD.
+**v0.2.0** · A Claude Code plugin that lets Claude delegate token-heavy, self-contained tasks
+to a local pre-authed **`agy`** (Gemini) CLI — choosing the backend/model dynamically by task
+size and type, with credit-exhaustion fallback to native Claude, and a glanceable statusline
+HUD. `/team` fans a task out across multiple parallel agents (agy + native) with per-backend
+caps and an Ultracode dynamic-workflow path.
 
 The core idea: **offload commodity work** (new UI/components, scaffolding, CRUD, scripts,
 SQL, configs, unit tests, web-research/doc-summarization, bulk ingestion) to Gemini, while
@@ -81,8 +83,19 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 
 ### Commands
 
-- **`/multi-model-team:team <task>`** — manual deterministic dispatch. Routes the task and
-  runs the chosen backend (agy with fallback), bypassing model judgment. Your override.
+- **`/multi-model-team:team [N:gemini,M:claude] <task>`** — **multi-agent dispatch.** Claude
+  splits the task into subtasks, fans the commodity ones out to **parallel agy (Gemini)**
+  agents and keeps judgment/hard-line ones on **native Claude**, then synthesizes one answer.
+  - Optional leading **agent cap** like `5:gemini,2:claude` (order-agnostic; `gemini`=agy,
+    `claude`=native; aliases `agy`/`native`/`flash`/`pro`/`sonnet`/`opus`; default `4:gemini,2:claude`).
+    It bounds how many agents of each kind run.
+  - Examples: `/team scaffold a CRUD API, write its SQL, and design the data model` →
+    several agy agents (scaffold/SQL) + a native agent (data-model design), in parallel.
+    `/team 6:gemini,1:claude build 6 UI components and review them` → 6 agy + 1 native.
+  - **Ultracode:** if the Workflow tool is available, `/team` runs the fan-out as a
+    deterministic dynamic workflow (`workflows/team.mjs`) instead of ad-hoc parallel calls.
+  - Task text is never shell-interpolated — it's written to a `plan.json` (data) and fed to
+    `run.sh` on stdin, so it's injection-safe.
 - **`/multi-model-team:route-test <task>`** — dry-run the router. Prints the decision
   (chars, detected types, matched rule, `{backend, model, tier}`). No backend call. Tuning
   tool.

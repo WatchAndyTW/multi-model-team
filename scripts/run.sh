@@ -52,12 +52,14 @@ import sys, json, shlex
 try:
     d = json.load(sys.stdin)
 except Exception:
-    d = {}
+    sys.exit(1)   # emit nothing -> the safe native defaults above survive (fail closed)
 for k in ("backend", "model", "tier", "rule"):
     print("D_%s=%s" % (k, shlex.quote(str(d.get(k, "")))))
 print("D_native=%s" % ("1" if d.get("native") else "0"))
 ')"
 fi
+# Belt-and-suspenders: a parsed-but-empty backend must never fail open to agy.
+[ -n "$D_backend" ] || { D_backend="native"; D_native=1; }
 
 # ---- 2. Load backend config + init state ----------------------------------
 if [ -n "$PY" ]; then
@@ -149,5 +151,7 @@ for entry in "${CHAIN[@]}"; do
 done
 
 # ---- 5. Everything exhausted -> guaranteed native fallback ------------------
-native_sentinel "${MMT_DEFAULT_FALLBACK#native:}" "$D_rule" "all backends exhausted"
+# Default the roster var so an unloaded/!malformed roster (set -u) can't abort here.
+_df="${MMT_DEFAULT_FALLBACK:-native:sonnet}"
+native_sentinel "${_df#native:}" "$D_rule" "all backends exhausted"
 exit 0
