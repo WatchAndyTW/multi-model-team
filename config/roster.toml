@@ -1,0 +1,125 @@
+# multi-model-team — routing + backend config.
+# First-match-wins routing; order encodes priority (OPUS hard-line rules sit on top).
+# Model names are the EXACT `agy models` display strings (see PROBES.md).
+
+[defaults]
+preset         = "balanced"          # budget | balanced | premium  (biases tier)
+fallback       = "native:sonnet"     # final hop when CLI options exhausted
+# When the preferred backend reports quota exhaustion, try these in order.
+quota_fallback = ["agy", "native:sonnet"]
+
+[backends.agy]
+cmd          = "agy"
+oneshot_flag = "--print"
+model_flag   = "--model"
+extra        = ["--dangerously-skip-permissions", "--print-timeout", "5m"]
+# Real model names confirmed against `agy models` on this machine.
+models       = { cheap = "Gemini 3.5 Flash (Low)", standard = "Gemini 3.1 Pro (Low)" }
+health       = "--version"
+list_models  = "models"
+add_dir_flag = "--add-dir"
+sandbox_flag = "--sandbox"
+# agy needs a TTY or it prints nothing (PROBES.md). Wrap with winpty when headless.
+use_winpty   = true
+winpty_flags = ["-Xallow-non-tty", "-Xplain"]
+# Binary resolution candidates (bash paths). $MMT_AGY_BIN env overrides all of these.
+bin_candidates = [
+  "$LOCALAPPDATA/agy/bin/agy.exe",
+  "$HOME/AppData/Local/agy/bin/agy.exe",
+]
+# Hard timeout backstop (coreutils `timeout`), kept > --print-timeout (5m).
+hard_timeout = "6m"
+# P2: tune from a real limit error before fully trusting fallback.
+quota_patterns   = ["quota", "rate limit", "resource_exhausted", "429",
+                    "exceeded your current quota", "insufficient", "out of credits",
+                    "usage limit", "too many requests"]
+quota_exit_codes = []                # fill once a real exit code is observed
+
+# ============================ HARD LINE: OPUS ============================
+# RE / injection / binary / systems-hard. ALWAYS Claude Opus, regardless of size.
+# Checked FIRST so nothing below can accidentally offload these.
+[[route]]
+name    = "re-injection-heavy"
+when    = { type = ["il2cpp", "protobuf-re", "disasm", "decompile", "vmprotect",
+                    "binary", "ffi", "unsafe", "exploit", "hooking", "injection",
+                    "dll-inject", "detours", "minhook", "shellcode", "kernel",
+                    "memory-patch", "anti-debug", "packer", "manual-map"] }
+backend = "native"
+tier    = "opus"
+
+# Deep systems / concurrency / agentic / architecture — judgment-critical, not commodity.
+[[route]]
+name    = "systems-complex"
+when    = { type = ["architecture", "agentic", "concurrency", "async-design",
+                    "lock-free", "kcp", "protocol-design", "debug-hard",
+                    "perf-critical", "proc-macro"] }
+backend = "native"
+tier    = "opus"
+
+# ============================ AGY: offloadable ============================
+# Gemini's categorical edges (Claude can't / trails). Highest-confidence offload.
+[[route]]
+name    = "multimodal"
+when    = { type = ["video", "audio", "watch", "transcribe-av", "image-heavy"] }
+backend = "agy"
+tier    = "standard"
+
+# ============================ SONNET: middle ============================
+# Code needing judgment / your codebase's context / hard to verify at a glance, but
+# NOT systems-hard. Checked BEFORE the commodity agy rules (but AFTER multimodal, which
+# is Gemini-exclusive): a task that carries a judgment signal — refactor, bugfix,
+# integration, etc. — must go to Sonnet even when it also mentions a commodity noun like
+# a button/script/config. ("When uncertain between agy and sonnet, prefer sonnet.")
+[[route]]
+name    = "judgment-coding"
+when    = { type = ["refactor", "integration", "bugfix", "api-design",
+                    "state-management", "data-model", "migration",
+                    "review", "production-logic", "edge-cases"] }
+backend = "native"
+tier    = "sonnet"
+
+# ============================ AGY: offloadable (commodity) ============================
+# NOTE: bulk-ingest is intentionally ordered BEFORE grounded-research. Both match
+# summarize/extract/ingest/scan, and first-match-wins — so the cheap large-input path
+# must be checked first, or a 30k-char dump would match grounded-research (standard)
+# and never reach the cheap tier. (Deviation from the plan's listed order, on purpose.)
+[[route]]
+name    = "bulk-ingest"
+when    = { min_chars = 20000, type = ["summarize", "extract", "ingest", "scan"] }
+backend = "agy"
+tier    = "cheap"
+
+[[route]]
+name    = "grounded-research"
+when    = { type = ["websearch", "research-synth", "summarize", "extract",
+                    "docs", "ingest", "scan"] }
+backend = "agy"
+tier    = "standard"
+
+# Standard, verifiable coding — most everyday code work. If a wrong result is
+# obvious at a glance, agy handles it.
+[[route]]
+name    = "standard-coding"
+when    = { type = ["frontend", "react-component", "css", "html", "ui",
+                    "svg", "animation", "3d", "asset-gen", "mockup",
+                    "boilerplate", "scaffold", "crud", "rest-endpoint",
+                    "script", "cli-tool", "glue-code", "data-transform",
+                    "sql-query", "regex", "config-file", "dockerfile",
+                    "rename", "format", "codegen", "unit-test", "fixture"] }
+backend = "agy"
+tier    = "standard"
+
+# Cheap/fast trivia — tiny, throwaway, zero-judgment.
+[[route]]
+name    = "trivial"
+when    = { type = ["quick-email", "rename", "format", "one-liner",
+                    "explain-snippet"], max_chars = 4000 }
+backend = "agy"
+tier    = "cheap"
+
+# Default when UNCLASSIFIED — prefer sonnet (safe middle), never agy on a guess.
+[[route]]
+name    = "catch-all-safe"
+when    = {}
+backend = "native"
+tier    = "sonnet"

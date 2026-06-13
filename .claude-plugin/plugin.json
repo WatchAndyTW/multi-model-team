@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "multi-model-team",
+  "displayName": "Multi-Model Team",
+  "version": "0.1.0",
+  "description": "Delegates token-heavy, self-contained tasks to a local pre-authed agy (Gemini) CLI, choosing backend/model by task size and type, with credit-exhaustion fallback to native Claude and a glanceable statusline HUD.",
+  "author": {
+    "name": "WatchAndyTW",
+    "email": "watchandytw@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": ["delegation", "gemini", "agy", "routing", "multi-model", "cost", "statusline"]
+}

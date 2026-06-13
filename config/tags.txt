@@ -1,0 +1,105 @@
+# Type classifier for score.sh — tuning needs no code edits, just edit this file.
+# Format:  <type> <space> <extended-regex to end of line>
+# - <type> is a single token (matches the type names used in roster.toml [[route]] rules).
+# - The rest of the line is an ERE matched case-insensitively against the task text.
+# - A type may appear on multiple lines (any line matching emits the type).
+# - Blank lines and lines starting with # are ignored.
+#
+# Creation-gated types (component/css/scaffold/...) require a "make new X" verb so that
+# "refactor the React component" stays Sonnet (judgment) instead of leaking to agy.
+
+# ============================ OPUS: RE / injection / binary ============================
+il2cpp         il2 ?cpp
+protobuf-re    (protobuf|proto).{0,20}(reverse|re-?eng|dump|decode|definition)|reverse.{0,20}protobuf
+disasm         disassembl|disasm|x64dbg|\bida\b|ghidra|cutter
+decompile      decompil
+vmprotect      vmprotect|themida|denuvo|virtuali(z|s)ed code|code virtuali
+binary         reverse[- ]?engineer|rever(se|sing).{0,20}(binary|exe|dll|game|app)|\bbinary\b.{0,20}(exe|dll|dump|disassembl|reverse|patch|blob)|(analy(z|s)e|inspect|patch|dump|reverse) the binary
+ffi            \bffi\b|foreign function|p/?invoke|pinvoke|extern \"c\"|\bctypes\b|marshal
+unsafe         \bunsafe\b|raw pointer|pointer arithmetic|transmute
+exploit        exploit|rop chain|\bcve\b|buffer overflow|use[- ]after[- ]free|heap spray
+hooking        detour|minhook|trampoline|iat hook|inline hook|function hook|hook(ing|ed)? (the |into )?(function|api|render|process|game|call|address|syscall)
+injection      (code|dll|process|shellcode|payload|library|memory|remote) inject(ion|ing|ed)?|inject(ing|ed|ion)?.{0,20}(into (the )?(process|memory|remote|target)|payload|shellcode)
+dll-inject     dll inject|inject.{0,15}dll|reflective (dll|load)|loadlibrary inject
+detours        \bdetours\b
+minhook        minhook
+shellcode      shellcode
+kernel         kernel (driver|mode)|ring ?0|\bwdm\b|\bkmdf\b
+memory-patch   memory patch|patch.{0,15}memory|writeprocessmemory|nop out|byte patch|memory edit
+anti-debug     anti[- ]?debug|isdebuggerpresent|debugger detect
+packer         \bpacker\b|unpack.{0,15}(exe|binary|malware)|\bupx\b
+manual-map     manual[- ]?map
+
+# ============================ OPUS: systems-complex ============================
+architecture     architect(ure|ing)?|system design|design the system|high[- ]level design
+agentic          agentic|agent (loop|framework|orchestrat)|multi[- ]agent|tool[- ]calling loop
+concurrency      concurren(t|cy)|race condition|data race|thread[- ]safe|threading model|\bmutex\b|semaphore
+async-design     async (design|architecture|runtime)|event loop design|future.{0,10}design
+lock-free        lock[- ]?free|wait[- ]?free|\batomics?\b|cas loop|compare[- ]and[- ]swap
+kcp              \bkcp\b|reliable udp|congestion control
+protocol-design  protocol design|design.{0,15}protocol|wire format|handshake design
+debug-hard       heisenbug|hard[- ]to[- ]reproduce|intermittent (crash|bug)|memory corruption|deadlock
+perf-critical    perf(ormance)?[- ]critical|hot path|low[- ]latency|\bsimd\b|cache[- ]line|optimi(z|s)e.{0,20}(latency|throughput)
+proc-macro       proc[- ]?macro|procedural macro|derive macro
+
+# ============================ AGY: multimodal ============================
+video          \bvideo\b|\bmp4\b|youtube|\bfootage\b|\bclip\b
+audio          \baudio\b|\bmp3\b|\bwav\b|podcast|voice (memo|note)
+watch          watch (the|this|a)
+transcribe-av  transcri(be|ption|pt)
+image-heavy    \bimages?\b|screenshots?|\bphotos?\b|\bocr\b|analy(z|s)e.{0,15}(image|photo|diagram)
+
+# ============================ AGY: grounded-research ============================
+websearch      web ?search|search the (web|internet)|\bgoogle\b|look up online|find online
+research-synth research|synthesi(z|s)e|literature|gather (info|sources)|competitive analysis
+summarize      summari(z|s)e|summary of|\btl;?dr\b|key points|gist of
+extract        extract.{0,25}(data|info|text|table|json|csv|entities|fields|values|content|from (the )?(doc|file|log|page|pdf|text))|pull out|scrape|harvest (data|info)
+docs           \bdocs?\b|documentation|api reference|read the manual
+ingest         ingest|read (through|all of)|digest (the|this)
+scan           \bscan\b|\bskim\b|go through (the|this|all)
+
+# ============================ AGY: standard-coding ============================
+frontend       front[- ]?end|landing page|web ?page
+react-component (creat|build|make|writ|add|new|generat|scaffold|implement).{0,40}(react|component|jsx|tsx|\bwidget\b)
+css            (creat|build|make|writ|add|style|design|generat).{0,30}(css|stylesheet|tailwind)|\bcss\b
+html           \bhtml\b|markup|web form
+ui             \bui\b|user interface|\bbutton\b|\bmodal\b|dropdown|navbar|\blayout\b
+svg            \bsvg\b|vector (graphic|icon)|icon set
+animation      animat(e|ion)|\btransition\b|keyframe|\bgsap\b|framer motion
+3d             \b3d\b|three\.?js|webgl|\bshader\b|\bmesh\b
+asset-gen      \basset\b|\bsprite\b|placeholder (image|data)|favicon
+mockup         mock ?up|wireframe|prototype (ui|page)
+boilerplate    boilerplate|starter (code|template)|skeleton (code|project)
+scaffold       scaffold|bootstrap (a|the|project)|set up (a|the) project|project structure
+crud           \bcrud\b|create read update delete
+rest-endpoint  (rest|http|api) endpoint|route handler|express route|fastapi route|flask route
+script         \bscript\b|shell script|bash script|powershell script|automation script
+cli-tool       \bcli\b|command[- ]line (tool|app|utility)|argparse|cobra command
+glue-code      glue code|wire (up|together)|connect the two|integration script
+data-transform transform (the )?data|convert (json|csv|xml|yaml)|reshape|\betl\b
+sql-query      sql query|select .{0,40} from |write (a |the )?query|join the tables
+regex          regex|regular expression
+config-file    (creat|writ|add|generat|make|set up|need|want|scaffold).{0,25}(config(uration)?( file)?|\.env\b|yaml|toml|\bini\b|settings file)|a config file|new config
+dockerfile     dockerfile|docker[- ]?compose|containeri(z|s)e
+rename         rename|renaming
+format         reformat|prettier|fix (the )?indentation|lint fix|run the formatter
+codegen        code ?gen(eration)?|generate (the )?code
+unit-test      unit test|write tests?|test cases?|\bjest\b|\bpytest\b|test coverage
+fixture        fixture|mock data|test data|seed data|sample data
+
+# ============================ AGY: trivial ============================
+quick-email    \bemail\b|draft (a|an) (email|message|note)|reply to
+one-liner      one[- ]?liner|one line of|single line( of)?|quick (snippet|command|one-liner)
+explain-snippet explain (this|the) (snippet|code|function|line)|what does (this|the) (code|function|snippet)
+
+# ============================ SONNET: judgment-coding ============================
+refactor         refactor|restructure|rework|clean up the code|reorgani(z|s)e the code|extract (a )?(method|function|class)
+integration      integrat(e|ion)|hook (it|this) into|wire into the (codebase|app)
+bugfix           \bbug\b|bug ?fix|fix (the )?(bug|issue|error|crash|failure)|root cause|why (is|does|do).{0,30}(fail|break|crash)
+api-design       api design|design (the |an |a )?api|endpoint design|interface design|public api
+state-management state management|\bredux\b|\bzustand\b|global state|state machine
+data-model       data model|schema design|model the (domain|data)|entity (model|design)|\ber diagram\b
+migration        migrat(e|ion)|port (the |from )|upgrade the (version|dependency)
+review           review (this|the|my) (code|pr|change|diff)|code review
+production-logic production (logic|code|path)|business logic|critical (path|logic)
+edge-cases       edge case|corner case|boundary condition|handle all (cases|inputs)

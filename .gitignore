@@ -1,0 +1,17 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# msys/cygwin crash dumps
+*.stackdump
+
+# Claude Code local / harness state
+.claude/
+
+# Runtime HUD state lives in ~/.cache/mmt (outside the repo), but ignore any local copy
+.cache/
+*.tmp
+
+# OS cruft
+Thumbs.db
+.DS_Store

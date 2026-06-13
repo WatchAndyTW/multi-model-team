@@ -1,0 +1,10 @@
+# Normalize all text to LF in the repo and on checkout. Critical for the shell
+# scripts: CRLF line endings break them under bash (\r in the shebang/code).
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
