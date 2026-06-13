@@ -118,9 +118,8 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 
 ## /team — multi-model team pipeline (v0.3)
 
-`/team [N:gemini,M:claude] <task>` runs a task through a pipeline **referenced from
-oh-my-claudecode's team mode** (plan → exec → verify → fix loop, per-role provider routing,
-stage handoffs) but rebuilt for **our model dispatching**: the "provider per role" is the
+`/team [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
+pipeline built for **our model dispatching**: the "provider per role" is the
 **agy (Gemini)** vs **native (Claude)** backend split, chosen per subtask. The stages are
 **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**. Flow
 (in `commands/team.md`):

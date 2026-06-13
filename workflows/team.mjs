@@ -11,10 +11,9 @@ export const meta = {
 }
 
 // =============================================================================
-// mmt-team — referenced from oh-my-claudecode's team mode (team-plan -> team-exec
-// -> team-verify -> team-fix loop, per-role provider routing, stage handoffs),
-// rebuilt for THIS plugin's model dispatching: the "provider per role" is our
-// agy(Gemini)-vs-native(Claude) backend split, resolved per subtask at plan time.
+// mmt-team — a staged model-dispatch pipeline: plan -> exec -> verify -> fix loop,
+// with per-subtask provider routing and stage handoffs. The "provider per role" is
+// our agy(Gemini)-vs-native(Claude) backend split, resolved per subtask at plan time.
 //
 // Determinism: this script runs under the Workflow runtime, which forbids
 // Date/random APIs (they break resume). Nothing here uses them. Vary-by-index is
@@ -33,7 +32,7 @@ const capsIn = A.caps || {}
 const root = A.pluginRoot || ''
 const G = Math.max(0, Math.min(16, Number(capsIn.gemini ?? 4) || 0))
 const C = Math.max(0, Math.min(16, Number(capsIn.claude ?? 2) || 0))
-// Verify is ON by default (the whole point of referencing OMC's team-verify);
+// Verify is ON by default (the whole point of the verify stage);
 // callers can disable it or tune the bounded fix loop.
 const VERIFY = A.verify === false ? false : true
 const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? 1) || 0))
@@ -92,7 +91,7 @@ const VERIFY_SCHEMA = {
   required: ['pass', 'reason'],
 }
 
-// ---- 1 · Decompose (team-plan) ---------------------------------------------
+// ---- 1 · Decompose ----------------------------------------------------------
 phase('Decompose')
 const plan = await agent(
 `Decompose this task into independent subtasks for a multi-model team, assign each a backend, and wire up dependencies + an acceptance criterion.
@@ -112,7 +111,7 @@ ${task}`,
   { label: 'decompose', phase: 'Decompose', schema: PLAN_SCHEMA }
 )
 
-// ---- normalize + resolve the routing snapshot (resolved once, like OMC) -----
+// ---- normalize + resolve the routing snapshot (resolved once) ---------------
 let raw = ((plan && plan.subtasks) || []).filter((s) => s && s.task && String(s.task).trim())
 
 // Coerce tier per backend so a forced agy decision never carries a tier run.sh can't map.
@@ -162,7 +161,7 @@ log(`plan: ${kept.filter((s) => s.backend === 'agy').length} agy + ${kept.filter
 // An agy subtask is RELAYED to the local agy CLI through run.sh (forced decision so
 // routing matches the plan). The relay agent returns run.sh's stdout verbatim; only
 // on a native-handoff sentinel (agy unavailable/exhausted) does it solve in-context —
-// this is OMC's "loud fallback when a provider CLI is missing", our flavor.
+// this is our "loud fallback when a provider CLI is missing".
 function dispatchAgy(text, tier, label, ph) {
   return agent(
 `You are a relay — do NOT solve the subtask yourself unless told to. Delegate it to the agy (Gemini) backend and return ONLY its output.
@@ -190,7 +189,7 @@ function dispatch(s, text, ph) {
 }
 
 // Stage-handoff: a dependent subtask is given its upstream deps' verified results as
-// context (OMC carries decisions forward between stages; we carry concrete outputs).
+// context (carry concrete upstream outputs forward between stages).
 function withContext(s, ctx) {
   const deps = (s.deps || []).filter((l) => ctx[l] != null)
   if (!deps.length) return s.task
@@ -198,7 +197,7 @@ function withContext(s, ctx) {
   return `${s.task}\n\n--- CONTEXT FROM UPSTREAM SUBTASKS (already completed) ---\n${blocks}`
 }
 
-// ---- verify (team-verify) ---------------------------------------------------
+// ---- verify -----------------------------------------------------------------
 async function verifyResult(s, result) {
   if (!VERIFY) return { pass: true, reason: 'verify disabled', fix_hint: '' }
   const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
@@ -251,7 +250,7 @@ Produce a corrected, complete result.`
 // ---- 2 · Dispatch in dependency-ordered waves -------------------------------
 // A wave = the set of subtasks whose deps are all complete. Each wave runs in
 // parallel (a barrier is correct here: a dependent cannot start before its dep
-// finishes). This is our team-exec, dependency-aware.
+// finishes). This is the dependency-aware exec stage.
 phase('Dispatch')
 const ctx = {}            // label -> final result text (fed to dependents)
 const records = []

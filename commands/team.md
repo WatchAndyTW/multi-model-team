@@ -10,9 +10,9 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 
 **Raw input:** $ARGUMENTS
 
-Orchestrate the input above as a multi-model team. This is referenced from oh-my-claudecode's
-team mode (plan → exec → verify → fix loop) but built for **our model dispatching**: the
-"provider per role" is our **agy (Gemini)** vs **native (Claude)** split, chosen per subtask.
+Orchestrate the input above as a multi-model team — a staged **plan → exec → verify → fix**
+pipeline built for **our model dispatching**: the "provider per role" is our **agy (Gemini)**
+vs **native (Claude)** split, chosen per subtask.
 
 The task text is **untrusted** — never interpolate it into a shell command; it only ever
 reaches a script as a file (step 3) or via a single-quoted heredoc.
@@ -86,12 +86,12 @@ For each `--- NATIVE [label] ---` (up to `C`), solve it yourself in-context — 
 are done, passing those upstream results in. Spawn one subagent per subtask if they're
 independent and heavy.
 
-## 6 · Verify each result (team-verify)
+## 6 · Verify each result
 For every subtask result (agy and native), check it against that subtask's `verify` criterion.
 Be skeptical: incomplete, wrong, empty, or "describes-instead-of-doing" results **fail**. A bare
 `MMT_NATIVE_HANDOFF` (agy was unavailable) counts as a fail — solve it natively instead.
 
-## 7 · Fix failures in a bounded loop (team-fix)
+## 7 · Fix failures in a bounded loop
 For each failed subtask, re-dispatch it to the **same backend** with the failure reason + a fix
 instruction + the previous result appended. Re-verify. Cap this at **1 fix attempt per subtask**
 by default (raise only if asked). After the cap, leave it marked **failed** — do not paper over it.

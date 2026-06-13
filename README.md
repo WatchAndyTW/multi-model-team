@@ -84,9 +84,9 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 ### Commands
 
 - **`/multi-model-team:team [N:gemini,M:claude] <task>`** — **multi-model team pipeline.**
-  Referenced from oh-my-claudecode's team mode (plan → exec → verify → fix loop), rebuilt for
-  *our* model dispatching: the "provider per role" is the **agy (Gemini)** vs **native (Claude)**
-  split, chosen per subtask. Claude decomposes the task, **dispatches** commodity subtasks to
+  A staged **plan → exec → verify → fix** pipeline for *our* model dispatching: the "provider per
+  role" is the **agy (Gemini)** vs **native (Claude)** split, chosen per subtask. Claude
+  decomposes the task, **dispatches** commodity subtasks to
   **parallel agy** agents and judgment/hard-line ones to **native Claude**, **verifies** each
   result against an acceptance criterion, **fixes** failures in a bounded loop, then **synthesizes**.
   - **Dependency-aware:** subtasks declare `deps`; dependents run *after* their upstreams and
