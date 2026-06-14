@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# team.sh — parallel agy fan-out for /team.
+# team.sh — parallel CLI-backend fan-out for /team.
 #
 #   team.sh --plan <plan.json> [--gemini-cap N] [--root <pluginRoot>]
 #
-# Runs the AGY (Gemini) subtasks from plan.json through run.sh IN PARALLEL (bounded by
-# --gemini-cap), printing each result in a delimited block. NATIVE subtasks are NOT run
-# here — they're listed so the caller (Claude) solves them in-context / via subagents.
+# Runs the CLI-backend subtasks from plan.json (AGY, CODEX, … — all equal) through run.sh IN
+# PARALLEL (bounded by --gemini-cap), printing each result in a delimited block. NATIVE subtasks
+# are NOT run here — they're listed so the caller (Claude) solves them in-context / via subagents.
 #
-# Injection-safe: subtask text never touches a shell. team_plan.py writes each task to a
-# file; run.sh reads it on stdin (forced agy decision so routing matches the plan).
+# Injection-safe: subtask text never touches a shell. team_plan.py writes each task to a file;
+# run.sh reads it on stdin (forced decision carrying the subtask's OWN backend, never hardcoded).
 set -uo pipefail
 
 MMT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,25 +52,29 @@ fi
 
 RUN="$MMT_ROOT/scripts/run.sh"
 
-agy_idx=() agy_label=() agy_tier=()
+# CLI subtasks (any backend except NATIVE) dispatch in parallel; NATIVE subtasks are listed only.
+cli_idx=() cli_label=() cli_tier=() cli_be=()
 nat_idx=() nat_label=() nat_tier=()
 while IFS=$'\t' read -r be idx label tier _file; do
   [ -n "${be:-}" ] || continue
-  case "$be" in AGY|NATIVE) : ;; *) continue ;; esac     # only known backends
   case "$idx" in ''|*[!0-9]*) continue ;; esac           # idx must be a plain integer
-  if [ "$be" = "AGY" ]; then
-    agy_idx+=("$idx"); agy_label+=("$label"); agy_tier+=("$tier")
-  else
-    nat_idx+=("$idx"); nat_label+=("$label"); nat_tier+=("$tier")
-  fi
+  case "$be" in
+    NATIVE)    nat_idx+=("$idx"); nat_label+=("$label"); nat_tier+=("$tier") ;;
+    AGY|CODEX) cli_idx+=("$idx"); cli_label+=("$label"); cli_tier+=("$tier"); cli_be+=("$be") ;;
+    *) continue ;;                                        # unknown token -> skip
+  esac
 done <<< "$MANIFEST"
 
-n=${#agy_idx[@]}
+n=${#cli_idx[@]}
 
-# Dispatch AGY subtasks in parallel, throttled to GCAP concurrent run.sh processes.
+# Lowercase a manifest backend token for the run.sh decision (AGY->agy, CODEX->codex).
+be_lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+# Dispatch CLI subtasks in parallel, throttled to GCAP concurrent run.sh processes. Each carries
+# its OWN backend (agy, codex, …) in the forced decision — no backend is hardcoded.
 launch() {  # array-index i
-  local i="$1" idx="${agy_idx[$1]}"
-  local dec="{\"backend\":\"agy\",\"model\":\"\",\"tier\":\"${agy_tier[$i]}\",\"rule\":\"team\",\"native\":false}"
+  local i="$1" idx="${cli_idx[$1]}" be; be="$(be_lower "${cli_be[$i]}")"
+  local dec="{\"backend\":\"${be}\",\"model\":\"\",\"tier\":\"${cli_tier[$i]}\",\"rule\":\"team\",\"native\":false}"
   bash "$RUN" --decision "$dec" < "$WORK/$idx.task" > "$WORK/$idx.out" 2> "$WORK/$idx.err" &
 }
 for (( i=0; i<n; i++ )); do
@@ -91,18 +95,18 @@ err_tail() {
 }
 
 # Emit results.
-printf '===MMT-TEAM dispatch: %d agy (cap=%d), %d native ===\n' "$n" "$GCAP" "${#nat_idx[@]}"
+printf '===MMT-TEAM dispatch: %d cli (cap=%d), %d native ===\n' "$n" "$GCAP" "${#nat_idx[@]}"
 for (( i=0; i<n; i++ )); do
-  idx="${agy_idx[$i]}"
+  idx="${cli_idx[$i]}"; be="${cli_be[$i]}"
   out="$WORK/$idx.out"
   if [ -s "$out" ] && IFS= read -r first < "$out" && [ "${first#MMT_NATIVE_HANDOFF}" != "$first" ]; then
-    # agy was unavailable/exhausted and run.sh punted to native — label it honestly.
-    printf '\n--- AGY [%s] (tier=%s) -> NATIVE HANDOFF (agy unavailable; solve in-context) ---\n' \
-      "${agy_label[$i]}" "${agy_tier[$i]}"
+    # the CLI was unavailable/exhausted and run.sh punted to native — label it honestly.
+    printf '\n--- %s [%s] (tier=%s) -> NATIVE HANDOFF (%s unavailable; solve in-context) ---\n' \
+      "$be" "${cli_label[$i]}" "${cli_tier[$i]}" "$(be_lower "$be")"
     cat "$out" 2>/dev/null
     continue
   fi
-  printf '\n--- AGY [%s] (tier=%s) ---\n' "${agy_label[$i]}" "${agy_tier[$i]}"
+  printf '\n--- %s [%s] (tier=%s) ---\n' "$be" "${cli_label[$i]}" "${cli_tier[$i]}"
   cat "$out" 2>/dev/null
   if [ ! -s "$out" ]; then
     e="$(err_tail "$WORK/$idx.err")"

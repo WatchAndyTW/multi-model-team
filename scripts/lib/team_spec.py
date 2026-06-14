@@ -27,6 +27,7 @@ import re
 import sys
 
 GEMINI_ALIASES = {"gemini", "agy", "flash", "pro", "google"}
+CODEX_ALIASES = {"codex", "chatgpt", "openai", "gpt"}
 CLAUDE_ALIASES = {"claude", "native", "sonnet", "opus", "anthropic"}
 
 
@@ -39,6 +40,7 @@ def _env_int(name, default):
 
 
 DEFAULT_GEMINI = _env_int("MMT_TEAM_GEMINI_DEFAULT", 4)
+DEFAULT_CODEX = _env_int("MMT_TEAM_CODEX_DEFAULT", 2)
 DEFAULT_CLAUDE = _env_int("MMT_TEAM_CLAUDE_DEFAULT", 2)
 MAX_PER_BACKEND = 16   # concurrency ceiling; keep runaways bounded
 
@@ -55,6 +57,8 @@ def _normalize(name):
     name = name.strip().lower()
     if name in GEMINI_ALIASES:
         return "gemini"
+    if name in CODEX_ALIASES:
+        return "codex"
     if name in CLAUDE_ALIASES:
         return "claude"
     return None
@@ -63,8 +67,8 @@ def _normalize(name):
 def parse(spec):
     spec = (spec or "").strip()
     if not spec:
-        return {"gemini": DEFAULT_GEMINI, "claude": DEFAULT_CLAUDE,
-                "total": DEFAULT_GEMINI + DEFAULT_CLAUDE, "source": "default", "note": ""}
+        return {"gemini": DEFAULT_GEMINI, "codex": DEFAULT_CODEX, "claude": DEFAULT_CLAUDE,
+                "total": DEFAULT_GEMINI + DEFAULT_CODEX + DEFAULT_CLAUDE, "source": "default", "note": ""}
 
     caps = {}
     notes = []
@@ -88,13 +92,14 @@ def parse(spec):
         caps[_normalize(names[0])] = caps.get(_normalize(names[0]), 0) + _clamp(nums[0])
 
     if not caps:
-        return {"gemini": DEFAULT_GEMINI, "claude": DEFAULT_CLAUDE,
-                "total": DEFAULT_GEMINI + DEFAULT_CLAUDE, "source": "default",
+        return {"gemini": DEFAULT_GEMINI, "codex": DEFAULT_CODEX, "claude": DEFAULT_CLAUDE,
+                "total": DEFAULT_GEMINI + DEFAULT_CODEX + DEFAULT_CLAUDE, "source": "default",
                 "note": "; ".join(notes) or "no usable pairs in spec"}
 
     gemini = _clamp(caps.get("gemini", 0))
+    codex = _clamp(caps.get("codex", 0))
     claude = _clamp(caps.get("claude", 0))
-    return {"gemini": gemini, "claude": claude, "total": gemini + claude,
+    return {"gemini": gemini, "codex": codex, "claude": claude, "total": gemini + codex + claude,
             "source": "spec", "note": "; ".join(notes)}
 
 
@@ -108,7 +113,7 @@ def split(text):
     NOT misread as a spec).
     """
     text = text or ""
-    backends = "|".join(re.escape(b) for b in sorted(GEMINI_ALIASES | CLAUDE_ALIASES, key=len, reverse=True))
+    backends = "|".join(re.escape(b) for b in sorted(GEMINI_ALIASES | CODEX_ALIASES | CLAUDE_ALIASES, key=len, reverse=True))
     pair = rf"(?:\d+\s*:\s*(?:{backends})|(?:{backends})\s*:\s*\d+)"
     spec_re = rf"(?:{pair})(?:\s*,\s*(?:{pair}))*"
     m = re.match(rf"^\s*({spec_re})\s+(.*)$", text, re.IGNORECASE | re.DOTALL)

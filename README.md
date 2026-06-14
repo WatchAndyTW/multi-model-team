@@ -3,10 +3,10 @@
 A Claude Code plugin that lets Claude delegate token-heavy, self-contained tasks
 to local pre-authed CLI backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI) —
 choosing the backend/model dynamically by task size and type, with credit-exhaustion fallback
-through the backend chain to native Claude, and a glanceable statusline HUD. `/team` fans a
-task out across parallel agents — **agy** dispatches commodity subtasks, **native Claude** handles
-judgment/hard-line work and synthesizes, and **codex** verifies each result — with per-backend
-caps and an Ultracode dynamic-workflow path.
+through the backend chain to native Claude, and a glanceable statusline HUD. `/team` fans a task out
+across parallel agents — **agy, codex and native Claude are equal, configurable tools**: the
+decomposer assigns each subtask to its best-fit backend and any backend can be the verifier (defaults:
+codex verifies) — with per-backend caps and an Ultracode dynamic-workflow path.
 
 The core idea: **offload commodity work** (new UI/components, scaffolding, CRUD, scripts,
 SQL, configs, unit tests, web-research/doc-summarization, bulk ingestion) to a local CLI
@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (105/105, including live agy + codex smoke tests). Active
+`tests/run_tests.sh` is green (125/125, including live agy + codex smoke tests). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -101,12 +101,13 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 ### Commands
 
 - **`/multi-model-team:team [N:gemini,M:claude] <task>`** — **multi-model team pipeline.**
-  A staged **plan → exec → verify → fix** pipeline for *our* model dispatching: the "provider per
-  role" is **native Claude** for planning/synthesis, **agy (Gemini)** for commodity dispatch, and
-  **codex** for verification. Claude decomposes the task, **dispatches** commodity subtasks to
-  **parallel agy** agents and judgment/hard-line ones to **native Claude**, **verifies** each
-  result against an acceptance criterion **on codex**, **fixes** failures in a bounded loop, then
-  **synthesizes**.
+  A staged **plan → exec → verify → fix** pipeline for *our* model dispatching: **agy, codex and
+  native Claude are equal, configurable tools** — the decomposer assigns each subtask to its best-fit
+  backend and any backend can be the verifier (defaults — agy/codex/native eligible, codex verifies —
+  live in the roster `team` section and are overridable per invocation). Claude decomposes the task,
+  **dispatches** each subtask **to its assigned backend** (CLI backends in parallel, judgment/hard-line
+  on native Claude), **verifies** each result against an acceptance criterion on the configured
+  verifier, **fixes** failures in a bounded loop, then **synthesizes**.
   - **Dependency-aware:** subtasks declare `deps`; dependents run *after* their upstreams and
     receive those results as context (dispatch proceeds in waves, not one flat batch).
   - **Verify → fix:** every result is reviewed by **codex** (the OpenAI Codex CLI, scoped to code
@@ -217,6 +218,12 @@ All config lives in one JSON file, **`config/roster.json`** — five sections, w
   `python scripts/lib/gen_agents.py`** — it regenerates `agents/*.md` from the JSON (and removes
   the `.md` of any agent you disabled, so Claude Code stops surfacing it).
 - **`routes`** — first-match-wins routing rules. Edit to change *where a type routes*.
+- **`team`** — the `/team` pipeline roles + defaults. **native, agy and codex are equal** — any can
+  be assigned to any subtask and any can be the verifier: `dispatch_backends` (the eligible set the
+  decomposer picks from), `verifier` (review backend, default codex; `"native"` = Claude judgment),
+  `caps` (per-backend), `tier_models` (tier→model map), `verify`, `max_fix_loops`, `relay_model`. All
+  overridable per `/team` invocation (cap spec `N:gemini,M:codex,K:claude`, or an in-session "verify
+  with X" / "only use Y and Z"). Precedence: built-in default < `team` < invocation.
 - **`defaults`** / **`proactive`** — preset + fallback chain, and the proactive-nudge config.
 - **`config/tags.txt`** (separate flat file) — keyword→type classification (one `type regex`
   per line). Edit to change *what type* a task is detected as.

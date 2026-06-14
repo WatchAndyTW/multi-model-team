@@ -5,15 +5,16 @@ Usage:
     team_plan.py <plan.json> <workdir>
 
 plan.json is a JSON array of subtasks:
-  [{"label": "build-ui", "task": "<text>", "backend": "agy"|"native", "tier": "standard"}]
+  [{"label": "build-ui", "task": "<text>", "backend": "agy"|"codex"|"native", "tier": "standard"}]
 
 For each subtask this writes the raw task text to <workdir>/<idx>.task (so the task is
 NEVER passed through a shell — team.sh feeds the file to run.sh on stdin, injection-safe),
 and prints one manifest line per subtask to stdout:
 
-  <AGY|NATIVE>\t<idx>\t<label>\t<tier>\t<workdir>/<idx>.task
+  <AGY|CODEX|NATIVE>\t<idx>\t<label>\t<tier>\t<workdir>/<idx>.task
 
-backend is normalized: gemini/agy/flash/pro -> AGY; claude/native/sonnet/opus -> NATIVE.
+backend is normalized: gemini/agy -> AGY; codex/chatgpt/openai -> CODEX; claude/native/sonnet/opus
+-> NATIVE. Backends are equal — any CLI backend dispatches via run.sh; NATIVE is solved by Claude.
 Entries missing a task are skipped (noted on stderr). Exit 0 unless the plan is unreadable.
 """
 import json
@@ -22,8 +23,9 @@ import re
 import sys
 
 AGY = {"agy", "gemini", "flash", "pro", "google"}
+CODEX = {"codex", "chatgpt", "openai", "gpt"}
 NATIVE = {"native", "claude", "sonnet", "opus", "anthropic"}
-AGY_TIERS = {"cheap", "standard"}
+CLI_TIERS = {"cheap", "standard"}      # any CLI backend (agy, codex, ...)
 NATIVE_TIERS = {"sonnet", "opus"}
 
 
@@ -32,9 +34,9 @@ def _tier(raw, backend):
     # fixed values reach the TAB/NEWLINE-delimited manifest, so a crafted tier with an
     # embedded \t/\n can never forge an extra manifest row (TSV injection).
     raw = str(raw or "").strip().lower()
-    if backend == "AGY":
-        return raw if raw in AGY_TIERS else "standard"
-    return raw if raw in NATIVE_TIERS else "sonnet"
+    if backend == "NATIVE":
+        return raw if raw in NATIVE_TIERS else "sonnet"
+    return raw if raw in CLI_TIERS else "standard"
 
 
 def _sanitize_label(label, idx):
@@ -46,6 +48,8 @@ def _backend(name):
     name = str(name or "").strip().lower()
     if name in AGY:
         return "AGY"
+    if name in CODEX:
+        return "CODEX"
     if name in NATIVE:
         return "NATIVE"
     return ""

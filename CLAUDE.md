@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 105/105
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 125/125
 (incl. live agy + codex smoke tests). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -134,9 +134,9 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 ## /team — multi-model team pipeline (v0.3)
 
 `/team [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
-pipeline built for **our model dispatching**: the "provider per role" is **native Claude**
-(plan/synthesis), **agy (Gemini)** (commodity subtask dispatch), and **codex** (verification),
-chosen per stage/subtask. The stages are
+pipeline built for **our model dispatching**: **native, agy and codex are equal, configurable tools**
+— the decomposer assigns each subtask to its best-fit backend, native Claude plans/synthesizes, and
+any backend (default codex) verifies. The stages are
 **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**. Flow
 (in `commands/team.md`):
 1. parse the optional cap spec via `scripts/lib/team_spec.py` → `{gemini, claude}` (caps =
@@ -194,7 +194,7 @@ echoed back into the reminder. Tests live under `── Unit: proactive hook` in
 
 ## Config = one JSON file (`config/roster.json`)
 
-All config is JSON (hard cut from TOML). Five top-level sections (`_comment`/`_about`/`_note`
+All config is JSON (hard cut from TOML). Six top-level sections (`_comment`/`_about`/`_note`
 keys are inline docs the parsers ignore):
 
 - **`defaults`** — `preset`, `fallback`, `quota_fallback` (ordered backend chain).
@@ -212,6 +212,12 @@ keys are inline docs the parsers ignore):
   marker objects. Route invariants (Opus hard-line first, multimodal before judgment-coding,
   judgment-coding above the commodity agy rules) are unchanged — just JSON now.
 - **`proactive`** — the UserPromptSubmit nudge config.
+- **`team`** — the `/team` pipeline roles + defaults, emitted as JSON by `config.py team-config` and
+  passed into `team.mjs` via `args.teamConfig` (the Workflow runtime can't read files itself). **native,
+  agy and codex are EQUAL** — any can be assigned any subtask, any can verify: `dispatch_backends` (the
+  eligible set the decomposer picks from), `verifier` (default codex; `"native"`=Claude), `caps`
+  (per-backend), `tier_models` (tier→model), `verify`, `max_fix_loops`, `relay_model`. Nothing is
+  hardcoded — precedence is built-in default < `team` < per-invocation arg.
 
 **Parser contract:** `config.py <roster.json> {defaults-env|backend-env <name>|proactive-env}`
 emits bash-sourceable vars. `run.sh` loads `defaults-env` once, then `backend-env <name>` per

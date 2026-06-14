@@ -166,6 +166,10 @@ assert_contains "plan: agy line"    "$MAN" "AGY"$'\t'"0"$'\t'"a"
 assert_contains "plan: native line" "$MAN" "NATIVE"$'\t'"1"$'\t'"b"
 assert_eq "plan: empty task skipped" "$(printf '%s\n' "$MAN" | grep -c .)" 2
 assert_eq "plan: task file written"  "$(cat "$PLAND/w/0.task" 2>/dev/null)" "do A"
+# codex is a first-class CLI backend in the non-Ultracode path too (not coerced to native).
+printf '%s' '[{"label":"v","task":"review the diff","backend":"codex","tier":"standard"}]' > "$PLAND/codex.json"
+MANC="$("$PY" "$MMT_ROOT/scripts/lib/team_plan.py" "$PLAND/codex.json" "$PLAND/wc" 2>/dev/null)"
+assert_contains "plan: codex line (not native)" "$MANC" "CODEX"$'\t'"0"$'\t'"v"$'\t'"standard"
 rm -rf "$PLAND"
 
 echo "── Unit: team --split (deterministic boundary) ────────"
@@ -210,16 +214,25 @@ else
 fi
 # Structure: the staged pipeline + verify/fix machinery are present. Verify/Fix are tagged on
 # agents (interleaved per subtask), so they appear as `phase: '...'` opts, not phase() calls.
-for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix" "team-verify" "codexVerify" "gemini:" "codex:verify:" "tierModel"; do
+for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix" "team-verify" "codexVerify" "teamConfig" "dispatchRelay" "backendLabel" "tierModel" ":verify:" "byBackend" "DISPATCH"; do
   if grep -qF "$marker" "$MJS"; then ok "team.mjs has: $marker"; else bad "team.mjs missing: $marker"; fi
 done
 
-echo "── Unit: team.mjs stub harness (DAG+verify+fix) ───────"
-# Run the whole pipeline against stubbed Workflow globals: caps, dependency-ordered waves,
-# upstream-context injection, per-result verify, and one bounded fix loop. No live model.
+echo "── Unit: team.mjs stub harness (equal backends, any role) ───────"
+# Run the pipeline against stubbed Workflow globals with a 3-backend plan (native+agy+codex) under
+# several role configs, to prove backends are EQUAL: codex is a real dispatch target (not verify-only)
+# and any backend (codex / agy / native) can be the verifier. No live model.
 if command -v node >/dev/null 2>&1; then
-  H_OUT="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" 2>&1)"
-  assert_contains "team.mjs harness: pipeline ok" "$H_OUT" HARNESS_OK
+  H1="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" 2>&1)"
+  assert_contains "harness: default pipeline ok"                        "$H1" HARNESS_OK
+  assert_contains "harness: codex is a dispatch backend (not verify-only)" "$H1" "codexDispatch=ok"
+  assert_contains "harness: default verifier=codex"                     "$H1" "verifier=codex"
+  H2="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" '{"verifier":"agy"}' 2>&1)"
+  assert_contains "harness: agy can be the verifier"                    "$H2" "verifier=agy"
+  H3="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" '{"verifier":"native"}' 2>&1)"
+  assert_contains "harness: native can be the verifier"                 "$H3" "verifier=native"
+  H4="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" '{"dispatch_backends":["agy","native"]}' 2>&1)"
+  assert_contains "harness: dispatch set is restrictable"               "$H4" "backends=agy+native"
 else
   ok "team.mjs harness: skipped (node not found)"
 fi
@@ -262,6 +275,23 @@ assert_contains "backend: all disabled -> native handoff" \
 assert_contains "backend: no-invoker kind -> native handoff" \
   "$(MMT_ROSTER="$RTMP/oc.json" bash "$RUN" "Write a SQL query to list users" 2>/dev/null)" "MMT_NATIVE_HANDOFF"
 rm -rf "$RTMP"
+
+echo "── Unit: team config (equal, configurable roles) ──────"
+TC_DEF="$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$CJSON" team-config 2>&1)"
+assert_contains "team-config: default dispatch_backends" "$TC_DEF" '"dispatch_backends": ["agy", "codex", "native"]'
+assert_contains "team-config: default verifier codex"    "$TC_DEF" '"verifier": "codex"'
+assert_contains "team-config: default cap agy 4"         "$TC_DEF" '"agy": 4'
+assert_contains "team-config: default cap codex 2"       "$TC_DEF" '"codex": 2'
+TTMP="$(mktemp -d)"
+# Swap the roles (agy verifies, dispatch set excludes agy) + remap a tier; config.py merges caps.
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d.setdefault('team',{}); d['team']['verifier']='agy'; d['team']['dispatch_backends']=['codex','native']; d['team'].setdefault('caps',{})['codex']=6; d['team'].setdefault('tier_models',{})['standard']='haiku'; print(json.dumps(d))" "$CJSON" > "$TTMP/team.json"
+TC_OV="$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$TTMP/team.json" team-config 2>&1)"
+assert_contains "team-config: override verifier agy"        "$TC_OV" '"verifier": "agy"'
+assert_contains "team-config: override dispatch set"        "$TC_OV" '"dispatch_backends": ["codex", "native"]'
+assert_contains "team-config: override cap codex 6"         "$TC_OV" '"codex": 6'
+assert_contains "team-config: merge keeps cap native 2"     "$TC_OV" '"native": 2'
+assert_contains "team-config: override tier standard haiku" "$TC_OV" '"standard": "haiku"'
+rm -rf "$TTMP"
 
 echo "── Unit: gen_agents.py (enable/disable -> .md) ────────"
 GTMP="$(mktemp -d)"; mkdir -p "$GTMP/agents"
@@ -306,13 +336,15 @@ if [ "${MMT_LIVE:-0}" = "1" ]; then
 [
   {"label":"sql","task":"Write a Postgres SQL query that counts rows in the orders table. Output only the SQL.","backend":"agy","tier":"standard"},
   {"label":"re","task":"Write a regex matching a hex color like #1a2b3c. Output only the regex.","backend":"agy","tier":"cheap"},
+  {"label":"review","task":"In one sentence, what makes a SQL COUNT(*) query correct?","backend":"codex","tier":"standard"},
   {"label":"judge","task":"Decide if we should shard the database.","backend":"native","tier":"sonnet"}
 ]
 EOF
   TEAM_OUT="$(bash "$MMT_ROOT/scripts/team.sh" --plan "$TPLAN/plan.json" --gemini-cap 4 2>/dev/null)"
-  assert_contains "live team: 2 agy dispatched" "$TEAM_OUT" "2 agy"
-  assert_contains "live team: sql result"       "$(printf '%s' "$TEAM_OUT" | tr a-z A-Z)" SELECT
-  assert_contains "live team: native listed"    "$TEAM_OUT" "NATIVE [judge]"
+  assert_contains "live team: 3 cli dispatched"  "$TEAM_OUT" "3 cli"
+  assert_contains "live team: sql result"        "$(printf '%s' "$TEAM_OUT" | tr a-z A-Z)" SELECT
+  assert_contains "live team: codex is a dispatch backend" "$TEAM_OUT" "CODEX [review]"
+  assert_contains "live team: native listed"     "$TEAM_OUT" "NATIVE [judge]"
   rm -rf "$TPLAN"
 fi
 

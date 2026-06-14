@@ -8,6 +8,17 @@
     "quota_fallback": ["agy", "codex", "native:sonnet"]
   },
 
+  "team": {
+    "_comment": "Roles + defaults for the /team pipeline. native, agy and codex are EQUAL, interchangeable tools — any can be assigned to any subtask and any can be the verifier; nothing is hardcoded. 'dispatch_backends' = the eligible set the decomposer may assign per subtask (native is always available as the judgment/hard-line option; drop a backend here to exclude it). 'verifier' = the backend that reviews each result (any backend name, or 'native' for Claude judgment). 'caps' = default max parallel subtasks per backend (by name). 'tier_models' maps a plan tier to a concrete model so the native model scales with complexity. 'relay_model' = the model the thin relay/verify agents run on. ALL overridable per-invocation (cap spec 'N:gemini,M:codex,K:claude', or in-session 'verify with X' / 'use Y for the front-end'). Precedence: built-in default < this section < per-invocation args.",
+    "dispatch_backends": ["agy", "codex", "native"],
+    "verifier": "codex",
+    "verify": true,
+    "max_fix_loops": 1,
+    "caps": { "agy": 4, "codex": 2, "native": 2 },
+    "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus" },
+    "relay_model": "sonnet"
+  },
+
   "backends": {
     "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in backends.sh ('gemini' (agy) and 'codex' are implemented; 'opencode' is a config stub with no invoker yet, so enabling it simply falls through until an invoker is added).",
 

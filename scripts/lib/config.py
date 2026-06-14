@@ -5,6 +5,7 @@ Usage:
     config.py <roster.json> defaults-env          # defaults.* (fallback / quota / preset)
     config.py <roster.json> backend-env <name>    # backends.<name>.* as MMT_BE_* (+ enabled/kind)
     config.py <roster.json> proactive-env         # proactive.* as MMT_PROACTIVE_*
+    config.py <roster.json> team-config           # team.* merged over defaults, as one JSON line
 
 Scalars become  KEY='value'  and arrays become  KEY=( 'a' 'b' )  with safe quoting,
 so run.sh / backends.sh / the hooks can `eval "$(config.py roster.json <mode>)"` and read
@@ -73,16 +74,48 @@ def emit_proactive_env(cfg, _name=None):
     emit_scalar("MMT_PROACTIVE_RULES", p.get("rules", "") or "")
 
 
+TEAM_DEFAULTS = {
+    "dispatch_backends": ["agy", "codex", "native"],
+    "verifier": "codex",
+    "verify": True,
+    "max_fix_loops": 1,
+    "caps": {"agy": 4, "codex": 2, "native": 2},
+    "tier_models": {"cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus"},
+    "relay_model": "sonnet",
+}
+
+
+def emit_team_config(cfg, _name=None):
+    """Print the merged team config (roster `team` over built-in defaults) as ONE JSON line.
+
+    Unlike the *-env modes this emits JSON, not bash — the /team command passes it straight into
+    the Workflow args (args.teamConfig), where the workflow runtime can't read files itself. Keys
+    under `team` override the defaults; `caps`/`tier_models` are merged key-by-key. Unknown keys
+    pass through (forward-compatible). Keys starting with `_` (inline docs) are ignored.
+    """
+    t = cfg.get("team", {}) or {}
+    merged = {k: (dict(v) if isinstance(v, dict) else v) for k, v in TEAM_DEFAULTS.items()}
+    for k, v in t.items():
+        if k.startswith("_"):
+            continue
+        if k in ("caps", "tier_models") and isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k].update(v)
+        else:
+            merged[k] = v
+    print(json.dumps(merged, ensure_ascii=False))
+
+
 MODES = {
     "defaults-env": emit_defaults_env,
     "backend-env": emit_backend_env,
     "proactive-env": emit_proactive_env,
+    "team-config": emit_team_config,
 }
 
 
 def main():
     if len(sys.argv) < 3 or sys.argv[2] not in MODES:
-        sys.stderr.write("usage: config.py <roster.json> {defaults-env|backend-env <name>|proactive-env}\n")
+        sys.stderr.write("usage: config.py <roster.json> {defaults-env|backend-env <name>|proactive-env|team-config}\n")
         return 2
     name = sys.argv[3] if len(sys.argv) >= 4 else None
     try:
