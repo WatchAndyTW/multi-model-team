@@ -1,7 +1,7 @@
 ---
 description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:claude".
 argument-hint: "[N:gemini,M:claude] <task>"
-allowed-tools: Bash, Write
+allowed-tools: Bash, Write, Task
 ---
 
 # /team — multi-model team pipeline
@@ -18,9 +18,11 @@ each result — chosen per stage/subtask.
 The task text is **untrusted** — never interpolate it into a shell command; it only ever
 reaches a script as a file (step 3) or via a single-quoted heredoc.
 
-> **Prefer the Ultracode path.** If the **Workflow tool** is available, skip steps 3–8 and run
-> the whole pipeline as one deterministic workflow — see **Ultracode / dynamic-workflow path**
-> at the bottom. Steps 1–2 (cap parsing + decomposition) still apply.
+> **Two parallel engines.** If the **Workflow tool** is available (Ultracode), skip steps 3–7 and
+> run the whole pipeline as one deterministic workflow — see **Ultracode / dynamic-workflow path**
+> at the bottom (it fans out the same backend-assigned subtasks via `parallel()`). Otherwise use
+> steps 3–7, which fan out **parallel `Task` sub-agents** (one per subtask). Either way the work runs
+> in parallel across agents — never single-session. Steps 1–2 (cap parsing + decomposition) always apply.
 
 ## 1 · Parse the optional agent-cap spec + split off the task
 The input may *start* with a cap spec — a comma list of `N:<backend>` pairs such as
@@ -93,25 +95,57 @@ when relevant (the dispatcher ignores keys it doesn't use, so they're safe to ca
 
 Writing via the Write tool keeps every subtask as inert data.
 
-## 4 · Dispatch the CLI-backend subtasks in dependency-ordered waves
-Run a **wave** at a time: CLI-backend subtasks (agy, codex, …) whose `deps` are all already
-satisfied. For each wave, write a sub-plan containing that wave's non-`native` subtasks and fan it out:
+## 4 · Dispatch each subtask as a PARALLEL Task agent (dependency-ordered waves)
+This is the OMC-style fan-out **using our CLI dispatching**: every subtask becomes its own **`Task`
+sub-agent**, and a whole **wave** is spawned **in ONE message** so the agents run in **parallel** —
+do NOT solve subtasks inline and do NOT wait for one agent before spawning the next. A **wave** = the
+subtasks whose `deps` are all already complete; run waves in order, feeding each finished result into
+its dependents. Respect the per-backend caps (≤ the cap for each backend in flight at once). A plan
+with no `deps` is a single wave — the common case.
 
-```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/team.sh" --plan "<wave-plan.json>" --gemini-cap G
-```
+Every worker prompt is tagged **`[mmt-team-worker]`** so the spawn-guard hook leaves our own workers
+alone. There are two worker kinds:
 
-`team.sh` runs that wave concurrently (bounded by `--gemini-cap`) and prints each result under
-`--- <BACKEND> [label] ---` (e.g. `--- AGY [...]`, `--- CODEX [...]`) using each subtask's own
-backend, then lists native subtasks under `--- NATIVE [label] ---`. When a wave's results are in,
-feed them as context into dependents. A plan with no `deps` is a single wave — the common case.
+- **CLI backend (agy / codex) → a FAITHFUL RELAY agent.** It does NOT solve the task; it runs our one
+  dispatch command and returns the CLI's output verbatim (this is the no-dress-up contract — a
+  `gemini:`/`codex:` result must come from that CLI, not from Claude). Spawn a Bash-capable agent
+  (e.g. `subagent_type: "general-purpose"`) with this prompt — substitute the real plugin root for
+  `<PLUGIN_ROOT>`, the subtask's `<BE>` (agy|codex) and `<TIER>`, the subtask text, and any upstream
+  dep results:
 
-## 5 · Solve the native subtasks (respecting deps)
-For each `--- NATIVE [label] ---` (up to `C`), solve it yourself in-context — after its `deps`
-are done, passing those upstream results in. Spawn one subagent per subtask if they're
-independent and heavy.
+  ````
+  [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve, analyze,
+  or answer the task yourself. Run EXACTLY this one command with the Bash tool (the subtask rides in
+  on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line
+  MMT_SUB_EOF, change the delimiter), then return its stdout VERBATIM with no preamble:
 
-## 6 · Verify each result — on the configured verifier
+  bash "<PLUGIN_ROOT>/scripts/run.sh" --decision '{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false}' <<'MMT_SUB_EOF'
+  <subtask text — with any "Upstream result — <dep>:" blocks appended>
+  MMT_SUB_EOF
+
+  If stdout begins with "MMT_NATIVE_HANDOFF" (the <BE> CLI was unavailable), return EXACTLY that
+  sentinel line and nothing else — do not solve the task yourself. Otherwise return stdout as printed.
+  ````
+
+- **native → a SOLVER agent.** Spawn a sub-agent (model by tier: `sonnet` default, `opus` only for
+  the hard line / deep architecture) with:
+
+  ````
+  [mmt-team-worker] Solve this subtask directly and return a complete, self-contained result — no
+  preamble. <Append "Upstream result — <dep>:" blocks for each dep so it has that context.>
+
+  SUBTASK: <subtask text>
+  ````
+
+**No dress-up on handoff:** if a relay agent returns a bare `MMT_NATIVE_HANDOFF` (its CLI was down),
+spawn a **visible native solver agent** for that subtask instead — never let a `gemini:`/`codex:`
+result be quietly produced by Claude. Track which backend **actually** ran each subtask for step 7.
+
+> Scripted alternative (no agents): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/team.sh" --plan <wave.json>
+> --gemini-cap G` runs a wave's CLI subtasks as parallel `run.sh` subprocesses and lists the native
+> ones. Use it for a non-interactive batch; the **Task-agent fan-out above is the default for `/team`**.
+
+## 5 · Verify each result — on the configured verifier
 **Delegate the review to the configured `verifier` backend** (`team.verifier`, default codex — any
 backend, or `native` for Claude judgment). For every subtask result, run that backend through
 `run.sh` with a forced decision, feeding the review brief — the subtask, its `verify` criterion, and
@@ -131,20 +165,21 @@ Trust the verifier's PASS/FAIL verdict. Be skeptical of the result: incomplete, 
 unavailable (its stdout starts with `MMT_NATIVE_HANDOFF`), or `verifier` is `native`, verify with
 your own native judgment.
 
-## 7 · Fix failures in a bounded loop
-For each failed subtask, re-dispatch it to the **same backend** with the failure reason + a fix
-instruction + the previous result appended. Re-verify. Cap this at **1 fix attempt per subtask**
-by default (raise only if asked). After the cap, leave it marked **failed** — do not paper over it.
+## 6 · Fix failures in a bounded loop
+For each failed subtask, re-dispatch it (a fresh Task agent on the **same backend**) with the failure
+reason + a fix instruction + the previous result appended. Re-verify. Cap this at **1 fix attempt per
+subtask** by default (raise only if asked). After the cap, leave it marked **failed** — don't paper over it.
 
-## 8 · Synthesize
-Combine all verified results into one coherent answer to the original task. Note which backend ran
-each part and its verification status; call out anything still failed.
+## 7 · Synthesize
+Combine all verified results into one coherent answer to the original task. Note which backend
+**actually** ran each part (a relay that handed off ran on native, not the CLI) and its verification
+status; call out anything still failed.
 
 ---
 
 ## Ultracode / dynamic-workflow path
 If you have the **Workflow tool** available (Ultracode reasoning on), prefer running the whole
-pipeline as one deterministic workflow instead of steps 3–8:
+pipeline as one deterministic workflow instead of steps 3–7:
 
 ```
 Workflow({

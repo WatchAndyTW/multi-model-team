@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 129/129 offline
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 148/148 offline
 (plus live agy + codex smoke tests under MMT_LIVE=1). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -86,11 +86,12 @@ scripts/lib/{team_spec.py,team_plan.py}   cap-spec parser; plan.json -> per-subt
 scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json `agents` (enable/disable/role)
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
 scripts/hooks/proactive-route.sh    UserPromptSubmit nudge: agy-routable prompt -> suggest delegating
+scripts/hooks/spawn-route-guard.sh  PreToolUse Task|Agent guard: nudge/deny agent spawns that route to agy/codex (NOT-/team)
 statusline/statusline.sh     fork-free HUD
 agents/{delegate,av-research,bulk-summarizer}.md   GENERATED from roster.json (gen_agents.py)
 commands/{team,route-test}.md    /team = multi-agent fan-out; /route-test = dry-run router
 workflows/team.mjs           Ultracode dynamic-workflow fan-out (Workflow tool)
-hooks/hooks.json             PreToolUse (Read guard) + UserPromptSubmit (proactive nudge)
+hooks/hooks.json             PreToolUse (Read guard + Task|Agent spawn guard) + UserPromptSubmit (proactive nudge)
 tests/run_tests.sh           offline suite + opt-in live agy smoke (MMT_LIVE=1)
 docs/PLAN.md                 original implementation plan (historical)
 ```
@@ -154,17 +155,19 @@ any backend (default codex) verifies. The stages are
    `deps` = labels this subtask consumes (run after them, results handed in); `verify` = a
    one-line acceptance criterion. `team_plan.py` **ignores `deps`/`verify`** (they're inert),
    so the script path tolerates the richer schema without change.
-3. `scripts/team.sh --plan <file> --gemini-cap G` runs the `backend:agy` subtasks through
-   `run.sh` in parallel (bounded), printing `--- AGY [label] ---` blocks and listing
-   `--- NATIVE [label] ---` subtasks; `team_plan.py` writes each subtask to `$WORK/<idx>.task`
-   and team.sh addresses them by **msys-form `$WORK/<idx>.task`** (NOT the Windows-form path
-   python echoes back — short-name mismatch breaks the reopen). Deps are honored by calling
-   team.sh once per dependency **wave**.
-4. Claude solves the native subtasks (≤ claude cap), then **verifies** every result against its
-   criterion **by delegating the review to the codex backend** (forced `backend:codex` via
-   `run.sh`, rule `team-verify`; native judgment falls back if codex is unavailable), **fixes**
-   failures in a bounded loop (default 1 attempt; a bare `MMT_NATIVE_HANDOFF` counts as a fail →
-   solve natively), then synthesizes.
+3. Claude dispatches each subtask as its **own parallel `Task` sub-agent**, a dependency **wave** at
+   a time — the whole wave spawned in ONE message (true parallel, OMC-style fan-out, **not** inline
+   single-session). CLI subtasks (agy/codex) get a **faithful-relay** worker that runs
+   `run.sh --decision {backend}` and returns the CLI's stdout verbatim (a bare `MMT_NATIVE_HANDOFF`
+   → the lead spawns a **visible** native worker — same no-dress-up contract as `team.mjs`); native
+   subtasks get a **solver** worker. Every worker prompt is tagged `[mmt-team-worker]` so the
+   spawn-guard hook exempts it. (`scripts/team.sh --plan <file> --gemini-cap G` remains as a
+   **scripted no-agents alternative** — parallel `run.sh` subprocesses, `--- AGY/CODEX/NATIVE
+   [label] ---` blocks, addressing each subtask by **msys-form `$WORK/<idx>.task`**.)
+4. The lead **verifies** every result against its criterion **by delegating the review to the
+   configured verifier** (default codex; forced `backend:codex` via `run.sh`, rule `team-verify`;
+   native judgment falls back if codex is unavailable), **fixes** failures in a bounded loop (default
+   1 attempt; a bare `MMT_NATIVE_HANDOFF` counts as a fail → solve natively), then synthesizes.
 
 **Ultracode path (the full implementation):** when the Workflow tool is available, `/team`
 runs `workflows/team.mjs`, which does the entire pipeline deterministically: decompose agent
@@ -198,22 +201,34 @@ the inherited Opus main-loop model (the old behavior: `dispatchNative` set no mo
 subtask ran on Opus regardless of tier). Determinism-safe (no Date/random APIs — they break Workflow
 resume) and tolerates `args` as object **or** JSON string.
 
-## Proactive delegation hook (opt-in)
+## Proactive delegation hooks (opt-in)
 
-`scripts/hooks/proactive-route.sh` is a **UserPromptSubmit** hook (registered in
-`hooks/hooks.json`). When `[proactive].enabled = true` in `roster.json`, it runs each submitted
-prompt through `route.sh`; if the decision is `backend=agy`, it injects a one-shot reminder
+Two nudges, both gated by `[proactive].enabled = true` in `roster.json` (off by default):
+
+**(1) Prompt nudge — `scripts/hooks/proactive-route.sh` (UserPromptSubmit).** Runs each submitted
+prompt through `route.sh`; if it routes to agy, injects a one-shot reminder
 (`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
-`multi-model-team:delegate` agent / `/team` instead of solving inline. **Deterministic firing,
-soft compliance** — the reminder always appears under the conditions; acting on it stays Claude's
-call. It never fires for slash commands or prompts that route to native (judgment/RE/systems).
+`multi-model-team:delegate` agent / `/team` instead of solving inline. Never fires for slash commands
+or prompts that route to native (judgment/RE/systems).
 
-Config lives in `[proactive]` (`enabled`, `max_chars`, `min_chars`, `rules` CSV allowlist);
-`config.py proactive-env` emits these as `MMT_PROACTIVE_*`. **Cost discipline:** when disabled
-(the default) the hook bails via a pure-bash `[proactive].enabled` pre-check **before spawning any
-python** — so installing it costs ~nothing until opted in. Hard kill switch: `MMT_PROACTIVE_DISABLE=1`.
-Injection-safe: the prompt reaches `route.sh` only on stdin, never as an argument, and is never
-echoed back into the reminder. Tests live under `── Unit: proactive hook` in `tests/run_tests.sh`.
+**(2) Spawn guard — `scripts/hooks/spawn-route-guard.sh` (PreToolUse, matcher `Task|Agent`).** The
+"NOT /team" enforcer the user asked for: when you spawn an agent **outside** the team pipeline and its
+task routes to a CLI backend (agy or codex), it makes the work actually run on that CLI.
+`enforce_spawns=false` (default) → a **non-blocking nudge** (`permissionDecision:"allow"` +
+`additionalContext`) to dispatch via `run.sh` / the matching plugin agent; `enforce_spawns=true` → a
+hard **`permissionDecision:"deny"`** with the same instruction, forcing a re-dispatch. **Exempt:** our
+own subagents (`subagent_type` `multi-model-team:*`) and the plugin's `/team` workers (relay workers
+carry `run.sh`/`--decision`; native workers are tagged `[mmt-team-worker]`). `guard_spawns=false`
+disables just this guard. native-routing spawns are left untouched (correctly a Claude agent).
+
+**Both:** deterministic firing, soft compliance in nudge mode. Config in `[proactive]` (`enabled`,
+`max_chars`, `min_chars`, `rules` CSV allowlist, `guard_spawns`, `enforce_spawns`); `config.py
+proactive-env` emits these as `MMT_PROACTIVE_*`. **Cost discipline:** when disabled (the default) both
+hooks bail via a pure-bash `[proactive].enabled` pre-check **before spawning any python** — so they
+cost ~nothing until opted in. Hard kill switch: `MMT_PROACTIVE_DISABLE=1`. Injection-safe: the
+prompt/spawned-task reaches `route.sh` only on stdin, never as an argument, and is never echoed back
+into the reminder. Tests: `── Unit: proactive hook` and `── Unit: spawn-route guard` in
+`tests/run_tests.sh`.
 
 ## Config = one JSON file (`config/roster.json`)
 

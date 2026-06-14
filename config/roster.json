@@ -171,10 +171,12 @@
   ],
 
   "proactive": {
-    "_comment": "UserPromptSubmit hook. When enabled, a submitted prompt that routes to an agy-kind backend gets a one-shot reminder nudging delegation. Deterministic firing; soft compliance. max_chars/min_chars bound the prompt size (0 = no bound); rules is a CSV allowlist of route names (empty = any agy route).",
+    "_comment": "Two opt-in nudges, both gated by `enabled` (off by default). (1) UserPromptSubmit: a submitted prompt that routes to a CLI backend gets a one-shot reminder nudging delegation. (2) PreToolUse Task/Agent spawn guard (guard_spawns): when you spawn an agent OUTSIDE /team whose task routes to agy/codex, nudge (or, with enforce_spawns, hard-deny) so it dispatches via the CLI. Deterministic firing; nudge = soft compliance. max_chars/min_chars bound the task size (0 = no bound); rules is a CSV allowlist of route names (empty = any agy/codex route). The plugin's own /team workers are exempt from the spawn guard.",
     "enabled": false,
     "max_chars": 0,
     "min_chars": 0,
-    "rules": ""
+    "rules": "",
+    "guard_spawns": true,
+    "enforce_spawns": false
   }
 }

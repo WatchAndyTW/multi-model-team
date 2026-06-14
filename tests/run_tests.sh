@@ -270,6 +270,50 @@ assert_eq       "proactive: max_chars cap -> silent"   "$(hookrun "$SQLP" "$PTMP
 assert_eq       "proactive: env DISABLE -> silent"     "$(printf '%s' "$SQLP" | MMT_PROACTIVE_DISABLE=1 MMT_ROSTER="$PTMP/on.json" bash "$PHOOK" 2>/dev/null)" ""
 rm -rf "$PTMP"
 
+echo "── Unit: spawn-route guard (PreToolUse Task/Agent) ────"
+SHOOK="$MMT_ROOT/scripts/hooks/spawn-route-guard.sh"
+assert_contains "hooks.json: registers spawn guard" "$(cat "$MMT_ROOT/hooks/hooks.json")" "spawn-route-guard.sh"
+assert_contains "hooks.json: matches Task|Agent"    "$(cat "$MMT_ROOT/hooks/hooks.json")" "Task|Agent"
+STMP="$(mktemp -d)"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['enabled']=True; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$STMP/on.json"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['enabled']=True; d['proactive']['enforce_spawns']=True; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$STMP/enforce.json"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['enabled']=True; d['proactive']['guard_spawns']=False; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$STMP/guardoff.json"
+# Build a PreToolUse Task payload (argv -> json, msys-safe) and run the guard with a chosen roster.
+mkspawn() { "$PY" -c 'import json,sys; print(json.dumps({"tool_name":"Task","tool_input":{"subagent_type":sys.argv[1],"description":sys.argv[2],"prompt":sys.argv[3]}}))' "$1" "$2" "$3"; }
+shook() { printf '%s' "$1" | MMT_ROSTER="$2" bash "$SHOOK" 2>/dev/null; }
+SQLSPAWN="$(mkspawn general-purpose 'write sql' 'Write a SQL query to list all users sorted by signup date')"
+CODEXSPAWN="$(mkspawn general-purpose 'review' 'Review this diff for correctness bugs and regressions, then write a regression test suite')"
+NATSPAWN="$(mkspawn general-purpose 're' 'Reverse engineer the IL2CPP global-metadata and reconstruct protobuf schemas via disassembly')"
+OURSPAWN="$(mkspawn multi-model-team:delegate 'x' 'Write a SQL query to list all users')"
+RUNSPAWN="$(mkspawn general-purpose 'x' 'bash run.sh --decision to dispatch this subtask')"
+WORKERSPAWN="$(mkspawn general-purpose 'x' '[mmt-team-worker] Write a SQL query to list all users')"
+
+assert_eq       "spawn: disabled -> silent"            "$(shook "$SQLSPAWN"   "$MMT_ROOT/config/roster.json")" ""
+assert_contains "spawn: agy task -> allow nudge"       "$(shook "$SQLSPAWN"   "$STMP/on.json")"      '"permissionDecision":"allow"'
+assert_contains "spawn: agy nudge names agy"           "$(shook "$SQLSPAWN"   "$STMP/on.json")"      "routes to agy"
+assert_contains "spawn: agy nudge names delegate"      "$(shook "$SQLSPAWN"   "$STMP/on.json")"      "multi-model-team:delegate"
+assert_contains "spawn: enforce -> deny"               "$(shook "$SQLSPAWN"   "$STMP/enforce.json")" '"permissionDecision":"deny"'
+assert_contains "spawn: codex task -> nudge codex"     "$(shook "$CODEXSPAWN" "$STMP/on.json")"      "routes to codex"
+assert_contains "spawn: codex nudge names codex agent" "$(shook "$CODEXSPAWN" "$STMP/on.json")"      "multi-model-team:codex"
+assert_eq       "spawn: native task -> silent"         "$(shook "$NATSPAWN"   "$STMP/on.json")"      ""
+assert_eq       "spawn: our subagent -> silent"        "$(shook "$OURSPAWN"   "$STMP/on.json")"      ""
+assert_eq       "spawn: already-dispatching -> silent" "$(shook "$RUNSPAWN"   "$STMP/on.json")"      ""
+assert_eq       "spawn: team-worker tag -> silent"     "$(shook "$WORKERSPAWN" "$STMP/on.json")"     ""
+assert_eq       "spawn: guard_spawns=false -> silent"  "$(shook "$SQLSPAWN"   "$STMP/guardoff.json")" ""
+assert_eq       "spawn: env DISABLE -> silent"         "$(printf '%s' "$SQLSPAWN" | MMT_PROACTIVE_DISABLE=1 MMT_ROSTER="$STMP/on.json" bash "$SHOOK" 2>/dev/null)" ""
+rm -rf "$STMP"
+
+echo "── Unit: proactive-env (spawn-guard knobs) ────────────"
+PE_DEF="$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$MMT_ROOT/config/roster.json" proactive-env 2>/dev/null)"
+assert_contains "proactive-env: guard_spawns default 1"    "$PE_DEF" "MMT_PROACTIVE_GUARD_SPAWNS=1"
+assert_contains "proactive-env: enforce_spawns default 0"  "$PE_DEF" "MMT_PROACTIVE_ENFORCE_SPAWNS=0"
+PETMP="$(mktemp -d)"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['guard_spawns']=False; d['proactive']['enforce_spawns']=True; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$PETMP/p.json"
+PE_OV="$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$PETMP/p.json" proactive-env 2>/dev/null)"
+assert_contains "proactive-env: guard_spawns override 0"   "$PE_OV" "MMT_PROACTIVE_GUARD_SPAWNS=0"
+assert_contains "proactive-env: enforce_spawns override 1" "$PE_OV" "MMT_PROACTIVE_ENFORCE_SPAWNS=1"
+rm -rf "$PETMP"
+
 echo "── Unit: JSON config — backends configurable ──────────"
 CJSON="$MMT_ROOT/config/roster.json"
 CFG() { "$PY" "$MMT_ROOT/scripts/lib/config.py" "$CJSON" backend-env "$1" 2>/dev/null; }

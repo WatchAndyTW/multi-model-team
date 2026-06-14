@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (129/129 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
+`tests/run_tests.sh` is green (148/148 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -121,6 +121,10 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
   - Examples: `/team scaffold a CRUD API, write its SQL, and design the data model` →
     a native agent designs the data model, then agy agents scaffold + write SQL against it.
     `/team 6:gemini,1:claude build 6 UI components and review them` → 6 agy + 1 native.
+  - **Parallel agents (OMC-style):** `/team` fans every subtask out as its **own sub-agent running
+    in parallel** — CLI subtasks via a faithful `run.sh` relay worker (so a `gemini:`/`codex:` result
+    really comes from that CLI), native subtasks via a solver worker — never one inline session. (A
+    scripted no-agents fan-out, `scripts/team.sh`, still exists for non-interactive batch runs.)
   - **Ultracode:** if the Workflow tool is available, `/team` runs the whole pipeline as a
     deterministic dynamic workflow (`workflows/team.mjs`) — knobs `verify` (default on), `verifier`
     (`codex` default, or `native`), and `maxFixLoops` (default 1, max 3) — instead of ad-hoc
@@ -151,26 +155,34 @@ There is intentionally **no** RE/injection agent — that work is Opus-only and 
 ### Proactive delegation (opt-in)
 
 By default the model only offloads to a CLI backend when *it* decides to spawn one of the agents
-above, or when you run `/team` — it won't reach for a backend on its own for small tasks. If you
-want it to, there's a config-gated **`UserPromptSubmit` hook** (`scripts/hooks/proactive-route.sh`):
-on every prompt you submit, it runs the same router, and **when the prompt would route to a CLI
-backend it injects a one-shot reminder** nudging Claude to delegate it (the `delegate` or `codex`
-agent / `/team`) instead of solving it inline. The reminder firing is deterministic; whether Claude
-takes the hint is still its judgment.
+above, or when you run `/team`. Two opt-in, config-gated hooks make it reach for a backend on its own:
 
-It's **off by default**. Turn it on and tune it in `config/roster.json`:
+1. **Prompt nudge — `UserPromptSubmit`** (`scripts/hooks/proactive-route.sh`). On every prompt you
+   submit it runs the router; when the prompt would route to a CLI backend it injects a one-shot
+   reminder nudging Claude to delegate it (the `delegate`/`codex` agent / `/team`) instead of solving
+   it inline.
+2. **Spawn guard — `PreToolUse` on `Task`/`Agent`** (`scripts/hooks/spawn-route-guard.sh`). The
+   "outside `/team`" enforcer: whenever Claude spawns an agent whose task routes to **agy or codex**,
+   the guard makes that work actually run on the CLI — a non-blocking nudge by default, or a hard
+   block when `enforce_spawns` is on. Your own `/team` workers and the plugin's subagents are exempt;
+   native-routing spawns are left alone.
+
+Both fire deterministically; in nudge mode whether Claude complies is still its judgment. **Off by
+default.** Turn on and tune in `config/roster.json`:
 
 ```jsonc
 "proactive": {
-  "enabled": true,      // master switch (default false)
-  "max_chars": 0,       // only nudge when the prompt is <= N chars (0 = no cap) — e.g. 1500 for "small tasks only"
-  "min_chars": 0,       // only nudge when the prompt is >= N chars (0 = no floor)
-  "rules": ""           // CSV allowlist of route names to nudge on (e.g. "bulk-ingest,grounded-research"); empty = any agy route
+  "enabled": true,         // master switch for BOTH hooks (default false)
+  "max_chars": 0,          // only act when the prompt/task is <= N chars (0 = no cap)
+  "min_chars": 0,          // only act when the prompt/task is >= N chars (0 = no floor)
+  "rules": "",             // CSV allowlist of route names (e.g. "bulk-ingest,code-review-test"); empty = any CLI route
+  "guard_spawns": true,    // (2) intercept Task/Agent spawns that route to agy/codex
+  "enforce_spawns": false  // (2) false = non-blocking nudge; true = hard-deny + require CLI re-dispatch
 }
 ```
 
-Slash commands and prompts that route to native Claude (judgment / RE / systems) are never nudged.
-When disabled it bails in pure bash (no Python spawned), so it costs ~nothing. Hard kill switch:
+Slash commands and anything that routes to native Claude (judgment / RE / systems) are never touched.
+When disabled both bail in pure bash (no Python spawned), so they cost ~nothing. Hard kill switch:
 `MMT_PROACTIVE_DISABLE=1`.
 
 ---
@@ -253,10 +265,12 @@ scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json (enable/dis
 scripts/lib/state.sh         HUD state read/write (~/.cache/mmt/state.json)
 scripts/lib/common.sh        shared helpers (python finder)
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
+scripts/hooks/proactive-route.sh    UserPromptSubmit delegation nudge (opt-in)
+scripts/hooks/spawn-route-guard.sh  PreToolUse Task|Agent guard: nudge/deny CLI-routable agent spawns (opt-in)
 statusline/statusline.sh     fork-free HUD line
 agents/                      delegate, av-research, bulk-summarizer, codex
 commands/                    team, route-test
-hooks/hooks.json             PreToolUse matcher
+hooks/hooks.json             PreToolUse (Read guard + Task|Agent spawn guard) + UserPromptSubmit (nudge)
 tests/run_tests.sh           offline suite + opt-in live agy smoke (MMT_LIVE=1)
 ```
 

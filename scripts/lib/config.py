@@ -72,6 +72,10 @@ def emit_proactive_env(cfg, _name=None):
     emit_scalar("MMT_PROACTIVE_MAX_CHARS", str(_int(p.get("max_chars", 0))))
     emit_scalar("MMT_PROACTIVE_MIN_CHARS", str(_int(p.get("min_chars", 0))))
     emit_scalar("MMT_PROACTIVE_RULES", p.get("rules", "") or "")
+    # Agent-spawn guard (PreToolUse Task|Agent). guard_spawns gates the guard (default ON when
+    # proactive is enabled); enforce_spawns picks hard-deny (true) vs non-blocking nudge (false).
+    emit_scalar("MMT_PROACTIVE_GUARD_SPAWNS", "0" if p.get("guard_spawns", True) is False else "1")
+    emit_scalar("MMT_PROACTIVE_ENFORCE_SPAWNS", "1" if p.get("enforce_spawns", False) else "0")
 
 
 TEAM_DEFAULTS = {
