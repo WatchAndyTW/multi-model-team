@@ -127,6 +127,24 @@ const VERIFY_SCHEMA = {
   required: ['pass', 'reason'],
 }
 
+// A non-native backend can only be reached by shelling out to run.sh, and the Workflow runtime can't
+// shell out itself — so we MUST spawn a sub-agent (it has the Bash tool) to run the command. That
+// sub-agent is a PURE PIPE: it runs ONE command and reports the verbatim stdout plus whether the CLI
+// actually produced output. It is FORBIDDEN from solving/analyzing the payload itself. This schema is
+// what makes the relay faithful: it forces a structured report (the agent can't ramble its own answer
+// in place of the CLI's output), and `backend_ran` lets deterministic code decide the fallback —
+// so a CLI-unavailable subtask is re-dispatched as a VISIBLE native: agent, never a Claude analysis
+// wearing a `gemini:`/`codex:` label.
+const RELAY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    stdout: { type: 'string', description: "the command's EXACT stdout, copied verbatim — never summarized, rewritten, or answered by you" },
+    backend_ran: { type: 'boolean', description: 'false if that stdout is empty or begins with MMT_NATIVE_HANDOFF (the CLI was unavailable/exhausted); true otherwise' },
+  },
+  required: ['stdout', 'backend_ran'],
+}
+
 // ---- 1 · Decompose ----------------------------------------------------------
 phase('Decompose')
 const plan = await agent(
@@ -207,24 +225,28 @@ function tierModel(tier) {
   return TIER_MODELS[tier] || (tier === 'opus' ? 'opus' : 'sonnet')
 }
 
-// Any non-native subtask is RELAYED to ITS backend CLI through run.sh (forced decision so routing
-// matches the plan). Backends are equal — the same relay drives agy, codex, or any future CLI; the
-// backend is a parameter, never hardcoded. The relay returns run.sh's stdout verbatim; only on a
-// native-handoff sentinel (CLI unavailable/exhausted) does it solve in-context — our "loud fallback
-// when a provider CLI is missing". Label prefixed with the CLI name; the relay is cheap (RELAY_MODEL).
-function dispatchRelay(backend, text, tier, label, ph) {
+// dispatchRelay — the FAITHFUL pure-pipe primitive. A non-native backend is reached ONLY by shelling
+// out to run.sh (forced decision, so routing matches the plan). The relay sub-agent runs that one
+// command and reports {stdout, backend_ran} — it does NOT solve, analyze, or "helpfully" answer the
+// payload. This is the fix for the dress-up bug: previously the relay was told to "solve the subtask
+// yourself" on a native-handoff, so a `gemini:`/`codex:`-labelled agent would quietly produce Claude
+// output whenever the CLI was unavailable. Now the relay never substitutes its own work; whether to
+// fall back (and that the fallback is a VISIBLE native: agent) is decided in deterministic code by the
+// caller. Backends are equal — the same pipe drives agy, codex, or any future CLI (backend + rule are
+// parameters, never hardcoded). Label is prefixed with the CLI name; the pipe is cheap (RELAY_MODEL).
+function dispatchRelay(backend, text, tier, rule, label, ph) {
   const be = backendLabel(backend)
   return agent(
-`You are a relay — do NOT solve the subtask yourself unless told to. Delegate it to the ${be} backend and return ONLY its output.
+`You are a PURE RELAY PIPE for the ${be} backend — NOT a problem solver. Run ONE command, report its output, stop. Do NOT read files, browse, reason about, or answer the payload yourself; you have no opinion on its content and must never put your own answer in the output.
 
-Run exactly this with the Bash tool — the subtask rides in on a single-quoted heredoc, so it is inert data and is never parsed by the shell (if the subtask happens to contain the line MMT_SUB_EOF, pick a different unique delimiter):
+Run EXACTLY this with the Bash tool and nothing else (the payload rides in on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line MMT_SUB_EOF, change the delimiter):
 
-bash ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"team","native":false}' <<'MMT_SUB_EOF'
+bash ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"${rule}","native":false}' <<'MMT_SUB_EOF'
 ${text}
 MMT_SUB_EOF
 
-Return the command's stdout verbatim. If it begins with "MMT_NATIVE_HANDOFF" (${be} was unavailable), THEN solve the subtask yourself and return that result instead.`,
-    { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL }
+Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
+    { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL, schema: RELAY_SCHEMA }
   )
 }
 
@@ -235,11 +257,21 @@ function dispatchNative(text, tier, label, ph) {
   )
 }
 
-// Equal backends: native solves in-context; every other backend is relayed to its CLI. No special-casing.
-function dispatch(s, text, ph) {
-  return s.backend === 'native'
-    ? dispatchNative(text, s.tier || 'sonnet', s.label, ph)
-    : dispatchRelay(s.backend, text, s.tier || 'standard', s.label, ph)
+// Equal backends: native solves in-context; every other backend is relayed to its CLI through the
+// faithful pipe. Returns { result, ranOn } so the record can report WHICH backend actually produced
+// the result. If the CLI didn't run (unavailable/exhausted), we fall back to native LOUDLY and
+// VISIBLY — a real `native:<label>-fallback` agent, not a Claude answer hidden behind the CLI's label.
+async function dispatch(s, text, ph) {
+  if (s.backend === 'native') {
+    return { result: await dispatchNative(text, s.tier || 'sonnet', s.label, ph), ranOn: 'native' }
+  }
+  const relay = await dispatchRelay(s.backend, text, s.tier || 'standard', 'team', s.label, ph)
+  if (relay && relay.backend_ran === true && typeof relay.stdout === 'string' && relay.stdout.trim()) {
+    return { result: relay.stdout, ranOn: s.backend }
+  }
+  log(`${backendLabel(s.backend)} unavailable for "${s.label}" — visible native fallback`)
+  const result = await dispatchNative(text, s.tier === 'opus' ? 'opus' : 'sonnet', `${s.label}-fallback`, ph)
+  return { result, ranOn: `native-fallback(${s.backend})` }
 }
 
 // Stage-handoff: a dependent subtask is given its upstream deps' verified results as
@@ -252,51 +284,27 @@ function withContext(s, ctx) {
 }
 
 // ---- verify -----------------------------------------------------------------
-// The Verify stage is delegated to the CONFIGURED verifier backend (roster team.verifier, default
-// codex). A native relay agent runs that backend through run.sh to review the result against its
-// acceptance criterion, then packages its PASS/FAIL verdict into the structured shape. If the
-// backend is unavailable (handoff sentinel) the relay reviews it itself with native judgment — a
-// loud fallback, same contract as the commodity dispatch path. `verifier:'native'` skips the relay
-// entirely and verifies on native Claude.
-async function verifyResult(s, result) {
-  if (!VERIFY) return { pass: true, reason: 'verify disabled', fix_hint: '' }
-  const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
-  const criterion = s.verify && s.verify.trim()
-    ? s.verify.trim()
-    : 'The result fully and correctly satisfies the subtask.'
+// The Verify stage runs on the CONFIGURED verifier backend (roster team.verifier, default codex).
+// For a CLI verifier we drive it through the SAME faithful pipe (dispatchRelay) and parse its
+// PASS/FAIL verdict in DETERMINISTIC code — no Claude agent re-judges the CLI's output, so the CLI
+// can't be silently impersonated. If that CLI is unavailable (backend_ran=false) we fall back to a
+// VISIBLE native verifier; `verifier:'native'` uses native judgment directly with no relay.
 
-  if (VERIFIER !== 'native') {
-    // The configured verifier backend does the review; the relay (native) reports its verdict in
-    // the required shape. The review brief rides to run.sh on a single-quoted heredoc, so the
-    // (untrusted) subtask + result text is inert data and is never parsed by a shell.
-    const vb = backendLabel(VERIFIER)
-    const v = await agent(
-`You are the verification relay for a multi-model team. Delegate the REVIEW to the ${vb} backend, then report ITS verdict in the required structured form. Do NOT judge the result yourself unless ${vb} is unavailable.
+// Deterministic PASS/FAIL parse of a strict reviewer's stdout: line 1 is PASS/FAIL, the rest is the
+// reason, and (on FAIL) a trailing one-line fix. Keeps the verdict honest to what the CLI said.
+function parseVerdict(stdout) {
+  const lines = String(stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  const pass = /^pass\b/i.test(lines[0] || '')
+  const reason = (lines.slice(1).join(' ') || (pass ? 'reviewer passed it' : 'reviewer failed it')).slice(0, 400)
+  const fix_hint = pass ? '' : (lines.slice(2).join(' ') || lines.slice(1).join(' ') || '')
+  return { pass, reason, fix_hint }
+}
 
-Run exactly this with the Bash tool (if the brief happens to contain the line MMT_VERIFY_EOF, pick a different unique delimiter):
-
-bash ${JSON.stringify(RUN)} --decision '{"backend":"${VERIFIER}","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
-You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
-
-SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
-${s.task}
-
-ACCEPTANCE CRITERION:
-${criterion}
-
-RESULT:
-${result}
-MMT_VERIFY_EOF
-
-Read ${vb}'s stdout and emit the structured verdict reflecting it: pass=true only if it concluded PASS; copy its reasoning into reason and its fix instruction (if any) into fix_hint.${handoff ? ' Note: the subtask result was a native-handoff sentinel — treat it as a failure regardless of what the reviewer says.' : ''} If ${vb}'s stdout begins with "MMT_NATIVE_HANDOFF" (${vb} unavailable/exhausted), THEN review the result yourself with strict native judgment and emit your own verdict instead.`,
-      { label: `${vb}:verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: tierModel(s.tier) }
-    )
-    return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
-  }
-
-  // Native verifier (knob: verifier:'native' / codexVerify:false).
-  const v = await agent(
-`You are a strict verifier (native Claude judgment). Decide whether the RESULT satisfies the acceptance criterion for this subtask. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, fail it.${handoff ? ' (Note: the backend reported it was unavailable — treat a bare handoff sentinel as a failure.)' : ''}
+// Native verifier: strict Claude judgment. Used when verifier:'native', and as the VISIBLE fallback
+// when a CLI verifier is unavailable (labelled native:verify: so it is never mistaken for the CLI).
+function nativeVerify(s, result, criterion, handoff, note) {
+  return agent(
+`You are a strict verifier (native Claude judgment).${note ? ' ' + note : ''} Decide whether the RESULT satisfies the acceptance criterion for this subtask. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, fail it.${handoff ? ' (The subtask backend reported it was unavailable — treat a bare handoff sentinel as a failure.)' : ''}
 
 SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
 ${s.task}
@@ -308,13 +316,52 @@ RESULT:
 ${result}`,
     { label: `native:verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: tierModel(s.tier) }
   )
+}
+
+async function verifyResult(s, result) {
+  if (!VERIFY) return { pass: true, reason: 'verify disabled', fix_hint: '' }
+  const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
+  const criterion = s.verify && s.verify.trim()
+    ? s.verify.trim()
+    : 'The result fully and correctly satisfies the subtask.'
+
+  if (VERIFIER !== 'native') {
+    // Drive the verifier CLI through the faithful pipe, then parse ITS verdict deterministically. The
+    // review brief rides to run.sh on a single-quoted heredoc — the (untrusted) subtask + result text
+    // is inert data, never parsed by a shell. rule "team-verify" forces the verifier backend.
+    const vb = backendLabel(VERIFIER)
+    const brief =
+`You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
+
+SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
+${s.task}
+
+ACCEPTANCE CRITERION:
+${criterion}
+
+RESULT:
+${result}`
+    const relay = await dispatchRelay(VERIFIER, brief, 'standard', 'team-verify', `verify:${s.label}`, 'Verify')
+    if (relay && relay.backend_ran === true && typeof relay.stdout === 'string' && relay.stdout.trim()) {
+      // A native-handoff in the SUBTASK result is always a failure, regardless of the review verdict.
+      if (handoff) return { pass: false, reason: `subtask backend (${s.backend}) was unavailable — native-handoff sentinel`, fix_hint: 'solve the subtask natively' }
+      return parseVerdict(relay.stdout)
+    }
+    // Verifier CLI unavailable -> VISIBLE native verify (not hidden behind the CLI's label).
+    log(`verifier ${vb} unavailable for "${s.label}" — visible native verify fallback`)
+    const vf = await nativeVerify(s, result, criterion, handoff, `(${vb} was unavailable, verifying natively.)`)
+    return vf || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+  }
+
+  // Native verifier (knob: verifier:'native' / codexVerify:false).
+  const v = await nativeVerify(s, result, criterion, handoff)
   return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
 }
 
 // ---- one subtask, end to end: dispatch -> verify -> bounded fix loop ---------
 async function runSubtask(s, ctx) {
   const text = withContext(s, ctx)
-  let result = await dispatch(s, text)
+  let { result, ranOn } = await dispatch(s, text)
   let verdict = await verifyResult(s, result)
   let attempts = 1
   while (VERIFY && verdict && verdict.pass === false && attempts <= MAX_FIX) {
@@ -330,12 +377,16 @@ Previous result:
 ${result}
 
 Produce a corrected, complete result.`
-    result = await dispatch({ ...s, label: `${s.label}#fix${attempts}` }, fixText, 'Fix')
+    const d = await dispatch({ ...s, label: `${s.label}#fix${attempts}` }, fixText, 'Fix')
+    result = d.result
+    ranOn = d.ranOn        // the last attempt's actual executor is what we report
     verdict = await verifyResult(s, result)
     attempts++
   }
   const status = !VERIFY ? 'unverified' : verdict && verdict.pass ? 'verified' : 'failed'
-  return { label: s.label, backend: s.backend, tier: s.tier, deps: s.deps || [], attempts, status, verdict, result }
+  // `ranOn` = the backend that ACTUALLY produced the result (= backend, or native-fallback(<cli>) if
+  // the CLI was unavailable). This is the honest record of who did the work, distinct from the plan.
+  return { label: s.label, backend: s.backend, ranOn, tier: s.tier, deps: s.deps || [], attempts, status, verdict, result }
 }
 
 // ---- 2 · Dispatch in dependency-ordered waves -------------------------------
@@ -366,12 +417,16 @@ while (remaining.length && guard++ < kept.length + 2) {
 
 const failed = records.filter((r) => r.status === 'failed')
 if (failed.length) log(`${failed.length} subtask(s) still failing after ${MAX_FIX} fix attempt(s): ${failed.map((r) => r.label).join(', ')}`)
+// Loudly surface any CLI->native fallback (the user's exact complaint: work that was supposed to run
+// on a CLI backend actually ran on Claude). `ranOn` records the truth per subtask.
+const fellBack = records.filter((r) => typeof r.ranOn === 'string' && r.ranOn.indexOf('native-fallback') === 0)
+if (fellBack.length) log(`${fellBack.length} subtask(s) fell back to native (CLI unavailable): ${fellBack.map((r) => `${r.label} [${r.ranOn}]`).join(', ')}`)
 
 // ---- 3 · Synthesize ---------------------------------------------------------
 phase('Synthesize')
 const final = await agent(
 `Synthesize these verified subtask results into one coherent, complete answer to the original task.
-Reconcile overlaps, resolve conflicts, and note which backend ran each part and its verification status. If any subtask is marked "failed", call that out explicitly rather than papering over it.
+Reconcile overlaps, resolve conflicts, and note which backend ACTUALLY ran each part (the "ranOn" field — e.g. "native-fallback(agy)" means the agy CLI was unavailable and Claude did it) and its verification status. If any subtask is marked "failed", call that out explicitly rather than papering over it.
 
 ORIGINAL TASK:
 ${task}
@@ -391,8 +446,10 @@ return {
   plan: kept.map((s) => ({ label: s.label, backend: s.backend, tier: s.tier, deps: s.deps || [], verify: s.verify || '' })),
   counts: {
     byBackend: Object.fromEntries(DISPATCH.map((b) => [b, kept.filter((s) => s.backend === b).length])),
+    ranOn: Object.fromEntries([...new Set(records.map((r) => r.ranOn))].map((k) => [k, records.filter((r) => r.ranOn === k).length])),
     verified: records.filter((r) => r.status === 'verified').length,
     failed: failed.length,
+    nativeFallbacks: fellBack.length,
   },
   results: records,
   final,

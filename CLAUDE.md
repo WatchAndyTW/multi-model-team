@@ -4,8 +4,8 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 132/132
-(incl. live agy + codex smoke tests). Two live backends: **agy** (Gemini) and **codex** (OpenAI
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 129/129 offline
+(plus live agy + codex smoke tests under MMT_LIVE=1). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
 
@@ -168,19 +168,35 @@ any backend (default codex) verifies. The stages are
 
 **Ultracode path (the full implementation):** when the Workflow tool is available, `/team`
 runs `workflows/team.mjs`, which does the entire pipeline deterministically: decompose agent
-(emits `deps` + `verify`) → dependency-ordered **waves** (`parallel()` per wave; agy agents
-shell out to `run.sh`, native agents solve, upstream results injected as context) → per-result
-**verify** stage (a native relay that delegates the review to **codex** via `run.sh`, packaging
-its PASS/FAIL into `{pass, reason, fix_hint}`; `verifier:'native'` keeps it on Claude) →
-**bounded fix** re-dispatch → synthesize. Args:
-`{task, caps, pluginRoot, verify?=true, verifier?='codex', maxFixLoops?=1 (max 3)}`. Returns
-`{plan, counts:{agy,native,verified,failed}, verifier, results, final}`. Agent labels are
-backend-prefixed in the progress tree — `gemini:<label>` (agy relay), `codex:verify:<label>` (codex
-review), `native:`/`native:verify:` (Claude) — and each subtask's tier maps to a concrete model via
-`tierModel` (`sonnet` default, `opus` only when the decompose marks it genuinely hard), so the
-native model is **dynamic by complexity**, not the inherited Opus main-loop model (the old behavior:
-`dispatchNative` set no model → every native subtask ran on Opus regardless of tier). Determinism-safe (no
-Date/random APIs — they break Workflow resume) and tolerates `args` as object **or** JSON string.
+(emits `deps` + `verify`) → dependency-ordered **waves** (`parallel()` per wave; native agents
+solve in-context, CLI agents go through the **faithful relay**, upstream results injected as
+context) → per-result **verify** stage → **bounded fix** re-dispatch → synthesize.
+
+**Faithful relay (the no-dress-up contract).** The Workflow runtime can't shell out itself, so a
+non-native backend is reached by spawning a sub-agent (it has Bash) to run `run.sh`. That sub-agent
+(`dispatchRelay`) is a **PURE PIPE**: forced into a `{stdout, backend_ran}` schema, forbidden from
+solving/analyzing the payload — it just runs the one command and reports the verbatim stdout plus
+whether the CLI actually produced output. **The fallback decision lives in deterministic code, not in
+the agent:** if `backend_ran` is false (CLI unavailable / `MMT_NATIVE_HANDOFF` / empty), `dispatch()`
+re-dispatches the subtask to a **VISIBLE `native:<label>-fallback` agent** — Claude never does the work
+behind a `gemini:`/`codex:` label. Each result record carries **`ranOn`** = the backend that *actually*
+produced it (`agy`/`codex`/`native`, or `native-fallback(<cli>)`), and fallbacks are logged + counted
+(`counts.nativeFallbacks`). This is the fix for the bug where a relay told to "solve it yourself on
+handoff" silently turned a Gemini subtask into a Claude one. **Verify** uses the same pipe: it drives
+the configured `verifier` CLI through `dispatchRelay` (rule `team-verify`) and parses its `PASS/FAIL`
+verdict **deterministically** (`parseVerdict`) — no Claude agent re-judges the CLI's output; if that CLI
+is unavailable it falls back to a visible `native:verify:` agent. `verifier:'native'` skips the relay
+and judges on Claude directly.
+
+Args: `{task, caps, pluginRoot, verify?=true, verifier?='codex', maxFixLoops?=1 (max 3)}`. Returns
+`{plan, backends, caps, verifier, counts:{byBackend,ranOn,verified,failed,nativeFallbacks}, results, final}`.
+Agent labels are backend-prefixed in the progress tree — `gemini:<label>` (agy relay pipe),
+`codex:verify:<label>` (codex review pipe), `native:`/`native:verify:`/`native:<label>-fallback`
+(Claude) — and each subtask's tier maps to a concrete model via `tierModel` (`sonnet` default, `opus`
+only when the decompose marks it genuinely hard), so the native model is **dynamic by complexity**, not
+the inherited Opus main-loop model (the old behavior: `dispatchNative` set no model → every native
+subtask ran on Opus regardless of tier). Determinism-safe (no Date/random APIs — they break Workflow
+resume) and tolerates `args` as object **or** JSON string.
 
 ## Proactive delegation hook (opt-in)
 

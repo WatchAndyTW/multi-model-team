@@ -224,7 +224,7 @@ else
 fi
 # Structure: the staged pipeline + verify/fix machinery are present. Verify/Fix are tagged on
 # agents (interleaved per subtask), so they appear as `phase: '...'` opts, not phase() calls.
-for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix" "team-verify" "codexVerify" "teamConfig" "dispatchRelay" "backendLabel" "tierModel" ":verify:" "byBackend" "DISPATCH"; do
+for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix" "team-verify" "codexVerify" "teamConfig" "dispatchRelay" "backendLabel" "tierModel" ":verify:" "byBackend" "DISPATCH" "backend_ran" "ranOn" "parseVerdict" "PURE RELAY PIPE" "native-fallback"; do
   if grep -qF "$marker" "$MJS"; then ok "team.mjs has: $marker"; else bad "team.mjs missing: $marker"; fi
 done
 
@@ -243,6 +243,10 @@ if command -v node >/dev/null 2>&1; then
   assert_contains "harness: native can be the verifier"                 "$H3" "verifier=native"
   H4="$(node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" '{"dispatch_backends":["agy","native"]}' 2>&1)"
   assert_contains "harness: dispatch set is restrictable"               "$H4" "backends=agy+native"
+  # CLI-down regression: when the CLI backends are unavailable, the relay must NOT silently answer in
+  # Claude under a gemini:/codex: label — each CLI subtask falls back to a VISIBLE native: agent.
+  H5="$(MMT_HARNESS_CLI_DOWN=1 node "$MMT_ROOT/tests/team_mjs_harness.mjs" "$MJS" 2>&1)"
+  assert_contains "harness: CLI-down -> visible native fallback (no dress-up)" "$H5" "HARNESS_OK_FALLBACK"
 else
   ok "team.mjs harness: skipped (node not found)"
 fi

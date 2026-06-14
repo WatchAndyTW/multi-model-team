@@ -64,17 +64,37 @@ const verifyLabels = []
 const models = {}
 const verifyCount = {}
 
+// MMT_HARNESS_CLI_DOWN=1 simulates EVERY CLI backend being unavailable, so the faithful relay reports
+// backend_ran=false and the workflow must fall back to a VISIBLE native: agent (regression for the bug
+// where a CLI-labelled agent silently produced Claude output instead of relaying).
+const CLI_DOWN = process.env.MMT_HARNESS_CLI_DOWN === '1'
+
+// bare subtask name from any label: strip the backend prefix, a `-fallback` suffix, and a `#fixN` tag.
+function bareOf(label) {
+  return String(label).replace(/^[a-z]+:/, '').replace(/-fallback$/, '').replace(/#fix\d+$/, '')
+}
+function cannedResult(bare, prompt) {
+  if (bare === 'model') return 'MODEL_RESULT_AABBCC'
+  if (bare === 'sql') { if (prompt.includes('MODEL_RESULT_AABBCC')) sawUpstreamContext = true; return 'SQL_RESULT_DDEEFF' }
+  if (bare === 'tests') return 'TESTS_RESULT_112233'
+  return 'GENERIC_RESULT'
+}
+
 async function agentStub(prompt, opts = {}) {
   const label = String(opts.label || '')
   const schema = opts.schema || null
   const props = (schema && schema.properties) || {}
   if (label) models[label] = opts.model
 
+  // 1) Decompose
   if (props.subtasks || label === 'decompose') {
     return { subtasks: PLAN.map((s) => ({ ...s })) }
   }
 
-  if (props.pass || /verify:/.test(label)) {
+  // 2) Verify RELAY — a PURE PIPE to a CLI verifier. Returns {stdout, backend_ran}; the workflow
+  //    parses the PASS/FAIL verdict deterministically (it does NOT re-judge). Detected by the relay
+  //    schema (props.stdout) + a `*:verify:*` label.
+  if (props.stdout && /verify:/.test(label)) {
     const m = label.match(/verify:(.+)$/)
     const who = m ? m[1] : 'unknown'
     verifyCount[who] = (verifyCount[who] || 0) + 1
@@ -82,18 +102,34 @@ async function agentStub(prompt, opts = {}) {
     verifyLabels.push(label)
     const dm = prompt.match(/"backend":"([^"]+)"[^}]*"rule":"team-verify"/)
     if (dm) { sawVerifyRelay = true; verifyDecisionBackend = dm[1] }
+    if (CLI_DOWN) return { stdout: 'MMT_NATIVE_HANDOFF tier=standard rule=team-verify reason="down"', backend_ran: false }
+    if (who === 'sql' && verifyCount[who] === 1) return { stdout: 'FAIL\nmissing GROUP BY\nadd a GROUP BY clause', backend_ran: true }
+    return { stdout: 'PASS\nlooks correct', backend_ran: true }
+  }
+
+  // 3) Native verify — verifier:'native', OR the VISIBLE fallback when a CLI verifier is down.
+  if (props.pass || /verify:/.test(label)) {
+    const m = label.match(/verify:(.+)$/)
+    const who = m ? m[1] : 'unknown'
+    verifyCount[who] = (verifyCount[who] || 0) + 1
+    calls.verify.push(who)
+    verifyLabels.push(label)
     if (who === 'sql' && verifyCount[who] === 1) return { pass: false, reason: 'missing GROUP BY', fix_hint: 'add a GROUP BY clause' }
     return { pass: true, reason: 'looks correct', fix_hint: '' }
   }
 
-  // Dispatch / fix — match on the BARE subtask name; the label prefix is backend-derived.
+  // 4) Dispatch RELAY — a PURE PIPE to a CLI backend. Returns {stdout, backend_ran}; the workflow
+  //    decides any fallback. When CLI_DOWN, report the handoff sentinel + backend_ran=false.
+  if (props.stdout) {
+    calls.dispatch.push(label)
+    if (CLI_DOWN) return { stdout: 'MMT_NATIVE_HANDOFF tier=standard rule=team reason="down"', backend_ran: false }
+    return { stdout: cannedResult(bareOf(label), prompt), backend_ran: true }
+  }
+
+  // 5) Native dispatch / fix / native fallback — match on the BARE subtask name.
   calls.dispatch.push(label)
-  const bare = label.replace(/^[a-z]+:/, '').replace(/#fix\d+$/, '')
-  if (bare === 'model') return 'MODEL_RESULT_AABBCC'
-  if (bare === 'sql') { if (prompt.includes('MODEL_RESULT_AABBCC')) sawUpstreamContext = true; return 'SQL_RESULT_DDEEFF' }
-  if (bare === 'tests') return 'TESTS_RESULT_112233'
   if (label === 'synthesize') return 'FINAL_SYNTHESIS'
-  return 'GENERIC_RESULT'
+  return cannedResult(bareOf(label), prompt)
 }
 
 async function parallelStub(thunks) {
@@ -147,6 +183,26 @@ try {
 const fails = []
 const ck = (cond, msg) => { if (!cond) fails.push(msg) }
 
+// CLI-DOWN regression: when every CLI backend is unavailable, NO work may be silently done behind a
+// CLI label — each non-native subtask must be re-dispatched to a VISIBLE native: fallback agent, and
+// its record must say so (ranOn = native-fallback(<cli>)). This is the exact bug being fixed.
+if (CLI_DOWN) {
+  ck(out && typeof out === 'object', 'down: no result object')
+  ck(!out.error, 'down: unexpected error: ' + (out && out.error))
+  ck(out.final === 'FINAL_SYNTHESIS', 'down: expected synthesized final, got ' + (out && out.final))
+  const nonNative = PLAN.filter((s) => eff(s.backend) !== 'native')
+  for (const s of nonNative) {
+    ck(calls.dispatch.some((l) => l.startsWith(backendLabel(eff(s.backend)) + ':' + s.label)), `down: ${s.label} CLI relay not even ATTEMPTED before fallback`)
+    ck(calls.dispatch.some((l) => l.startsWith('native:' + s.label + '-fallback')), `down: ${s.label} got no VISIBLE native fallback agent`)
+    const rec = out.results.find((r) => r.label === s.label)
+    ck(rec && typeof rec.ranOn === 'string' && rec.ranOn.indexOf('native-fallback(') === 0, `down: ${s.label} ranOn should be native-fallback(...), got ` + (rec && rec.ranOn))
+  }
+  ck(out.counts && out.counts.nativeFallbacks === nonNative.length, `down: counts.nativeFallbacks expected ${nonNative.length}, got ` + (out.counts && out.counts.nativeFallbacks))
+  if (fails.length) { console.error('HARNESS_BAD\n - ' + fails.join('\n - ')); process.exit(1) }
+  console.log(`HARNESS_OK_FALLBACK fellBack=${nonNative.length} visible=native verified=${out.counts.verified}`)
+  process.exit(0)
+}
+
 ck(out && typeof out === 'object', 'no result object returned')
 ck(!out.error, 'unexpected error: ' + (out && out.error))
 ck(out.final === 'FINAL_SYNTHESIS', 'expected synthesized final, got ' + out.final)
@@ -169,6 +225,12 @@ for (const s of PLAN) {
 // codex must be a real DISPATCH target when eligible (the user's core point: not verify-only).
 if (DISPATCH.includes('codex')) {
   ck(calls.dispatch.some((l) => l.startsWith('codex:tests')), 'codex was eligible but never used as a dispatch backend')
+}
+
+// ranOn records the backend that ACTUALLY produced each result (here every backend "ran" — no fallback).
+for (const s of PLAN) {
+  const rec = out.results.find((r) => r.label === s.label)
+  ck(rec && rec.ranOn === eff(s.backend), `ranOn for ${s.label} expected ${eff(s.backend)}, got ` + (rec && rec.ranOn))
 }
 
 ck(sawUpstreamContext, 'dependency context NOT injected (sql never saw model result)')

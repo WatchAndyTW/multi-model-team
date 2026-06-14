@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (132/132, including live agy + codex smoke tests). Active
+`tests/run_tests.sh` is green (129/129 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
