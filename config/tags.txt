@@ -1,6 +1,6 @@
 # Type classifier for score.sh — tuning needs no code edits, just edit this file.
 # Format:  <type> <space> <extended-regex to end of line>
-# - <type> is a single token (matches the type names used in roster.toml [[route]] rules).
+# - <type> is a single token (matches the type names used in roster.json routes).
 # - The rest of the line is an ERE matched case-insensitively against the task text.
 # - A type may appear on multiple lines (any line matching emits the type).
 # - Blank lines and lines starting with # are ignored.

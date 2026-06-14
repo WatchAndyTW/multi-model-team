@@ -1,0 +1,143 @@
+{
+  "_about": "multi-model-team config. Backends (CLIs) and agents are first-class and individually enable/disable-able; routes pick a backend per task (first match wins). Edit this file to add a CLI, flip a backend/agent on or off, or change an agent's role. After editing agents, run scripts/lib/gen_agents.py to regenerate agents/*.md.",
+
+  "defaults": {
+    "_comment": "preset biases tier (budget|balanced|premium). fallback is the final hop. quota_fallback is the ordered backend chain tried when the chosen backend is unavailable/exhausted.",
+    "preset": "balanced",
+    "fallback": "native:sonnet",
+    "quota_fallback": ["agy", "native:sonnet"]
+  },
+
+  "backends": {
+    "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in backends.sh (currently only 'gemini' is implemented; 'codex'/'opencode' are config stubs with no invoker yet, so enabling them simply falls through until an invoker is added).",
+
+    "agy": {
+      "enabled": true,
+      "kind": "gemini",
+      "cmd": "agy",
+      "oneshot_flag": "--print",
+      "model_flag": "--model",
+      "extra": ["--dangerously-skip-permissions", "--print-timeout", "5m"],
+      "models": { "cheap": "Gemini 3.5 Flash (Low)", "standard": "Gemini 3.1 Pro (Low)" },
+      "health": "--version",
+      "list_models": "models",
+      "add_dir_flag": "--add-dir",
+      "sandbox_flag": "--sandbox",
+      "use_winpty": true,
+      "winpty_flags": ["-Xallow-non-tty", "-Xplain"],
+      "bin_candidates": [
+        "$LOCALAPPDATA/agy/bin/agy.exe",
+        "$HOME/AppData/Local/agy/bin/agy.exe"
+      ],
+      "hard_timeout": "6m",
+      "quota_patterns": [
+        "quota", "rate limit", "resource_exhausted", "429",
+        "exceeded your current quota", "insufficient", "out of credits",
+        "usage limit", "too many requests"
+      ],
+      "quota_exit_codes": []
+    },
+
+    "codex": {
+      "enabled": false,
+      "kind": "codex",
+      "cmd": "codex",
+      "_note": "Future backend. No invoker implemented yet — enabling it without adding a 'codex' case in backends.sh just falls through to the next hop. Add invocation fields (oneshot_flag, models, etc.) when wired up."
+    },
+
+    "opencode": {
+      "enabled": false,
+      "kind": "opencode",
+      "cmd": "opencode",
+      "_note": "Future backend. Same as codex — config stub until an invoker exists."
+    }
+  },
+
+  "agents": {
+    "_comment": "Claude Code subagents the model can spawn. 'enabled' controls whether agents/<name>.md is generated (disabled -> the .md is removed so Claude Code won't surface it). 'backend'+'tier' set where the agent relays; 'dispatch' is 'route' (let the router decide) or 'forced' (pin backend+tier). 'role' becomes the agent's description (what the model matches on). Regenerate with scripts/lib/gen_agents.py after editing.",
+
+    "delegate": {
+      "enabled": true,
+      "backend": "agy",
+      "tier": "standard",
+      "dispatch": "route",
+      "model": "haiku",
+      "color": "blue",
+      "role": "Backend-agnostic dispatcher for STANDARD, VERIFIABLE coding and Gemini's edges where the result is compact or easy to verify: new React/UI components, CSS, SVG/animation, scaffolding, CRUD, REST endpoints, scripts, CLI tools, glue code, SQL, regex, configs, Dockerfiles, unit tests, fixtures, data transforms — plus web-search/doc summarization and bulk text ingestion. Explicitly NOT for reverse-engineering, IL2CPP/protobuf-RE, disassembly, FFI/unsafe, binary, injection/hooking, concurrency, protocol/KCP design, proc-macros, or anything systems-hard (those are Opus-only and never offloaded)."
+    },
+
+    "av-research": {
+      "enabled": true,
+      "backend": "agy",
+      "tier": "standard",
+      "dispatch": "route",
+      "model": "haiku",
+      "color": "cyan",
+      "role": "Highest-confidence offload — Gemini's categorical edges that Claude can't do or trails on: watch/summarize video, transcribe/analyze audio, synthesize web research, and summarize large grounded documents. Use when the task is multimodal (A/V/image) or grounded research where a compact, verifiable answer suffices. Not for code logic, RE, or systems work."
+    },
+
+    "bulk-summarizer": {
+      "enabled": true,
+      "backend": "agy",
+      "tier": "cheap",
+      "dispatch": "forced",
+      "model": "haiku",
+      "color": "green",
+      "role": "Cheapest path — pinned to the cheap tier (Gemini Flash). Use for summarize/extract from VERY LARGE text where a short, grounded answer suffices: log dumps, big files, scraped pages, transcripts. Ingestion, not judgment. Not for code logic, RE, or anything where a subtly wrong summary would be costly to catch."
+    }
+  },
+
+  "routes": [
+    { "_comment": "HARD LINE: RE / injection / binary / systems-hard. ALWAYS Opus, checked first so nothing below can offload these.",
+      "name": "re-injection-heavy",
+      "when": { "type": ["il2cpp", "protobuf-re", "disasm", "decompile", "vmprotect", "binary", "ffi", "unsafe", "exploit", "hooking", "injection", "dll-inject", "detours", "minhook", "shellcode", "kernel", "memory-patch", "anti-debug", "packer", "manual-map"] },
+      "backend": "native", "tier": "opus" },
+
+    { "_comment": "Deep systems / concurrency / architecture — judgment-critical, not commodity.",
+      "name": "systems-complex",
+      "when": { "type": ["architecture", "agentic", "concurrency", "async-design", "lock-free", "kcp", "protocol-design", "debug-hard", "perf-critical", "proc-macro"] },
+      "backend": "native", "tier": "opus" },
+
+    { "_comment": "Gemini-exclusive: A/V must go to agy even if it also carries a judgment word, so it is checked before judgment-coding.",
+      "name": "multimodal",
+      "when": { "type": ["video", "audio", "watch", "transcribe-av", "image-heavy"] },
+      "backend": "agy", "tier": "standard" },
+
+    { "_comment": "Judgment coding — ordered ABOVE the commodity agy rules so refactor/bugfix/integration go to Sonnet even when they also mention a button/script/config.",
+      "name": "judgment-coding",
+      "when": { "type": ["refactor", "integration", "bugfix", "api-design", "state-management", "data-model", "migration", "review", "production-logic", "edge-cases"] },
+      "backend": "native", "tier": "sonnet" },
+
+    { "_comment": "bulk-ingest BEFORE grounded-research: both match summarize/extract/ingest/scan; the cheap large-input path must win first or a 30k dump would route standard.",
+      "name": "bulk-ingest",
+      "when": { "min_chars": 20000, "type": ["summarize", "extract", "ingest", "scan"] },
+      "backend": "agy", "tier": "cheap" },
+
+    { "name": "grounded-research",
+      "when": { "type": ["websearch", "research-synth", "summarize", "extract", "docs", "ingest", "scan"] },
+      "backend": "agy", "tier": "standard" },
+
+    { "_comment": "Standard, verifiable coding — most everyday code work.",
+      "name": "standard-coding",
+      "when": { "type": ["frontend", "react-component", "css", "html", "ui", "svg", "animation", "3d", "asset-gen", "mockup", "boilerplate", "scaffold", "crud", "rest-endpoint", "script", "cli-tool", "glue-code", "data-transform", "sql-query", "regex", "config-file", "dockerfile", "rename", "format", "codegen", "unit-test", "fixture"] },
+      "backend": "agy", "tier": "standard" },
+
+    { "_comment": "Cheap/fast trivia — tiny, throwaway, zero-judgment.",
+      "name": "trivial",
+      "when": { "type": ["quick-email", "rename", "format", "one-liner", "explain-snippet"], "max_chars": 4000 },
+      "backend": "agy", "tier": "cheap" },
+
+    { "_comment": "Default when UNCLASSIFIED — prefer sonnet (safe middle), never agy on a guess.",
+      "name": "catch-all-safe",
+      "when": {},
+      "backend": "native", "tier": "sonnet" }
+  ],
+
+  "proactive": {
+    "_comment": "UserPromptSubmit hook. When enabled, a submitted prompt that routes to an agy-kind backend gets a one-shot reminder nudging delegation. Deterministic firing; soft compliance. max_chars/min_chars bound the prompt size (0 = no bound); rules is a CSV allowlist of route names (empty = any agy route).",
+    "enabled": false,
+    "max_chars": 0,
+    "min_chars": 0,
+    "rules": ""
+  }
+}

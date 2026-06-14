@@ -20,7 +20,7 @@ export MMT_ROOT
 # shellcheck source=lib/score.sh
 . "$MMT_ROOT/scripts/lib/score.sh"
 
-ROSTER="${MMT_ROSTER:-$MMT_ROOT/config/roster.toml}"
+ROSTER="${MMT_ROSTER:-$MMT_ROOT/config/roster.json}"
 PRESET=""
 EXPLAIN=0
 TASK=""
@@ -50,7 +50,7 @@ TYPES="$(mmt_classify "$TASK")"
 TYPES_CSV="$(printf '%s' "$TYPES" | tr ' ' ',')"
 
 if ! PY="$(mmt_find_python)"; then
-  echo "route.sh: no python3 with tomllib found (need 3.11+)" >&2
+  echo "route.sh: no python3 found" >&2
   # Degrade to a safe Sonnet decision rather than failing the caller.
   printf '{"backend":"native","model":"native:sonnet","tier":"sonnet","rule":"no-python","native":true,"preset":"%s","score":{"chars":%s,"types":[]}}\n' \
     "${PRESET:-balanced}" "$CHARS"

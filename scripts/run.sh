@@ -14,7 +14,7 @@ export MMT_ROOT
 . "$MMT_ROOT/scripts/lib/state.sh"
 . "$MMT_ROOT/scripts/lib/backends.sh"
 
-ROSTER="${MMT_ROSTER:-$MMT_ROOT/config/roster.toml}"
+ROSTER="${MMT_ROSTER:-$MMT_ROOT/config/roster.json}"
 PRESET="" ADD_DIR="" DECISION="" SANDBOX=0 TASK=""
 
 while [ $# -gt 0 ]; do
@@ -61,23 +61,21 @@ fi
 # Belt-and-suspenders: a parsed-but-empty backend must never fail open to agy.
 [ -n "$D_backend" ] || { D_backend="native"; D_native=1; }
 
-# ---- 2. Load backend config + init state ----------------------------------
+# ---- 2. Load defaults + init state ----------------------------------------
+# Backend-specific config (MMT_BE_*) is loaded per hop inside the fallback chain below,
+# since each hop may be a different backend. Only the defaults are global here.
 if [ -n "$PY" ]; then
-  eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$ROSTER" agy-env 2>/dev/null)" || true
-fi
-# Append --sandbox without synthesizing a spurious empty element when the array is
-# unset/empty (the ${arr[@]+"${arr[@]}"} idiom expands to nothing, not an empty string).
-if [ "$SANDBOX" = "1" ]; then
-  MMT_AGY_EXTRA=( ${MMT_AGY_EXTRA[@]+"${MMT_AGY_EXTRA[@]}"} "${MMT_AGY_SANDBOX_FLAG:---sandbox}" )
+  eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$ROSTER" defaults-env 2>/dev/null)" || true
 fi
 mmt_state_init
 
 # Balance the HUD 'open' gauge if we're killed (SIGINT/SIGTERM) mid-call. Without this,
 # an interrupted delegation would leave open incremented forever in state.json.
 CALL_OPEN=0
+CUR_BE=""
 _mmt_on_signal() {
   [ "${CALL_OPEN:-0}" = "1" ] || return 0
-  mmt_state_end "${CALL_ID:-}" agy "${model:-}" "${D_rule:-}" 130 0 0 0
+  mmt_state_end "${CALL_ID:-}" "${CUR_BE:-backend}" "${model:-}" "${D_rule:-}" 130 0 0 0
   CALL_OPEN=0
 }
 trap _mmt_on_signal INT TERM
@@ -106,21 +104,39 @@ fi
 FALLBACK_COUNT=0
 for entry in "${CHAIN[@]}"; do
   case "$entry" in
-    native:*)
-      tier="${entry#native:}"
-      native_sentinel "$tier" "$D_rule" "agy options exhausted; falling back to native"
+    native|native:*)
+      tier="${entry#native}"; tier="${tier#:}"; tier="${tier:-$D_tier}"
+      native_sentinel "$tier" "$D_rule" "backend options exhausted; falling back to native"
       exit 0
       ;;
-    agy)
-      model="$(mmt_agy_model_for_tier "$D_tier")"
-      [ -n "$model" ] || model="$(mmt_agy_model_for_tier standard)"
-      if ! mmt_agy_health; then
+    *)
+      be="$entry"; CUR_BE="$be"
+      # Load this backend's config (MMT_BE_*). Skip the hop if it can't be read.
+      if [ -n "$PY" ]; then
+        if ! eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$ROSTER" backend-env "$be" 2>/dev/null)"; then
+          echo "run.sh: cannot load backend '$be' (skipped)" >&2
+          FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
+        fi
+      fi
+      # Disabled or unknown backend -> skip (falls through to the next hop / native).
+      if [ "${MMT_BE_ENABLED:-0}" != "1" ]; then
+        echo "run.sh: backend '$be' disabled or unknown (skipped)" >&2
         FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
       fi
-      mmt_state_start "$CALL_ID" "agy" "$model" "$D_rule" "$IN_CHARS"; CALL_OPEN=1
+      # Optional --sandbox: append the backend's sandbox flag for this hop only.
+      if [ "$SANDBOX" = "1" ]; then
+        MMT_BE_EXTRA=( ${MMT_BE_EXTRA[@]+"${MMT_BE_EXTRA[@]}"} "${MMT_BE_SANDBOX_FLAG:---sandbox}" )
+      fi
+      model="$(mmt_be_model_for_tier "$D_tier")"
+      [ -n "$model" ] || model="$(mmt_be_model_for_tier standard)"
+      # Health-gate: an unhealthy backend (or a kind with no invoker) is skipped.
+      if ! mmt_be_health; then
+        FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
+      fi
+      mmt_state_start "$CALL_ID" "$be" "$model" "$D_rule" "$IN_CHARS"; CALL_OPEN=1
       start_ms="$(mmt_now_ms)"
       err_file="$(mktemp 2>/dev/null || echo "$MMT_STATE_DIR/err.$$")"
-      raw_out="$(mmt_agy_invoke "$model" "$FULL_PROMPT" "$ADD_DIR" 2>"$err_file")"
+      raw_out="$(mmt_be_invoke "$model" "$FULL_PROMPT" "$ADD_DIR" 2>"$err_file")"
       code=$?
       err="$(cat "$err_file" 2>/dev/null)"; rm -f "$err_file" 2>/dev/null
       end_ms="$(mmt_now_ms)"; dur=$(( end_ms - start_ms ))
@@ -128,24 +144,18 @@ for entry in "${CHAIN[@]}"; do
       out_chars="$(printf '%s' "$clean_out" | wc -m | tr -d ' ')"
 
       if mmt_quota_exhausted "$raw_out" "$err" "$code"; then
-        mmt_state_end "$CALL_ID" "agy" "$model" "$D_rule" "$code" "$dur" "$out_chars" 1; CALL_OPEN=0
+        mmt_state_end "$CALL_ID" "$be" "$model" "$D_rule" "$code" "$dur" "$out_chars" 1; CALL_OPEN=0
         FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
       fi
       if [ "$code" != "0" ] || [ -z "$clean_out" ]; then
         # Non-quota failure or suspicious empty output -> fall back to the next backend.
         # ($code is always set by code=$? above; pass it through honestly.)
-        mmt_state_end "$CALL_ID" "agy" "$model" "$D_rule" "$code" "$dur" "$out_chars" 1; CALL_OPEN=0
+        mmt_state_end "$CALL_ID" "$be" "$model" "$D_rule" "$code" "$dur" "$out_chars" 1; CALL_OPEN=0
         FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
       fi
-      mmt_state_end "$CALL_ID" "agy" "$model" "$D_rule" 0 "$dur" "$out_chars" "$FALLBACK_COUNT"; CALL_OPEN=0
+      mmt_state_end "$CALL_ID" "$be" "$model" "$D_rule" 0 "$dur" "$out_chars" "$FALLBACK_COUNT"; CALL_OPEN=0
       printf '%s\n' "$clean_out"
       exit 0
-      ;;
-    *)
-      # Unknown/unimplemented backend token (e.g. a future codex before its case exists,
-      # or a roster typo) -> note it so the misconfig is observable, then skip the hop.
-      echo "run.sh: unknown backend token in fallback chain: '$entry' (skipped)" >&2
-      continue
       ;;
   esac
 done

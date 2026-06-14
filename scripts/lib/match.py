@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""match.py — apply roster.toml [[route]] rules to a scored task.
+"""match.py — apply roster.json routes to a scored task.
 
 Usage:
-    match.py <roster.toml> <chars> <types-csv> [preset]
+    match.py <roster.json> <chars> <types-csv> [preset]
 
 <types-csv> is the comma-separated type list from score.sh (may be empty).
 <preset>    overrides defaults.preset when given (balanced|budget|premium).
@@ -15,10 +15,9 @@ import json
 import sys
 
 
-def load_toml(path):
-    import tomllib
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+def load_config(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def resolve_model(cfg, backend, tier):
@@ -27,7 +26,7 @@ def resolve_model(cfg, backend, tier):
         return f"native:{tier}", True
     be = cfg.get("backends", {}).get(backend, {})
     models = be.get("models", {})
-    # agy exposes cheap/standard. Fall back to standard, then any available.
+    # A backend exposes named tiers (e.g. cheap/standard). Fall back to standard, then any.
     if tier in models:
         return models[tier], False
     if "standard" in models:
@@ -38,7 +37,7 @@ def resolve_model(cfg, backend, tier):
 
 
 def apply_preset(preset, rule_name, backend, tier):
-    """Documented preset biases (see roster.toml header)."""
+    """Documented preset biases (see roster.json / README)."""
     if preset == "budget" and rule_name == "judgment-coding":
         return "agy", "standard"
     if preset == "premium" and rule_name in ("standard-coding", "trivial"):
@@ -69,7 +68,7 @@ def match_rule(routes, chars, types):
 def main():
     argv = sys.argv[1:]
     if len(argv) < 3:
-        print('{"error":"usage: match.py <roster.toml> <chars> <types-csv> [preset]"}')
+        print('{"error":"usage: match.py <roster.json> <chars> <types-csv> [preset]"}')
         return 2
 
     roster_path = argv[0]
@@ -83,7 +82,7 @@ def main():
     score = {"chars": chars, "types": types}
 
     try:
-        cfg = load_toml(roster_path)
+        cfg = load_config(roster_path)
     except Exception as e:  # noqa: BLE001 - resilience: never hard-fail routing
         sys.stderr.write(f"match.py: config error: {e}\n")
         decision = {
@@ -96,7 +95,8 @@ def main():
 
     defaults = cfg.get("defaults", {})
     preset = preset_override or defaults.get("preset", "balanced")
-    routes = cfg.get("route", [])
+    # Only real route objects (skip the array's _comment marker dicts and any non-dict).
+    routes = [r for r in cfg.get("routes", []) if isinstance(r, dict) and "name" in r]
 
     rule = match_rule(routes, chars, types)
     if rule is None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # proactive-route.sh — UserPromptSubmit hook for the multi-model-team plugin.
 #
-# When [proactive].enabled is true in roster.toml, every submitted prompt that the router
+# When proactive.enabled is true in roster.json, every submitted prompt that the router
 # would send to agy gets a one-shot reminder injected (as additionalContext), nudging Claude
 # to DELEGATE it — spawn the multi-model-team:delegate agent (or run /team) — instead of
 # solving it inline. The reminder ALWAYS fires when the conditions hold (deterministic);
@@ -19,31 +19,24 @@ payload="$(cat 2>/dev/null)"
 [ -n "$payload" ] || exit 0
 
 MMT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # scripts/hooks -> plugin root
-ROSTER="${MMT_ROSTER:-$MMT_ROOT/config/roster.toml}"
+ROSTER="${MMT_ROSTER:-$MMT_ROOT/config/roster.json}"
 [ -f "$ROSTER" ] || exit 0
 
-# --- fast pure-bash gate: is [proactive].enabled = true? (no fork when off) ----------------
-# A read-loop over the TOML (builtin, fork-free). Authoritative parse happens later via
-# config.py — this is only a cheap "should we even start" check.
+# --- fast pure-bash gate: is proactive.enabled = true? (no fork when off) ------------------
+# Reads the whole file with $(<file) (a bash builtin — no fork) and substring-scans the value
+# after "proactive" -> "enabled". Robust to compact (single-line) OR pretty JSON. Authoritative
+# parse happens later via config.py — this is only a cheap "should we even start" check.
 _proactive_enabled() {
-  local f="$1" in_sec=0 line val
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line#"${line%%[![:space:]]*}"}"          # strip leading whitespace
-    case "$line" in
-      '#'*) continue ;;
-      '[proactive]'*) in_sec=1; continue ;;
-      '['*) in_sec=0; continue ;;                     # any other table header
-    esac
-    [ "$in_sec" = "1" ] || continue
-    case "$line" in
-      enabled*)
-        val="${line#*=}"; val="${val%%#*}"            # value, sans inline comment
-        val="${val//[[:space:]]/}"                    # trim all spaces
-        [ "$val" = "true" ] && return 0 || return 1
-        ;;
-    esac
-  done < "$f"
-  return 1
+  local f="$1" blob after
+  [ -f "$f" ] || return 1
+  blob="$(<"$f")"
+  case "$blob" in *'"proactive"'*) : ;; *) return 1 ;; esac
+  after="${blob#*\"proactive\"}"           # text after the proactive key
+  case "$after" in *'"enabled"'*) : ;; *) return 1 ;; esac
+  after="${after#*\"enabled\"}"            # text after the enabled key
+  after="${after%%,*}"                     # value region: up to the next comma...
+  after="${after%%\}*}"                    # ...or the closing brace
+  case "$after" in *true*) return 0 ;; *) return 1 ;; esac
 }
 _proactive_enabled "$ROSTER" || exit 0
 

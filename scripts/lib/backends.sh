@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# backends.sh — backend resolution + invocation. agy first; extensible per the roster.
-# Expects the MMT_AGY_* vars to be loaded already (run.sh does:
-#   eval "$(python config.py roster.toml agy-env)" ).
-# Key fact (PROBES.md): agy needs a TTY, so on Windows we wrap it in winpty.
+# backends.sh — backend resolution + invocation, generic over backends.
+#
+# run.sh loads ONE backend's config before calling these, via:
+#   eval "$(python config.py roster.json backend-env <name>)"
+# which sets MMT_BE_* (NAME / ENABLED / KIND / CMD / models / winpty / quota / ...).
+#
+# Invocation dispatches on MMT_BE_KIND. Only "gemini" (agy) is implemented today; other
+# kinds (codex, opencode, ...) have no invoker yet, so mmt_be_invoke returns 127 and
+# mmt_be_health returns 1 — run.sh then falls through to the next backend / native.
+#
+# Key fact (PROBES.md): the gemini CLI (agy) needs a TTY, so on Windows we wrap it in winpty
+# and hold an open idle stdin.
 
 _mmt_is_windows() {
   case "$(uname -s 2>/dev/null)" in
@@ -11,27 +19,30 @@ _mmt_is_windows() {
   esac
 }
 
-# Resolve the agy binary: $MMT_AGY_BIN -> PATH -> roster bin_candidates -> known paths.
-mmt_resolve_agy() {
-  if [ -n "${MMT_AGY_BIN:-}" ] && [ -x "${MMT_AGY_BIN}" ]; then
-    printf '%s' "$MMT_AGY_BIN"; return 0
+# Resolve the current backend's binary: $MMT_BE_BIN (or legacy $MMT_AGY_BIN) -> PATH ($MMT_BE_CMD)
+# -> roster bin_candidates -> known agy paths (gemini only).
+mmt_be_resolve() {
+  local override="${MMT_BE_BIN:-${MMT_AGY_BIN:-}}"
+  if [ -n "$override" ] && [ -x "$override" ]; then
+    printf '%s' "$override"; return 0
   fi
-  if command -v "${MMT_AGY_CMD:-agy}" >/dev/null 2>&1; then
-    command -v "${MMT_AGY_CMD:-agy}"; return 0
+  if command -v "${MMT_BE_CMD:-}" >/dev/null 2>&1; then
+    command -v "${MMT_BE_CMD:-}"; return 0
   fi
   local -a cands=()
-  # From roster (literal '$VAR' substituted here, no eval).
   local c
-  if [ -n "${MMT_AGY_BIN_CANDIDATES+x}" ]; then
-    for c in "${MMT_AGY_BIN_CANDIDATES[@]}"; do
+  if [ -n "${MMT_BE_BIN_CANDIDATES+x}" ]; then
+    for c in "${MMT_BE_BIN_CANDIDATES[@]}"; do
       c="${c//\$LOCALAPPDATA/${LOCALAPPDATA:-}}"
       c="${c//\$HOME/${HOME:-}}"
       cands+=("$c")
     done
   fi
-  # Built-in fallbacks.
-  [ -n "${LOCALAPPDATA:-}" ] && cands+=("$LOCALAPPDATA/agy/bin/agy.exe")
-  cands+=("$HOME/AppData/Local/agy/bin/agy.exe")
+  # Built-in gemini/agy fallbacks (harmless for other kinds — they just won't exist).
+  if [ "${MMT_BE_KIND:-}" = "gemini" ]; then
+    [ -n "${LOCALAPPDATA:-}" ] && cands+=("$LOCALAPPDATA/agy/bin/agy.exe")
+    cands+=("$HOME/AppData/Local/agy/bin/agy.exe")
+  fi
   local u
   for c in "${cands[@]}"; do
     [ -n "$c" ] || continue
@@ -46,7 +57,7 @@ mmt_resolve_agy() {
 
 # Should we wrap with winpty? (configured + Windows + not already a tty + winpty present)
 _mmt_use_winpty() {
-  [ "${MMT_AGY_USE_WINPTY:-1}" = "1" ] || return 1
+  [ "${MMT_BE_USE_WINPTY:-1}" = "1" ] || return 1
   _mmt_is_windows || return 1
   command -v winpty >/dev/null 2>&1 || return 1
   return 0
@@ -56,8 +67,8 @@ _mmt_use_winpty() {
 _mmt_winpty_prefix() {
   local __arr="$1"
   if _mmt_use_winpty; then
-    if [ -n "${MMT_AGY_WINPTY_FLAGS+x}" ]; then
-      eval "$__arr=( winpty \"\${MMT_AGY_WINPTY_FLAGS[@]}\" )"
+    if [ -n "${MMT_BE_WINPTY_FLAGS+x}" ]; then
+      eval "$__arr=( winpty \"\${MMT_BE_WINPTY_FLAGS[@]}\" )"
     else
       eval "$__arr=( winpty -Xallow-non-tty -Xplain )"
     fi
@@ -66,7 +77,7 @@ _mmt_winpty_prefix() {
   fi
 }
 
-# Clean agy stdout: strip CR, drop winpty teardown noise, strip stray ANSI/escape
+# Clean backend stdout: strip CR, drop winpty teardown noise, strip stray ANSI/escape
 # sequences (CSI incl. intermediates, OSC, charset-select, and 2-char escapes), then
 # trim trailing blank lines. -Xplain already suppresses ANSI; this is the backstop.
 mmt_clean() {
@@ -79,23 +90,12 @@ mmt_clean() {
   | sed -e ':a' -e '/^[[:space:]]*$/{$d;N;ba}'
 }
 
-# Health check: `agy --version` returns 0 with a version line. This runs DIRECTLY
-# (no winpty) — --version is not TTY-gated, unlike the print/interactive flow, and
-# wrapping it in winpty yields empty output (see PROBES.md).
-mmt_agy_health() {
-  local bin; bin="$(mmt_resolve_agy)" || return 1
-  local out
-  out="$(timeout 30 "$bin" "${MMT_AGY_HEALTH:---version}" </dev/null 2>/dev/null | tr -d '\r')"
-  [ -n "$out" ] || return 1
-  return 0
-}
-
-# Map a tier to an agy model string.
-mmt_agy_model_for_tier() {
+# Map a tier to the current backend's model string.
+mmt_be_model_for_tier() {
   case "$1" in
-    cheap)    printf '%s' "${MMT_AGY_MODEL_CHEAP:-}" ;;
-    standard) printf '%s' "${MMT_AGY_MODEL_STANDARD:-}" ;;
-    *)        printf '%s' "${MMT_AGY_MODEL_STANDARD:-}" ;;
+    cheap)    printf '%s' "${MMT_BE_MODEL_CHEAP:-}" ;;
+    standard) printf '%s' "${MMT_BE_MODEL_STANDARD:-}" ;;
+    *)        printf '%s' "${MMT_BE_MODEL_STANDARD:-}" ;;
   esac
 }
 
@@ -135,21 +135,49 @@ _mmt_with_open_stdin() {
   "$@"   # absolute last resort: inherit caller stdin
 }
 
-# Invoke agy. Args: <model> <prompt> [add_dir]
-# Writes raw response to stdout, raw stderr to fd 2, returns agy's (timeout's) exit code.
-mmt_agy_invoke() {
+# --- gemini (agy) kind --------------------------------------------------------
+# Invoke the gemini CLI. Args: <model> <prompt> [add_dir]
+# Writes raw response to stdout, raw stderr to fd 2, returns the CLI's (timeout's) exit code.
+_mmt_invoke_gemini() {
   local model="$1" prompt="$2" add_dir="${3:-}"
-  local bin; bin="$(mmt_resolve_agy)" || return 127
+  local bin; bin="$(mmt_be_resolve)" || return 127
   local -a pre; _mmt_winpty_prefix pre
-  local -a cmd=( "$bin" "${MMT_AGY_ONESHOT:---print}" "$prompt" "${MMT_AGY_MODEL_FLAG:---model}" "$model" )
-  if [ -n "${MMT_AGY_EXTRA+x}" ]; then cmd+=( "${MMT_AGY_EXTRA[@]}" ); fi
-  if [ -n "$add_dir" ]; then cmd+=( "${MMT_AGY_ADD_DIR_FLAG:---add-dir}" "$add_dir" ); fi
+  local -a cmd=( "$bin" "${MMT_BE_ONESHOT:---print}" "$prompt" "${MMT_BE_MODEL_FLAG:---model}" "$model" )
+  if [ -n "${MMT_BE_EXTRA+x}" ]; then cmd+=( "${MMT_BE_EXTRA[@]}" ); fi
+  if [ -n "$add_dir" ]; then cmd+=( "${MMT_BE_ADD_DIR_FLAG:---add-dir}" "$add_dir" ); fi
   if _mmt_use_winpty; then
-    _mmt_with_open_stdin timeout "${MMT_AGY_HARD_TIMEOUT:-6m}" "${pre[@]}" "${cmd[@]}"
+    _mmt_with_open_stdin timeout "${MMT_BE_HARD_TIMEOUT:-6m}" "${pre[@]}" "${cmd[@]}"
   else
     # Non-winpty (e.g. Linux/mac agy): conventional headless redirect is safe.
-    timeout "${MMT_AGY_HARD_TIMEOUT:-6m}" "${cmd[@]}" </dev/null
+    timeout "${MMT_BE_HARD_TIMEOUT:-6m}" "${cmd[@]}" </dev/null
   fi
+}
+
+# Health check: `<bin> --version` returns 0 with a version line. Runs DIRECTLY (no winpty) —
+# --version is not TTY-gated, unlike the print flow, and winpty yields empty (see PROBES.md).
+_mmt_health_gemini() {
+  local bin; bin="$(mmt_be_resolve)" || return 1
+  local out
+  out="$(timeout 30 "$bin" "${MMT_BE_HEALTH:---version}" </dev/null 2>/dev/null | tr -d '\r')"
+  [ -n "$out" ] || return 1
+  return 0
+}
+
+# --- generic dispatch ---------------------------------------------------------
+# Invoke the current backend by kind. Args: <model> <prompt> [add_dir]. 127 if no invoker.
+mmt_be_invoke() {
+  case "${MMT_BE_KIND:-}" in
+    gemini) _mmt_invoke_gemini "$@" ;;
+    *)      return 127 ;;   # no invoker for this kind -> caller falls back
+  esac
+}
+
+# Health-check the current backend by kind. 1 if unhealthy or no probe for this kind.
+mmt_be_health() {
+  case "${MMT_BE_KIND:-}" in
+    gemini) _mmt_health_gemini ;;
+    *)      return 1 ;;
+  esac
 }
 
 # Quota detection over captured out+err+code. Returns 0 if exhausted.
@@ -158,8 +186,8 @@ mmt_agy_invoke() {
 mmt_quota_exhausted() {
   local out="$1" err="$2" code="$3"
   local c
-  if [ -n "${MMT_AGY_QUOTA_EXIT_CODES+x}" ]; then
-    for c in "${MMT_AGY_QUOTA_EXIT_CODES[@]}"; do
+  if [ -n "${MMT_BE_QUOTA_EXIT_CODES+x}" ]; then
+    for c in "${MMT_BE_QUOTA_EXIT_CODES[@]}"; do
       [ -n "$c" ] && [ "$code" = "$c" ] && return 0
     done
   fi
@@ -168,8 +196,8 @@ $err"
   blob="${blob,,}"          # case-insensitive: lowercase the haystack (bash 4+)
   blob="${blob:0:16000}"    # bound the scan
   local p
-  if [ -n "${MMT_AGY_QUOTA_PATTERNS+x}" ]; then
-    for p in "${MMT_AGY_QUOTA_PATTERNS[@]}"; do
+  if [ -n "${MMT_BE_QUOTA_PATTERNS+x}" ]; then
+    for p in "${MMT_BE_QUOTA_PATTERNS[@]}"; do
       [ -n "$p" ] || continue
       p="${p,,}"
       case "$blob" in

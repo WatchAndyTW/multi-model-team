@@ -75,7 +75,7 @@ assert_eq "premium: react->native" "$(field "$("$ROUTE" --preset premium 'Create
 
 echo "── Unit: quota detection ──────────────────────────────"
 ( . "$MMT_ROOT/scripts/lib/backends.sh"
-  eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$MMT_ROOT/config/roster.toml" agy-env)"
+  eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$MMT_ROOT/config/roster.json" backend-env agy)"
   mmt_quota_exhausted "all good" "" 0 && echo Q_CLEAN_BAD || echo Q_CLEAN_OK
   mmt_quota_exhausted "RESOURCE_EXHAUSTED quota exceeded" "" 1 && echo Q_QUOTA_OK || echo Q_QUOTA_BAD
   mmt_quota_exhausted "" "429 Too Many Requests" 1 && echo Q_429_OK || echo Q_429_BAD
@@ -227,28 +227,52 @@ fi
 echo "── Unit: proactive hook (UserPromptSubmit) ────────────"
 PHOOK="$MMT_ROOT/scripts/hooks/proactive-route.sh"
 PTMP="$(mktemp -d)"
-# Temp rosters: same routing rules, [proactive] flipped on (and one with a tiny size cap).
-sed 's/^enabled   = false/enabled   = true/' "$MMT_ROOT/config/roster.toml" > "$PTMP/on.toml"
-sed -e 's/^enabled   = false/enabled   = true/' -e 's/^max_chars = 0/max_chars = 10/' \
-  "$MMT_ROOT/config/roster.toml" > "$PTMP/cap.toml"
+# Temp rosters (JSON): same routing rules, proactive flipped on (and one with a tiny size cap).
+# Built via python (argv path + bash redirect, ensure_ascii) to dodge the msys-path gotcha.
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['enabled']=True; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$PTMP/on.json"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['enabled']=True; d['proactive']['max_chars']=10; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$PTMP/cap.json"
 hookrun() { printf '%s' "$1" | MMT_ROSTER="$2" bash "$PHOOK" 2>/dev/null; }   # payload roster
 SQLP='{"prompt":"Write a SQL query to join users and orders tables"}'
 
-assert_eq       "proactive: disabled -> silent"        "$(hookrun "$SQLP" "$MMT_ROOT/config/roster.toml")" ""
-assert_contains "proactive: enabled+agy -> nudge"      "$(hookrun "$SQLP" "$PTMP/on.toml")" "routes to agy"
-assert_contains "proactive: nudge names delegate"      "$(hookrun "$SQLP" "$PTMP/on.toml")" "multi-model-team:delegate"
-assert_eq       "proactive: opus task -> silent"       "$(hookrun '{"prompt":"Reverse engineer the IL2CPP dump and extract protobuf"}' "$PTMP/on.toml")" ""
-assert_eq       "proactive: slash command -> silent"   "$(hookrun '{"prompt":"/team build a thing"}' "$PTMP/on.toml")" ""
-assert_eq       "proactive: max_chars cap -> silent"   "$(hookrun "$SQLP" "$PTMP/cap.toml")" ""
-assert_eq       "proactive: env DISABLE -> silent"     "$(printf '%s' "$SQLP" | MMT_PROACTIVE_DISABLE=1 MMT_ROSTER="$PTMP/on.toml" bash "$PHOOK" 2>/dev/null)" ""
+assert_eq       "proactive: disabled -> silent"        "$(hookrun "$SQLP" "$MMT_ROOT/config/roster.json")" ""
+assert_contains "proactive: enabled+agy -> nudge"      "$(hookrun "$SQLP" "$PTMP/on.json")" "routes to agy"
+assert_contains "proactive: nudge names delegate"      "$(hookrun "$SQLP" "$PTMP/on.json")" "multi-model-team:delegate"
+assert_eq       "proactive: opus task -> silent"       "$(hookrun '{"prompt":"Reverse engineer the IL2CPP dump and extract protobuf"}' "$PTMP/on.json")" ""
+assert_eq       "proactive: slash command -> silent"   "$(hookrun '{"prompt":"/team build a thing"}' "$PTMP/on.json")" ""
+assert_eq       "proactive: max_chars cap -> silent"   "$(hookrun "$SQLP" "$PTMP/cap.json")" ""
+assert_eq       "proactive: env DISABLE -> silent"     "$(printf '%s' "$SQLP" | MMT_PROACTIVE_DISABLE=1 MMT_ROSTER="$PTMP/on.json" bash "$PHOOK" 2>/dev/null)" ""
 rm -rf "$PTMP"
+
+echo "── Unit: JSON config — backends configurable ──────────"
+CJSON="$MMT_ROOT/config/roster.json"
+CFG() { "$PY" "$MMT_ROOT/scripts/lib/config.py" "$CJSON" backend-env "$1" 2>/dev/null; }
+assert_contains "backend: agy enabled"     "$(CFG agy)"   "MMT_BE_ENABLED=1"
+assert_contains "backend: agy kind gemini" "$(CFG agy)"   "MMT_BE_KIND=gemini"
+assert_contains "backend: codex disabled"  "$(CFG codex)" "MMT_BE_ENABLED=0"
+assert_contains "backend: unknown -> off"  "$(CFG nope)"  "MMT_BE_ENABLED=0"
+# Disabling a backend makes run.sh skip it -> native handoff (offline: agy never called).
+RTMP="$(mktemp -d)"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['backends']['agy']['enabled']=False; print(json.dumps(d))" "$CJSON" > "$RTMP/off.json"
+assert_contains "backend: disabled agy -> native handoff" \
+  "$(MMT_ROSTER="$RTMP/off.json" bash "$RUN" "Write a SQL query to list users" 2>/dev/null)" "MMT_NATIVE_HANDOFF"
+rm -rf "$RTMP"
+
+echo "── Unit: gen_agents.py (enable/disable -> .md) ────────"
+GTMP="$(mktemp -d)"; mkdir -p "$GTMP/agents"
+printf 'stale' > "$GTMP/agents/bulk-summarizer.md"      # should be removed (disabled below)
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['agents']['bulk-summarizer']['enabled']=False; print(json.dumps(d))" "$CJSON" > "$GTMP/r.json"
+"$PY" "$MMT_ROOT/scripts/lib/gen_agents.py" "$GTMP/r.json" "$GTMP/agents" >/dev/null 2>&1
+assert_eq       "gen: enabled agent written"  "$( [ -f "$GTMP/agents/delegate.md" ] && echo yes || echo no )" yes
+assert_eq       "gen: disabled agent removed" "$( [ -f "$GTMP/agents/bulk-summarizer.md" ] && echo yes || echo no )" no
+assert_contains "gen: relay body present"     "$(cat "$GTMP/agents/delegate.md" 2>/dev/null)" "scripts/run.sh"
+rm -rf "$GTMP"
 
 # ---- live agy smoke tests (opt-in) ----------------------------------------
 if [ "${MMT_LIVE:-0}" = "1" ]; then
   echo "── LIVE: agy smoke tests ──────────────────────────────"
   ( . "$MMT_ROOT/scripts/lib/common.sh"; . "$MMT_ROOT/scripts/lib/backends.sh"
-    eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$MMT_ROOT/config/roster.toml" agy-env)"
-    mmt_agy_health && echo LIVE_HEALTH_OK || echo LIVE_HEALTH_BAD
+    eval "$("$PY" "$MMT_ROOT/scripts/lib/config.py" "$MMT_ROOT/config/roster.json" backend-env agy)"
+    mmt_be_health && echo LIVE_HEALTH_OK || echo LIVE_HEALTH_BAD
   ) > /tmp/live_h.out 2>/dev/null
   assert_contains "live: health" "$(cat /tmp/live_h.out)" LIVE_HEALTH_OK
 

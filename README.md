@@ -36,7 +36,7 @@ It also feeds agy an **open, idle stdin** (a held-open pipe) because agy emits n
 stdin is already at EOF (e.g. `/dev/null` or a drained pipe). All of this is handled in
 `scripts/lib/backends.sh`. Full findings are in [PROBES.md](PROBES.md).
 
-**Requirements on Windows:** `winpty`, `python3` (3.11+, for `tomllib`), and a bash
+**Requirements on Windows:** `winpty`, `python3` (any version; stdlib `json`), and a bash
 (git-bash / msys). `jq` is **not** required. `agy` must be installed and pre-authed
 (the binary is auto-resolved from `$LOCALAPPDATA/agy/bin/agy.exe`, PATH, or `$MMT_AGY_BIN`).
 
@@ -130,14 +130,15 @@ one-shot reminder** nudging Claude to delegate it (the `delegate` agent / `/team
 solving it inline. The reminder firing is deterministic; whether Claude takes the hint is still its
 judgment.
 
-It's **off by default**. Turn it on and tune it in `config/roster.toml`:
+It's **off by default**. Turn it on and tune it in `config/roster.json`:
 
-```toml
-[proactive]
-enabled   = true      # master switch (default false)
-max_chars = 0         # only nudge when the prompt is <= N chars (0 = no cap) — e.g. 1500 for "small tasks only"
-min_chars = 0         # only nudge when the prompt is >= N chars (0 = no floor)
-rules     = ""        # CSV allowlist of route rules to nudge on (e.g. "bulk-ingest,grounded-research"); empty = any agy rule
+```jsonc
+"proactive": {
+  "enabled": true,      // master switch (default false)
+  "max_chars": 0,       // only nudge when the prompt is <= N chars (0 = no cap) — e.g. 1500 for "small tasks only"
+  "min_chars": 0,       // only nudge when the prompt is >= N chars (0 = no floor)
+  "rules": ""           // CSV allowlist of route names to nudge on (e.g. "bulk-ingest,grounded-research"); empty = any agy route
+}
 ```
 
 Slash commands and prompts that route to native Claude (judgment / RE / systems) are never nudged.
@@ -149,7 +150,7 @@ When disabled it bails in pure bash (no Python spawned), so it costs ~nothing. H
 ## How routing works
 
 `route.sh` scores the task (char count + keyword type classification from `config/tags.txt`),
-then matches `[[route]]` rules in `config/roster.toml` (first match wins; order encodes
+then matches `routes` rules in `config/roster.json` (first match wins; order encodes
 priority). `run.sh` executes the chosen backend with a fallback chain, writes HUD state, and
 cleans the output.
 
@@ -163,18 +164,30 @@ cleans the output.
 | Web search, doc/research summary | Anything hard to verify | protocol design, proc-macros |
 | Video/audio (Claude can't anyway) | Unclassified / uncertain | (size-irrelevant — always Opus) |
 
-**Presets** (`[defaults].preset` in roster.toml, or `--preset`):
+**Presets** (`defaults.preset` in roster.json, or `--preset`):
 `budget` pushes borderline judgment-coding down to agy; `premium` pulls standard-coding up to
 Sonnet (keeps agy only for its categorical edges); `balanced` is the default.
 
 ### Tuning
 
-- **`config/tags.txt`** — keyword→type classification (one `type regex` per line). Edit to
-  change *what type* a task is detected as.
-- **`config/roster.toml`** — routing rules, model names, thresholds, quota patterns,
-  backend config. Edit to change *where a type routes*.
+All config lives in one JSON file, **`config/roster.json`** — five sections, with `_comment`/
+`_about` keys as inline docs:
 
-Neither needs a code change. After editing, verify with `/route-test`.
+- **`backends`** — each CLI a route can target. Flip `enabled` to turn a backend on/off; `kind`
+  picks the invoker. `agy` (`kind:"gemini"`) is implemented; `codex`/`opencode` are disabled
+  stubs you can wire up later. Disabling a backend makes everything that would route to it fall
+  through to the next hop / native.
+- **`agents`** — the delegation subagents. Each has `enabled`, `backend`, `tier`, `dispatch`
+  (`route` or `forced`), and a `role` (its description). **After editing, run
+  `python scripts/lib/gen_agents.py`** — it regenerates `agents/*.md` from the JSON (and removes
+  the `.md` of any agent you disabled, so Claude Code stops surfacing it).
+- **`routes`** — first-match-wins routing rules. Edit to change *where a type routes*.
+- **`defaults`** / **`proactive`** — preset + fallback chain, and the proactive-nudge config.
+- **`config/tags.txt`** (separate flat file) — keyword→type classification (one `type regex`
+  per line). Edit to change *what type* a task is detected as.
+
+Routing changes need no code edit — verify with `/route-test`. Agent changes need a
+`gen_agents.py` run; backend `kind`s beyond gemini need an invoker in `backends.sh`.
 
 ---
 
@@ -183,14 +196,15 @@ Neither needs a code change. After editing, verify with `/route-test`.
 ```
 .claude-plugin/plugin.json   plugin manifest
 settings.json                statusLine registration
-config/roster.toml           routing rules + agy backend + thresholds + quota patterns
-config/tags.txt              task-type classifier (editable, no code edits)
+config/roster.json           ALL config (JSON): defaults + backends + agents + routes + proactive
+config/tags.txt              task-type classifier (editable flat file, no code edits)
 scripts/route.sh             task -> decision JSON (pure logic, no model call)
 scripts/run.sh               execute backend + fallback chain + HUD state
 scripts/lib/score.sh         char count + keyword type classification
-scripts/lib/match.py         applies roster.toml rules (tomllib)
-scripts/lib/config.py        emits roster.toml as bash-sourceable vars
-scripts/lib/backends.sh      agy resolution + winpty invocation + clean() + quota detection
+scripts/lib/match.py         applies roster.json routes (json)
+scripts/lib/config.py        emits roster.json as bash-sourceable vars
+scripts/lib/backends.sh      backend resolution (by kind) + winpty invocation + clean() + quota
+scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json (enable/disable/role)
 scripts/lib/state.sh         HUD state read/write (~/.cache/mmt/state.json)
 scripts/lib/common.sh        shared helpers (python finder)
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
@@ -214,7 +228,7 @@ MMT_LIVE=1 bash tests/run_tests.sh # also run live agy smoke tests (network + ag
 
 ## Known open items
 
-- **P2 — quota error grounding:** `quota_patterns` in `roster.toml` are sensible defaults;
+- **P2 — quota error grounding:** `quota_patterns` in `roster.json` are sensible defaults;
   they haven't been validated against a real agy credit-exhaustion error yet. Harden
   `quota_patterns` / `quota_exit_codes` on the first real limit hit (see PROBES.md).
 - **Hook scope:** the PreToolUse guard intentionally matches only `Read` for now (start
@@ -226,7 +240,7 @@ MMT_LIVE=1 bash tests/run_tests.sh # also run live agy smoke tests (network + ag
 |---|---|
 | `MMT_AGY_BIN` | explicit path to the agy binary |
 | `MMT_PYTHON` | python interpreter to use |
-| `MMT_ROSTER` | alternate roster.toml |
+| `MMT_ROSTER` | alternate roster.json |
 | `MMT_TAGS` | alternate tags.txt |
 | `MMT_STATE_DIR` / `MMT_STATE_FILE` | HUD state location |
 | `MMT_STDIN_KEEPALIVE_SECS` | how long the open-stdin pipe is held (default 600) |

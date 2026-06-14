@@ -56,7 +56,7 @@ Available models:
 - `Claude Opus 4.6 (Thinking)`
 - `GPT-OSS 120B (Medium)`
 
-Tier mapping used in `roster.toml`:
+Tier mapping used in `roster.json`:
 - `cheap`    = `Gemini 3.5 Flash (Low)`
 - `standard` = `Gemini 3.1 Pro (Low)`
 
@@ -66,7 +66,7 @@ exhaustion. winpty's assertion line is NOT a quota pattern, so no false positive
 
 ## Tooling on this machine (bash/msys)
 - `jq`: **missing** -> statusline parses state.json with pure bash/sed (no jq dep).
-- `python3`: 3.12.12 with `tomllib` -> used by `route.sh` to parse `roster.toml`.
+- `python3`: 3.12.12 (stdlib `json`) -> used by `route.sh`/`run.sh` to parse `roster.json`.
 - `winpty`, `timeout`, `sed`, `grep`, `awk`, `perl`: present.
 - agy is **not** on bash PATH in this session (added after Claude Code started); scripts
   resolve the binary themselves (env override -> `command -v` -> `$LOCALAPPDATA` path).

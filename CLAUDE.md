@@ -38,14 +38,14 @@ task text
    │
    ▼  scripts/route.sh        pure decision, no model call
    │    ├─ scripts/lib/score.sh   char count + keyword type tags (config/tags.txt)
-   │    └─ scripts/lib/match.py   first-match-wins over config/roster.toml [[route]] (tomllib)
+   │    └─ scripts/lib/match.py   first-match-wins over config/roster.json "routes" (json)
    ▼  decision JSON {backend, model, tier, rule, native}
    │
    ▼  scripts/run.sh          executor
-        ├─ scripts/lib/config.py    roster.toml → bash-sourceable vars (no jq)
-        ├─ scripts/lib/backends.sh  agy resolve + winpty invoke + clean() + quota detect
+        ├─ scripts/lib/config.py    roster.json → bash-sourceable MMT_BE_*/defaults (json, no jq)
+        ├─ scripts/lib/backends.sh  backend resolve (by kind) + winpty invoke + clean() + quota
         ├─ scripts/lib/state.sh     HUD state → ~/.cache/mmt/state.json
-        └─ on agy success: cleaned stdout;  else: MMT_NATIVE_HANDOFF sentinel
+        └─ on backend success: cleaned stdout;  else: MMT_NATIVE_HANDOFF sentinel
    │
    ▼  statusline/statusline.sh   fork-free HUD line (reads state.json)
 ```
@@ -63,17 +63,18 @@ return crossing back to Claude.
 ```
 .claude-plugin/plugin.json   manifest (auto-discovers commands/ agents/ hooks/hooks.json)
 settings.json                reference statusLine (see HUD note below)
-config/roster.toml           routing rules + agy backend + thresholds + quota + [proactive] hook cfg
-config/tags.txt              task-type classifier — `<type> <ERE>` per line
+config/roster.json           ALL config (JSON): defaults + backends + agents + routes + proactive
+config/tags.txt              task-type classifier — `<type> <ERE>` per line (stays a flat file)
 scripts/route.sh             decision only
 scripts/run.sh               executor + fallback chain + HUD state (one task)
 scripts/team.sh              /team fan-out — run a plan's agy subtasks via run.sh in parallel
 scripts/lib/{score.sh,match.py,config.py,backends.sh,state.sh,common.sh}
 scripts/lib/{team_spec.py,team_plan.py}   cap-spec parser; plan.json -> per-subtask files
+scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json `agents` (enable/disable/role)
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
 scripts/hooks/proactive-route.sh    UserPromptSubmit nudge: agy-routable prompt -> suggest delegating
 statusline/statusline.sh     fork-free HUD
-agents/{delegate,av-research,bulk-summarizer}.md
+agents/{delegate,av-research,bulk-summarizer}.md   GENERATED from roster.json (gen_agents.py)
 commands/{team,route-test}.md    /team = multi-agent fan-out; /route-test = dry-run router
 workflows/team.mjs           Ultracode dynamic-workflow fan-out (Workflow tool)
 hooks/hooks.json             PreToolUse (Read guard) + UserPromptSubmit (proactive nudge)
@@ -96,7 +97,7 @@ Three buckets, by "if Gemini gets this subtly wrong, would I notice immediately?
 | web research, doc summary, bulk | unclassified / uncertain | concurrency, lock-free, KCP, proc-macro |
 | video/audio (Claude can't anyway) | | (size-irrelevant — always Opus) |
 
-**Invariants enforced by rule ORDER in `roster.toml` (first match wins):**
+**Invariants enforced by rule ORDER in `roster.json` (first match wins):**
 1. OPUS hard-line rules sit first — RE/injection/systems-hard can never fall through to agy.
 2. `multimodal` (Gemini-exclusive) is the first agy rule — A/V must go to agy even if it
    also carries a judgment word.
@@ -106,7 +107,7 @@ Three buckets, by "if Gemini gets this subtly wrong, would I notice immediately?
 4. Unclassified → `catch-all-safe` → Sonnet.
 
 **Tuning needs no code edits:** edit `config/tags.txt` to change *what type* a task is, and
-`config/roster.toml` to change *where a type routes*. Verify with `/route-test`. When editing
+`config/roster.json` to change *where a type routes*. Verify with `/route-test`. When editing
 the OPUS hard-line regexes, keep them tight — a bare word like `binary`/`hooks`/`injection`
 will false-positive on "binary search" / React "hooks" / "dependency injection" and force
 Opus. When editing agy regexes, keep them specific — bare `extract`/`config file` steal
@@ -154,7 +155,7 @@ Date/random APIs — they break Workflow resume) and tolerates `args` as object 
 ## Proactive delegation hook (opt-in)
 
 `scripts/hooks/proactive-route.sh` is a **UserPromptSubmit** hook (registered in
-`hooks/hooks.json`). When `[proactive].enabled = true` in `roster.toml`, it runs each submitted
+`hooks/hooks.json`). When `[proactive].enabled = true` in `roster.json`, it runs each submitted
 prompt through `route.sh`; if the decision is `backend=agy`, it injects a one-shot reminder
 (`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
 `multi-model-team:delegate` agent / `/team` instead of solving inline. **Deterministic firing,
@@ -168,10 +169,37 @@ python** — so installing it costs ~nothing until opted in. Hard kill switch: `
 Injection-safe: the prompt reaches `route.sh` only on stdin, never as an argument, and is never
 echoed back into the reminder. Tests live under `── Unit: proactive hook` in `tests/run_tests.sh`.
 
+## Config = one JSON file (`config/roster.json`)
+
+All config is JSON (hard cut from TOML). Five top-level sections (`_comment`/`_about`/`_note`
+keys are inline docs the parsers ignore):
+
+- **`defaults`** — `preset`, `fallback`, `quota_fallback` (ordered backend chain).
+- **`backends`** — each key is a backend a route can target. `enabled` gates use; `kind` selects
+  the invoker in `backends.sh`. **Only `kind:"gemini"` (agy) has an invoker today**; `codex`/
+  `opencode` are `enabled:false` stubs — enabling one without an invoker just health-fails and
+  falls through to the next hop. Adding a real backend = add a `_mmt_invoke_<kind>` +
+  `mmt_be_*` case and flip `enabled`; no other code changes.
+- **`agents`** — each delegation subagent: `enabled`, `backend`, `tier`, `dispatch`
+  (`route`=let the router decide; `forced`=pin backend+tier), `model`, `color`, `role`. The
+  `.md` files in `agents/` are **generated** from this by `scripts/lib/gen_agents.py` — edit the
+  JSON then run it; `enabled:false` deletes the agent's `.md` so Claude Code stops surfacing it.
+- **`routes`** — first-match-wins rules (was `[[route]]`); `match.py` skips the array's `_comment`
+  marker objects. Route invariants (Opus hard-line first, multimodal before judgment-coding,
+  judgment-coding above the commodity agy rules) are unchanged — just JSON now.
+- **`proactive`** — the UserPromptSubmit nudge config.
+
+**Parser contract:** `config.py <roster.json> {defaults-env|backend-env <name>|proactive-env}`
+emits bash-sourceable vars. `run.sh` loads `defaults-env` once, then `backend-env <name>` per
+fallback hop; `backends.sh` reads `MMT_BE_*` and dispatches on `MMT_BE_KIND`. A disabled/unknown
+backend yields `MMT_BE_ENABLED=0` → run.sh skips it.
+
 ## Conventions & constraints (Windows / msys)
 
 - **No `jq`.** statusline parses state.json with a fork-free pure-bash loop (state.json is
-  always one-field-per-line). `python3` (3.11+, `tomllib`) parses TOML in route/run only.
+  always one-field-per-line). `python3` (stdlib `json`, any version) parses `roster.json` in
+  route/run/hooks; the proactive hook's `enabled` pre-check reads JSON in pure bash (`$(<file)`
+  + substring) so it forks nothing when off. (Config is JSON now — `tomllib` is no longer used.)
 - **Native python can't open embedded msys paths.** Pass file paths as separate args (MSYS2
   converts those) or pipe content via stdin; never embed `/tmp/...` inside a python `-c` string.
 - **No `grep` in hot/looping paths.** msys grep can core-dump under rapid forking; quota
@@ -199,7 +227,7 @@ Keep the suite green. Add cases for any routing or behavior change.
 
 ## Open items
 
-- **P2 — quota grounding:** `quota_patterns` in `roster.toml` are unvalidated defaults;
+- **P2 — quota grounding:** `quota_patterns` in `roster.json` are unvalidated defaults;
   harden `quota_patterns`/`quota_exit_codes` on the first real agy credit-exhaustion error.
 - **Backends:** codex/opencode are config-only additions later (health-gate so an unavailable
   CLI falls through). Hook is intentionally `Read`-only for now (widen on evidence).

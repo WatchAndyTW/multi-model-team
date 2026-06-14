@@ -25,6 +25,6 @@ MMT_TASK_EOF
 (Pick a heredoc delimiter that does not appear in the task. `route.sh` reads the task from
 stdin when given no argument; `--explain` prints the breakdown.)
 
-The output shows the task's char count, detected types, the matched `[[route]]` rule, and the
+The output shows the task's char count, detected types, the matched route rule, and the
 resolved `{backend, model, tier}`. No backend is invoked. Tune `config/tags.txt` (type
-classification) and `config/roster.toml` (routing rules) to adjust decisions.
+classification) and `config/roster.json` (routes) to adjust decisions.
