@@ -1,28 +1,32 @@
 # multi-model-team
 
-**v0.2.0** · A Claude Code plugin that lets Claude delegate token-heavy, self-contained tasks
-to a local pre-authed **`agy`** (Gemini) CLI — choosing the backend/model dynamically by task
-size and type, with credit-exhaustion fallback to native Claude, and a glanceable statusline
-HUD. `/team` fans a task out across multiple parallel agents (agy + native) with per-backend
-caps and an Ultracode dynamic-workflow path.
+A Claude Code plugin that lets Claude delegate token-heavy, self-contained tasks
+to local pre-authed CLI backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI) —
+choosing the backend/model dynamically by task size and type, with credit-exhaustion fallback
+through the backend chain to native Claude, and a glanceable statusline HUD. `/team` fans a
+task out across multiple parallel agents (agy + codex + native) with per-backend caps and an
+Ultracode dynamic-workflow path.
 
 The core idea: **offload commodity work** (new UI/components, scaffolding, CRUD, scripts,
-SQL, configs, unit tests, web-research/doc-summarization, bulk ingestion) to Gemini, while
-**keeping judgment-heavy and systems-hard work** (RE, IL2CPP/protobuf-RE, disassembly,
-FFI/unsafe, injection, concurrency, protocol design) on Claude. Every routing decision is
-driven by config you can tune without touching code.
+SQL, configs, unit tests, web-research/doc-summarization, bulk ingestion) to a local CLI
+backend, while **keeping judgment-heavy and systems-hard work** (RE, IL2CPP/protobuf-RE,
+disassembly, FFI/unsafe, injection, concurrency, protocol design) on Claude. Every routing
+decision is driven by config you can tune without touching code.
 
 ---
 
 ## Status
 
-Built and verified against **agy v1.0.8 on Windows**. `tests/run_tests.sh` is green
-(36/36, including live agy smoke tests). Backend is agy-only for now; codex/opencode are
-config-only additions later.
+Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
+`tests/run_tests.sh` is green (100/100, including live agy + codex smoke tests). Active
+backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
+stub for a future addition.
 
 ---
 
-## The one thing you must know: agy needs a TTY
+## Backend quirks you must know
+
+### agy needs a TTY
 
 `agy` only prints output when attached to a real console. Run through a normal pipe (a hook,
 a subagent shell, `bash run.sh`) it **exits 0 and prints nothing** — a silent no-op that
@@ -36,9 +40,21 @@ It also feeds agy an **open, idle stdin** (a held-open pipe) because agy emits n
 stdin is already at EOF (e.g. `/dev/null` or a drained pipe). All of this is handled in
 `scripts/lib/backends.sh`. Full findings are in [PROBES.md](PROBES.md).
 
-**Requirements on Windows:** `winpty`, `python3` (any version; stdlib `json`), and a bash
-(git-bash / msys). `jq` is **not** required. `agy` must be installed and pre-authed
-(the binary is auto-resolved from `$LOCALAPPDATA/agy/bin/agy.exe`, PATH, or `$MMT_AGY_BIN`).
+### codex is non-interactive — no TTY needed
+
+`codex` is invoked as `codex exec <flags> <prompt>` and prints **only the final answer** to
+stdout (session/token diagnostics go to stderr). No winpty wrapper, no stdin pipe needed.
+Models default to whatever is set in codex's own `config.toml`; you can override per tier
+via `roster.json` (see Tuning below).
+
+**Requirements on Windows:** `winpty` (for agy), `python3` (any version; stdlib `json`), and
+a bash (git-bash / msys). `jq` is **not** required.
+
+- **agy** must be installed and pre-authed (binary auto-resolved from
+  `$LOCALAPPDATA/agy/bin/agy.exe`, PATH, or `$MMT_AGY_BIN`).
+- **codex** (optional — only needed to use the codex backend): install via
+  `npm install -g @openai/codex` and log in. If it's absent or disabled, tasks fall through
+  to the next hop in the fallback chain.
 
 ---
 
@@ -117,18 +133,22 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
   summarization. Highest-confidence offload (Claude can't do A/V at all).
 - **`bulk-summarizer`** — pinned to agy's cheap tier; summarize/extract from very large text
   where a short grounded answer suffices.
+- **`codex`** — delegate **code review, test-writing, and verification** to the OpenAI Codex
+  CLI (`dispatch: forced`): review a diff/file for correctness, bugs, and edge cases; write or
+  extend a test suite; or verify an implementation meets its spec. Not for RE/injection/systems-hard
+  (that work is always Opus-only).
 
 There is intentionally **no** RE/injection agent — that work is Opus-only and never offloaded.
 
 ### Proactive delegation (opt-in)
 
-By default the model only offloads to agy when *it* decides to spawn one of the agents above, or
-when you run `/team` — it won't reach for agy on its own for small tasks. If you want it to,
-there's a config-gated **`UserPromptSubmit` hook** (`scripts/hooks/proactive-route.sh`): on every
-prompt you submit, it runs the same router, and **when the prompt would route to agy it injects a
-one-shot reminder** nudging Claude to delegate it (the `delegate` agent / `/team`) instead of
-solving it inline. The reminder firing is deterministic; whether Claude takes the hint is still its
-judgment.
+By default the model only offloads to a CLI backend when *it* decides to spawn one of the agents
+above, or when you run `/team` — it won't reach for a backend on its own for small tasks. If you
+want it to, there's a config-gated **`UserPromptSubmit` hook** (`scripts/hooks/proactive-route.sh`):
+on every prompt you submit, it runs the same router, and **when the prompt would route to a CLI
+backend it injects a one-shot reminder** nudging Claude to delegate it (the `delegate` or `codex`
+agent / `/team`) instead of solving it inline. The reminder firing is deterministic; whether Claude
+takes the hint is still its judgment.
 
 It's **off by default**. Turn it on and tune it in `config/roster.json`:
 
@@ -154,7 +174,7 @@ then matches `routes` rules in `config/roster.json` (first match wins; order enc
 priority). `run.sh` executes the chosen backend with a fallback chain, writes HUD state, and
 cleans the output.
 
-| Goes to **agy** | Goes to **Sonnet** | Goes to **Opus** (hard line) |
+| Goes to **agy / codex** (CLI backends) | Goes to **Sonnet** | Goes to **Opus** (hard line) |
 |---|---|---|
 | New components, CSS, UI, SVG/anim | Refactoring *existing* code | RE, IL2CPP, protobuf-RE |
 | Boilerplate, scaffold, CRUD, REST | Cross-module integration | disasm, decompile, VMProtect |
@@ -164,9 +184,13 @@ cleans the output.
 | Web search, doc/research summary | Anything hard to verify | protocol design, proc-macros |
 | Video/audio (Claude can't anyway) | Unclassified / uncertain | (size-irrelevant — always Opus) |
 
+The active CLI backend for each task type is determined by the roster's routing rules. The
+default fallback chain is **agy → codex → native** (if agy is exhausted or unavailable, codex
+is tried before falling through to native Claude).
+
 **Presets** (`defaults.preset` in roster.json, or `--preset`):
-`budget` pushes borderline judgment-coding down to agy; `premium` pulls standard-coding up to
-Sonnet (keeps agy only for its categorical edges); `balanced` is the default.
+`budget` pushes borderline judgment-coding down to a CLI backend; `premium` pulls standard-coding
+up to Sonnet (keeps CLI backends only for their categorical edges); `balanced` is the default.
 
 ### Tuning
 
@@ -174,9 +198,13 @@ All config lives in one JSON file, **`config/roster.json`** — five sections, w
 `_about` keys as inline docs:
 
 - **`backends`** — each CLI a route can target. Flip `enabled` to turn a backend on/off; `kind`
-  picks the invoker. `agy` (`kind:"gemini"`) is implemented; `codex`/`opencode` are disabled
-  stubs you can wire up later. Disabling a backend makes everything that would route to it fall
-  through to the next hop / native.
+  picks the invoker. Two backends are enabled out of the box:
+  - **`agy`** (`kind:"gemini"`) — Gemini CLI; requires winpty + open stdin (see above).
+  - **`codex`** (`kind:"codex"`) — OpenAI Codex CLI; invoked as `codex exec <flags> <prompt>`,
+    non-interactive, no winpty needed. Models default to codex's own `config.toml`; set
+    `models.cheap` / `models.standard` per tier in `roster.json` to override.
+  - **`opencode`** is a disabled stub for a future addition.
+  Disabling a backend makes everything that would route to it fall through to the next hop / native.
 - **`agents`** — the delegation subagents. Each has `enabled`, `backend`, `tier`, `dispatch`
   (`route` or `forced`), and a `role` (its description). **After editing, run
   `python scripts/lib/gen_agents.py`** — it regenerates `agents/*.md` from the JSON (and removes
@@ -203,13 +231,13 @@ scripts/run.sh               execute backend + fallback chain + HUD state
 scripts/lib/score.sh         char count + keyword type classification
 scripts/lib/match.py         applies roster.json routes (json)
 scripts/lib/config.py        emits roster.json as bash-sourceable vars
-scripts/lib/backends.sh      backend resolution (by kind) + winpty invocation + clean() + quota
+scripts/lib/backends.sh      backend resolution (by kind: gemini/agy, codex) + winpty invocation + clean() + quota
 scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json (enable/disable/role)
 scripts/lib/state.sh         HUD state read/write (~/.cache/mmt/state.json)
 scripts/lib/common.sh        shared helpers (python finder)
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
 statusline/statusline.sh     fork-free HUD line
-agents/                      delegate, av-research, bulk-summarizer
+agents/                      delegate, av-research, bulk-summarizer, codex
 commands/                    team, route-test
 hooks/hooks.json             PreToolUse matcher
 tests/run_tests.sh           offline suite + opt-in live agy smoke (MMT_LIVE=1)
@@ -239,6 +267,7 @@ MMT_LIVE=1 bash tests/run_tests.sh # also run live agy smoke tests (network + ag
 | Var | Purpose |
 |---|---|
 | `MMT_AGY_BIN` | explicit path to the agy binary |
+| `MMT_CODEX_BIN` | explicit path to the codex binary (default: `codex` on PATH) |
 | `MMT_PYTHON` | python interpreter to use |
 | `MMT_ROSTER` | alternate roster.json |
 | `MMT_TAGS` | alternate tags.txt |

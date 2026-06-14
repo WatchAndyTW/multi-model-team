@@ -163,11 +163,37 @@ _mmt_health_gemini() {
   return 0
 }
 
+# --- codex (OpenAI Codex CLI) kind -------------------------------------------
+# Invoke `codex exec`. Non-interactive: codex prints ONLY the final message to stdout (its
+# session/token diagnostics go to stderr), no TTY/winpty needed. The prompt rides as the
+# positional arg; stdin is /dev/null so codex does not append it as a <stdin> block.
+# Args: <model> <prompt> [add_dir]
+_mmt_invoke_codex() {
+  local model="$1" prompt="$2" add_dir="${3:-}"
+  local bin; bin="$(mmt_be_resolve)" || return 127
+  local -a cmd=( "$bin" "${MMT_BE_ONESHOT:-exec}" )
+  if [ -n "${MMT_BE_EXTRA+x}" ]; then cmd+=( "${MMT_BE_EXTRA[@]}" ); fi
+  [ -n "$model" ] && cmd+=( "${MMT_BE_MODEL_FLAG:--m}" "$model" )
+  if [ -n "$add_dir" ]; then cmd+=( "${MMT_BE_ADD_DIR_FLAG:---add-dir}" "$add_dir" ); fi
+  cmd+=( "$prompt" )
+  timeout "${MMT_BE_HARD_TIMEOUT:-6m}" "${cmd[@]}" </dev/null
+}
+
+# Health: `codex --version` prints a version line to stdout (not TTY-gated, no `exec`).
+_mmt_health_codex() {
+  local bin; bin="$(mmt_be_resolve)" || return 1
+  local out
+  out="$(timeout 30 "$bin" "${MMT_BE_HEALTH:---version}" </dev/null 2>/dev/null)"
+  [ -n "$out" ] || return 1
+  return 0
+}
+
 # --- generic dispatch ---------------------------------------------------------
 # Invoke the current backend by kind. Args: <model> <prompt> [add_dir]. 127 if no invoker.
 mmt_be_invoke() {
   case "${MMT_BE_KIND:-}" in
     gemini) _mmt_invoke_gemini "$@" ;;
+    codex)  _mmt_invoke_codex  "$@" ;;
     *)      return 127 ;;   # no invoker for this kind -> caller falls back
   esac
 }
@@ -176,6 +202,7 @@ mmt_be_invoke() {
 mmt_be_health() {
   case "${MMT_BE_KIND:-}" in
     gemini) _mmt_health_gemini ;;
+    codex)  _mmt_health_codex ;;
     *)      return 1 ;;
   esac
 }

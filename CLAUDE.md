@@ -4,14 +4,16 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 48/48
-(incl. live agy smoke tests). agy-only backend for now; codex/opencode are config-only
-future additions. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
-`docs/PLAN.md` (original design plan).
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 100/100
+(incl. live agy + codex smoke tests). Two live backends: **agy** (Gemini) and **codex** (OpenAI
+Codex CLI); opencode remains a config-only stub. See `README.md` (user-facing),
+`PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
 
 ---
 
-## ⚠️ The one thing that will bite you: agy needs a TTY
+## ⚠️ Backend invocation quirks
+
+### agy (gemini) — needs a TTY
 
 `agy` gates its output on `isatty(stdout)`. Run through a normal pipe (a hook, a subagent
 shell, `bash run.sh`) it **exits 0 and prints nothing** — a silent no-op that looks like
@@ -28,6 +30,17 @@ The health check (`agy --version`) is the exception — it is NOT TTY-gated and 
 Real model names (exact `agy models` display strings): `Gemini 3.1 Pro (Low)` (standard),
 `Gemini 3.5 Flash (Low)` (cheap). Binary auto-resolves from `$MMT_AGY_BIN` → PATH →
 `$LOCALAPPDATA/agy/bin/agy.exe`.
+
+### codex — no TTY needed
+
+`codex` is invoked as `codex exec -s read-only --skip-git-repo-check --color never <prompt>`.
+It is non-interactive: diagnostics go to stderr, the final response is printed to stdout, and
+it exits cleanly — **no winpty, no open-stdin pipe needed** (contrast with agy/gemini above).
+`_mmt_invoke_codex` + `_mmt_health_codex` in `backends.sh` handle dispatch; `kind:"codex"`,
+`use_winpty:false`, `oneshot_flag:"exec"` in `config/roster.json`. The sandbox flag
+(`-s read-only`) is baked into `extra`, so `run.sh` skips the generic `--sandbox` append
+(codex sets `sandbox_flag:""`). The codex agent (`agents/codex.md`) is generated with
+`dispatch:forced` — it always pins the codex backend directly.
 
 ---
 
@@ -50,9 +63,9 @@ task text
    ▼  statusline/statusline.sh   fork-free HUD line (reads state.json)
 ```
 
-`run.sh` walks a fallback chain = chosen backend + `quota_fallback` (deduped). agy quota
-exhaustion or failure falls through to the next backend, ultimately a `MMT_NATIVE_HANDOFF`
-sentinel telling Claude to solve in-context. The compact-return contract ("Return only the
+`run.sh` walks a fallback chain = chosen backend + `quota_fallback` (deduped). `quota_fallback`
+is now `["agy","codex","native:sonnet"]` — agy quota exhaustion falls through to codex, then
+to native Claude as last resort (`MMT_NATIVE_HANDOFF` sentinel). The compact-return contract ("Return only the
 result, no preamble.") is prepended to every delegated prompt — savings depend on a small
 return crossing back to Claude.
 
@@ -176,10 +189,11 @@ keys are inline docs the parsers ignore):
 
 - **`defaults`** — `preset`, `fallback`, `quota_fallback` (ordered backend chain).
 - **`backends`** — each key is a backend a route can target. `enabled` gates use; `kind` selects
-  the invoker in `backends.sh`. **Only `kind:"gemini"` (agy) has an invoker today**; `codex`/
-  `opencode` are `enabled:false` stubs — enabling one without an invoker just health-fails and
-  falls through to the next hop. Adding a real backend = add a `_mmt_invoke_<kind>` +
-  `mmt_be_*` case and flip `enabled`; no other code changes.
+  the invoker in `backends.sh`. **`kind:"gemini"` (agy) and `kind:"codex"` both have live
+  invokers**; `opencode` is the only `enabled:false` stub remaining — enabling it without an
+  invoker just health-fails and falls through to the next hop. Adding a future backend = add
+  `_mmt_invoke_<kind>` + `_mmt_health_<kind>` + dispatch case in `mmt_be_invoke`/`mmt_be_health`
+  and flip `enabled`; no other code changes.
 - **`agents`** — each delegation subagent: `enabled`, `backend`, `tier`, `dispatch`
   (`route`=let the router decide; `forced`=pin backend+tier), `model`, `color`, `role`. The
   `.md` files in `agents/` are **generated** from this by `scripts/lib/gen_agents.py` — edit the
@@ -229,5 +243,6 @@ Keep the suite green. Add cases for any routing or behavior change.
 
 - **P2 — quota grounding:** `quota_patterns` in `roster.json` are unvalidated defaults;
   harden `quota_patterns`/`quota_exit_codes` on the first real agy credit-exhaustion error.
-- **Backends:** codex/opencode are config-only additions later (health-gate so an unavailable
-  CLI falls through). Hook is intentionally `Read`-only for now (widen on evidence).
+- **Backends:** opencode is config-only (stub, `enabled:false`); codex is live. Health-gate
+  ensures an unavailable CLI falls through to the next fallback hop. Hook is intentionally
+  `Read`-only for now (widen on evidence).

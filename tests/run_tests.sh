@@ -246,15 +246,21 @@ rm -rf "$PTMP"
 echo "── Unit: JSON config — backends configurable ──────────"
 CJSON="$MMT_ROOT/config/roster.json"
 CFG() { "$PY" "$MMT_ROOT/scripts/lib/config.py" "$CJSON" backend-env "$1" 2>/dev/null; }
-assert_contains "backend: agy enabled"     "$(CFG agy)"   "MMT_BE_ENABLED=1"
-assert_contains "backend: agy kind gemini" "$(CFG agy)"   "MMT_BE_KIND=gemini"
-assert_contains "backend: codex disabled"  "$(CFG codex)" "MMT_BE_ENABLED=0"
-assert_contains "backend: unknown -> off"  "$(CFG nope)"  "MMT_BE_ENABLED=0"
-# Disabling a backend makes run.sh skip it -> native handoff (offline: agy never called).
+assert_contains "backend: agy kind gemini"    "$(CFG agy)"      "MMT_BE_KIND=gemini"
+assert_contains "backend: codex enabled"      "$(CFG codex)"    "MMT_BE_ENABLED=1"
+assert_contains "backend: codex kind codex"   "$(CFG codex)"    "MMT_BE_KIND=codex"
+assert_contains "backend: codex oneshot exec" "$(CFG codex)"    "MMT_BE_ONESHOT=exec"
+assert_contains "backend: opencode disabled"  "$(CFG opencode)" "MMT_BE_ENABLED=0"
+assert_contains "backend: unknown -> off"     "$(CFG nope)"     "MMT_BE_ENABLED=0"
 RTMP="$(mktemp -d)"
-"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['backends']['agy']['enabled']=False; print(json.dumps(d))" "$CJSON" > "$RTMP/off.json"
-assert_contains "backend: disabled agy -> native handoff" \
+# Disabling backends makes run.sh skip them -> native handoff (offline: no backend called).
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['backends']['agy']['enabled']=False; d['backends']['codex']['enabled']=False; print(json.dumps(d))" "$CJSON" > "$RTMP/off.json"
+assert_contains "backend: all disabled -> native handoff" \
   "$(MMT_ROSTER="$RTMP/off.json" bash "$RUN" "Write a SQL query to list users" 2>/dev/null)" "MMT_NATIVE_HANDOFF"
+# A kind with no invoker (opencode) health-fails -> skipped -> native (offline).
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['backends']['agy']['enabled']=False; d['backends']['codex']['enabled']=False; d['backends']['opencode']['enabled']=True; d['defaults']['quota_fallback']=['agy','opencode','native:sonnet']; print(json.dumps(d))" "$CJSON" > "$RTMP/oc.json"
+assert_contains "backend: no-invoker kind -> native handoff" \
+  "$(MMT_ROSTER="$RTMP/oc.json" bash "$RUN" "Write a SQL query to list users" 2>/dev/null)" "MMT_NATIVE_HANDOFF"
 rm -rf "$RTMP"
 
 echo "── Unit: gen_agents.py (enable/disable -> .md) ────────"
@@ -286,6 +292,13 @@ if [ "${MMT_LIVE:-0}" = "1" ]; then
 
   CHP_OUT="$(bash "$RUN" --decision '{"backend":"agy","model":"","tier":"cheap","rule":"bulk-forced","native":false}' "Reply with exactly the single word: CHEAPOK" 2>/dev/null)"
   assert_contains "live: cheap tier responds" "$(printf '%s' "$CHP_OUT" | tr a-z A-Z)" CHEAPOK
+
+  if command -v codex >/dev/null 2>&1; then
+    CX_OUT="$(bash "$RUN" --decision '{"backend":"codex","model":"","tier":"standard","rule":"codex-smoke","native":false}' "Reply with exactly the single word: CODEXOK" 2>/dev/null)"
+    assert_contains "live: codex backend responds" "$(printf '%s' "$CX_OUT" | tr a-z A-Z)" CODEXOK
+  else
+    ok "live: codex backend (skipped, codex not on PATH)"
+  fi
 
   echo "── LIVE: team.sh parallel fan-out ─────────────────────"
   TPLAN="$(mktemp -d)"

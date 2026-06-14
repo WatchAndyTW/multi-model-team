@@ -5,11 +5,11 @@
     "_comment": "preset biases tier (budget|balanced|premium). fallback is the final hop. quota_fallback is the ordered backend chain tried when the chosen backend is unavailable/exhausted.",
     "preset": "balanced",
     "fallback": "native:sonnet",
-    "quota_fallback": ["agy", "native:sonnet"]
+    "quota_fallback": ["agy", "codex", "native:sonnet"]
   },
 
   "backends": {
-    "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in backends.sh (currently only 'gemini' is implemented; 'codex'/'opencode' are config stubs with no invoker yet, so enabling them simply falls through until an invoker is added).",
+    "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in backends.sh ('gemini' (agy) and 'codex' are implemented; 'opencode' is a config stub with no invoker yet, so enabling it simply falls through until an invoker is added).",
 
     "agy": {
       "enabled": true,
@@ -39,10 +39,21 @@
     },
 
     "codex": {
-      "enabled": false,
+      "enabled": true,
       "kind": "codex",
       "cmd": "codex",
-      "_note": "Future backend. No invoker implemented yet — enabling it without adding a 'codex' case in backends.sh just falls through to the next hop. Add invocation fields (oneshot_flag, models, etc.) when wired up."
+      "oneshot_flag": "exec",
+      "model_flag": "-m",
+      "extra": ["-s", "read-only", "--skip-git-repo-check", "--color", "never"],
+      "models": { "cheap": "", "standard": "" },
+      "health": "--version",
+      "add_dir_flag": "--add-dir",
+      "sandbox_flag": "",
+      "use_winpty": false,
+      "hard_timeout": "6m",
+      "quota_patterns": ["rate limit", "quota", "429", "usage limit", "insufficient_quota", "too many requests", "exceeded"],
+      "quota_exit_codes": [],
+      "_note": "Invoked as `codex exec <flags> <prompt>` — non-interactive, prints only the final message to stdout (no winpty). models empty = codex's own config.toml default; set per-tier model IDs here to map cheap/standard. `-s read-only` keeps it from modifying files; drop --skip-git-repo-check only if you require a git repo."
     },
 
     "opencode": {
@@ -84,6 +95,16 @@
       "model": "haiku",
       "color": "green",
       "role": "Cheapest path — pinned to the cheap tier (Gemini Flash). Use for summarize/extract from VERY LARGE text where a short, grounded answer suffices: log dumps, big files, scraped pages, transcripts. Ingestion, not judgment. Not for code logic, RE, or anything where a subtly wrong summary would be costly to catch."
+    },
+
+    "codex": {
+      "enabled": true,
+      "backend": "codex",
+      "tier": "standard",
+      "dispatch": "forced",
+      "model": "haiku",
+      "color": "magenta",
+      "role": "Delegate code review, test-writing, and verification to the OpenAI Codex CLI (codex exec): review a diff or file for correctness, bugs, edge cases, and regressions; write or extend a unit/integration test suite; or verify that an implementation meets its spec and the tests actually pass. Best for focused, self-contained review/test/verify units where the output is checkable. Use when you specifically want Codex on review/test/verify work rather than the Gemini backend or native Claude. Not for reverse-engineering, IL2CPP/protobuf-RE, injection, or other systems-hard work (those stay native Opus)."
     }
   },
 

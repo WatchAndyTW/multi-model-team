@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "multi-model-team",
-  "description": "Marketplace for the multi-model-team plugin — delegate token-heavy work to a local agy (Gemini) CLI with dynamic routing, multi-agent /team fan-out, and a statusline HUD.",
+  "description": "Marketplace for the multi-model-team plugin — delegate token-heavy work to local CLI backends with dynamic routing, multi-agent /team fan-out, and a statusline HUD.",
   "owner": {
     "name": "WatchAndyTW",
     "email": "watchandytw@gmail.com"
@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "multi-model-team",
-      "description": "Delegates token-heavy, self-contained tasks to local CLI backends (agy/Gemini today; codex/opencode pluggable) chosen by task size and type, with credit-exhaustion fallback to native Claude and a glanceable statusline HUD. All config lives in a single JSON file where backends and agents are first-class and individually enable/disable-able. /team runs a decompose → dispatch (parallel agy + native) → verify → fix → synthesize pipeline; an optional config-gated UserPromptSubmit hook can proactively nudge delegation.",
-      "version": "0.4.1",
+      "description": "Delegates token-heavy, self-contained tasks to local CLI backends chosen by task size and type, with credit-exhaustion fallback through the backend chain to native Claude and a glanceable statusline HUD. All config lives in a single JSON file (config/roster.json) where backends and agents are first-class and individually enable/disable-able, so new CLIs slot in without code changes. /team runs a decompose → dispatch → verify → fix → synthesize pipeline; an optional config-gated UserPromptSubmit hook can proactively nudge delegation.",
+      "version": "0.4.2",
       "author": {
         "name": "WatchAndyTW",
         "email": "watchandytw@gmail.com"
@@ -19,8 +19,8 @@
       "category": "productivity",
       "tags": [
         "delegation",
-        "gemini",
-        "agy",
+        "cli-backends",
+        "pluggable",
         "routing",
         "multi-model",
         "multi-agent",
@@ -29,5 +29,5 @@
       ]
     }
   ],
-  "version": "0.4.1"
+  "version": "0.4.2"
 }

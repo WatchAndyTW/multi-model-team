@@ -123,9 +123,10 @@ for entry in "${CHAIN[@]}"; do
         echo "run.sh: backend '$be' disabled or unknown (skipped)" >&2
         FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
       fi
-      # Optional --sandbox: append the backend's sandbox flag for this hop only.
-      if [ "$SANDBOX" = "1" ]; then
-        MMT_BE_EXTRA=( ${MMT_BE_EXTRA[@]+"${MMT_BE_EXTRA[@]}"} "${MMT_BE_SANDBOX_FLAG:---sandbox}" )
+      # Optional --sandbox: append the backend's sandbox flag for this hop only. Skipped when
+      # the backend defines no single-flag sandbox (e.g. codex, already `-s read-only`).
+      if [ "$SANDBOX" = "1" ] && [ -n "${MMT_BE_SANDBOX_FLAG:-}" ]; then
+        MMT_BE_EXTRA=( ${MMT_BE_EXTRA[@]+"${MMT_BE_EXTRA[@]}"} "$MMT_BE_SANDBOX_FLAG" )
       fi
       model="$(mmt_be_model_for_tier "$D_tier")"
       [ -n "$model" ] || model="$(mmt_be_model_for_tier standard)"
