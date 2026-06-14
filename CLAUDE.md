@@ -4,9 +4,9 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 100/100
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 102/102
 (incl. live agy + codex smoke tests). Two live backends: **agy** (Gemini) and **codex** (OpenAI
-Codex CLI); opencode remains a config-only stub. See `README.md` (user-facing),
+Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
 
 ---
@@ -134,8 +134,9 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 ## /team — multi-model team pipeline (v0.3)
 
 `/team [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
-pipeline built for **our model dispatching**: the "provider per role" is the
-**agy (Gemini)** vs **native (Claude)** backend split, chosen per subtask. The stages are
+pipeline built for **our model dispatching**: the "provider per role" is **native Claude**
+(plan/synthesis), **agy (Gemini)** (commodity subtask dispatch), and **codex** (verification),
+chosen per stage/subtask. The stages are
 **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**. Flow
 (in `commands/team.md`):
 1. parse the optional cap spec via `scripts/lib/team_spec.py` → `{gemini, claude}` (caps =
@@ -152,17 +153,21 @@ pipeline built for **our model dispatching**: the "provider per role" is the
    and team.sh addresses them by **msys-form `$WORK/<idx>.task`** (NOT the Windows-form path
    python echoes back — short-name mismatch breaks the reopen). Deps are honored by calling
    team.sh once per dependency **wave**.
-4. Claude solves the native subtasks (≤ claude cap), **verifies** every result against its
-   criterion, **fixes** failures in a bounded loop (default 1 attempt; a bare
-   `MMT_NATIVE_HANDOFF` counts as a fail → solve natively), then synthesizes.
+4. Claude solves the native subtasks (≤ claude cap), then **verifies** every result against its
+   criterion **by delegating the review to the codex backend** (forced `backend:codex` via
+   `run.sh`, rule `team-verify`; native judgment falls back if codex is unavailable), **fixes**
+   failures in a bounded loop (default 1 attempt; a bare `MMT_NATIVE_HANDOFF` counts as a fail →
+   solve natively), then synthesizes.
 
 **Ultracode path (the full implementation):** when the Workflow tool is available, `/team`
 runs `workflows/team.mjs`, which does the entire pipeline deterministically: decompose agent
 (emits `deps` + `verify`) → dependency-ordered **waves** (`parallel()` per wave; agy agents
 shell out to `run.sh`, native agents solve, upstream results injected as context) → per-result
-**verify** agent (`{pass, reason, fix_hint}`) → **bounded fix** re-dispatch → synthesize. Args:
-`{task, caps, pluginRoot, verify?=true, maxFixLoops?=1 (max 3)}`. Returns
-`{plan, counts:{agy,native,verified,failed}, results, final}`. Determinism-safe (no
+**verify** stage (a native relay that delegates the review to **codex** via `run.sh`, packaging
+its PASS/FAIL into `{pass, reason, fix_hint}`; `verifier:'native'` keeps it on Claude) →
+**bounded fix** re-dispatch → synthesize. Args:
+`{task, caps, pluginRoot, verify?=true, verifier?='codex', maxFixLoops?=1 (max 3)}`. Returns
+`{plan, counts:{agy,native,verified,failed}, verifier, results, final}`. Determinism-safe (no
 Date/random APIs — they break Workflow resume) and tolerates `args` as object **or** JSON string.
 
 ## Proactive delegation hook (opt-in)

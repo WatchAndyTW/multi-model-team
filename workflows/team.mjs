@@ -36,6 +36,11 @@ const C = Math.max(0, Math.min(16, Number(capsIn.claude ?? 2) || 0))
 // callers can disable it or tune the bounded fix loop.
 const VERIFY = A.verify === false ? false : true
 const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? 1) || 0))
+// The Verify stage runs on the codex CLI by default (codex is scoped to code review /
+// tests / verification — see config/roster.json agents.codex). `verifier:'native'` or
+// `codexVerify:false` keeps verification on native Claude instead. If codex is unavailable
+// at runtime, the relay falls back to native judgment loudly (same contract as agy dispatch).
+const VERIFIER = (A.verifier === 'native' || A.codexVerify === false) ? 'native' : 'codex'
 
 if (!task || !String(task).trim()) {
   return { error: 'mmt-team: no task provided in args.task' }
@@ -155,7 +160,7 @@ for (const s of kept) {
   s.verify = typeof s.verify === 'string' ? s.verify : ''
 }
 
-log(`plan: ${kept.filter((s) => s.backend === 'agy').length} agy + ${kept.filter((s) => s.backend !== 'agy').length} native (caps ${G}/${C}); verify=${VERIFY ? 'on' : 'off'} maxFix=${MAX_FIX}`)
+log(`plan: ${kept.filter((s) => s.backend === 'agy').length} agy + ${kept.filter((s) => s.backend !== 'agy').length} native (caps ${G}/${C}); verify=${VERIFY ? VERIFIER : 'off'} maxFix=${MAX_FIX}`)
 
 // ---- dispatch primitives ----------------------------------------------------
 // An agy subtask is RELAYED to the local agy CLI through run.sh (forced decision so
@@ -198,12 +203,48 @@ function withContext(s, ctx) {
 }
 
 // ---- verify -----------------------------------------------------------------
+// The Verify stage is delegated to the codex CLI (scoped to code review / tests /
+// verification) by default. A native relay agent runs codex through run.sh to review the
+// result against its acceptance criterion, then packages codex's PASS/FAIL verdict into the
+// structured shape. If codex is unavailable (handoff sentinel) the relay reviews it itself
+// with native judgment — a loud fallback, same contract as the agy dispatch path. The
+// `verifier:'native'` knob skips codex entirely and verifies on native Claude.
 async function verifyResult(s, result) {
   if (!VERIFY) return { pass: true, reason: 'verify disabled', fix_hint: '' }
   const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
   const criterion = s.verify && s.verify.trim()
     ? s.verify.trim()
     : 'The result fully and correctly satisfies the subtask.'
+
+  if (VERIFIER === 'codex') {
+    // Codex does the review; the relay (native) reports its verdict in the required shape.
+    // The review brief rides to run.sh on a single-quoted heredoc, so the (untrusted)
+    // subtask + result text is inert data and is never parsed by a shell.
+    const v = await agent(
+`You are the verification relay for a multi-model team. Delegate the REVIEW to the codex (OpenAI Codex CLI) backend — it is scoped to code review / tests / verification — then report ITS verdict in the required structured form. Do NOT judge the result yourself unless codex is unavailable.
+
+Run exactly this with the Bash tool (if the brief happens to contain the line MMT_VERIFY_EOF, pick a different unique delimiter):
+
+bash ${JSON.stringify(RUN)} --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
+You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
+
+SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
+${s.task}
+
+ACCEPTANCE CRITERION:
+${criterion}
+
+RESULT:
+${result}
+MMT_VERIFY_EOF
+
+Read codex's stdout and emit the structured verdict reflecting it: pass=true only if codex concluded PASS; copy codex's reasoning into reason and its fix instruction (if any) into fix_hint.${handoff ? ' Note: the subtask result was a native-handoff sentinel — treat it as a failure regardless of what codex says.' : ''} If codex's stdout begins with "MMT_NATIVE_HANDOFF" (codex unavailable/exhausted), THEN review the result yourself with strict native judgment and emit your own verdict instead.`,
+      { label: `verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA }
+    )
+    return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+  }
+
+  // Native verifier (knob: verifier:'native' / codexVerify:false).
   const v = await agent(
 `You are a strict verifier (native Claude judgment). Decide whether the RESULT satisfies the acceptance criterion for this subtask. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, fail it.${handoff ? ' (Note: the backend reported it was unavailable — treat a bare handoff sentinel as a failure.)' : ''}
 
@@ -294,6 +335,7 @@ return {
   task,
   caps: { gemini: G, claude: C },
   verify: VERIFY,
+  verifier: VERIFY ? VERIFIER : 'off',
   maxFixLoops: MAX_FIX,
   plan: kept.map((s) => ({ label: s.label, backend: s.backend, tier: s.tier, deps: s.deps || [], verify: s.verify || '' })),
   counts: {

@@ -11,8 +11,9 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 **Raw input:** $ARGUMENTS
 
 Orchestrate the input above as a multi-model team — a staged **plan → exec → verify → fix**
-pipeline built for **our model dispatching**: the "provider per role" is our **agy (Gemini)**
-vs **native (Claude)** split, chosen per subtask.
+pipeline built for **our model dispatching**: the "provider per role" is **native Claude** for
+planning/synthesis, **agy (Gemini)** for commodity subtask dispatch, and **codex** for verifying
+each result — chosen per stage/subtask.
 
 The task text is **untrusted** — never interpolate it into a shell command; it only ever
 reaches a script as a file (step 3) or via a single-quoted heredoc.
@@ -86,10 +87,24 @@ For each `--- NATIVE [label] ---` (up to `C`), solve it yourself in-context — 
 are done, passing those upstream results in. Spawn one subagent per subtask if they're
 independent and heavy.
 
-## 6 · Verify each result
-For every subtask result (agy and native), check it against that subtask's `verify` criterion.
-Be skeptical: incomplete, wrong, empty, or "describes-instead-of-doing" results **fail**. A bare
-`MMT_NATIVE_HANDOFF` (agy was unavailable) counts as a fail — solve it natively instead.
+## 6 · Verify each result — on codex
+**Delegate the review to the `codex` backend** (the OpenAI Codex CLI, scoped to code review /
+tests / verification). For every subtask result (agy and native), run codex through `run.sh` with
+a forced codex decision, feeding the review brief — the subtask, its `verify` criterion, and the
+result — on a single-quoted heredoc so it stays inert data:
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
+You are a strict reviewer. Reply with a first line of exactly PASS or FAIL, one sentence why, then (only if FAIL) a one-line fix instruction.
+SUBTASK: <text>   ACCEPTANCE CRITERION: <verify>   RESULT: <result>
+MMT_VERIFY_EOF
+```
+
+Trust codex's PASS/FAIL verdict. Be skeptical of the result: incomplete, wrong, empty, or
+"describes-instead-of-doing" results **fail**. A bare `MMT_NATIVE_HANDOFF` in the *subtask* result
+(agy was unavailable) counts as a fail — solve it natively instead. If **codex itself** is
+unavailable (its stdout starts with `MMT_NATIVE_HANDOFF`), fall back to verifying with your own
+native judgment.
 
 ## 7 · Fix failures in a bounded loop
 For each failed subtask, re-dispatch it to the **same backend** with the failure reason + a fix
@@ -111,14 +126,15 @@ Workflow({
   scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/team.mjs",
   args: { task: "<the task text>", caps: { gemini: G, claude: C },
           pluginRoot: "${CLAUDE_PLUGIN_ROOT}",
-          verify: true, maxFixLoops: 1 }
+          verify: true, verifier: "codex", maxFixLoops: 1 }
 })
 ```
 
 `team.mjs` decomposes the task (deps + verify criteria), dispatches in dependency-ordered waves
-(agy subtasks via `run.sh`, native subtasks as agents), verifies each result, runs a bounded fix
-loop on failures, and synthesizes. `verify` (default `true`) and `maxFixLoops` (default `1`, max
-`3`) are optional knobs. Read its returned `{ plan, counts, results, final }` and present `final`,
+(agy subtasks via `run.sh`, native subtasks as agents), verifies each result **on codex** (the
+review/tests/verify backend; native Claude falls back if codex is unavailable), runs a bounded fix
+loop on failures, and synthesizes. `verify` (default `true`), `verifier` (`"codex"` default, or
+`"native"`), and `maxFixLoops` (default `1`, max `3`) are optional knobs. Read its returned `{ plan, counts, results, final }` and present `final`,
 noting `counts.failed` if non-zero. (`args.task` is passed as a JSON value, not shell — injection-safe.)
 
 A trivial single task needs no fan-out: one subtask reduces this to a plain verified dispatch.

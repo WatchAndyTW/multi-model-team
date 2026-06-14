@@ -32,6 +32,7 @@ const body = src.replace(/^\s*export\s+const\s+meta/m, 'const meta')
 // ---- stubs ------------------------------------------------------------------
 const calls = { dispatch: [], verify: [], phases: [] }
 let sawUpstreamContext = false
+let sawCodexVerify = false // verify stage delegates to codex by default
 const verifyCount = {} // label -> times verified
 
 async function agentStub(prompt, opts = {}) {
@@ -55,6 +56,8 @@ async function agentStub(prompt, opts = {}) {
     const who = m ? m[1] : 'unknown'
     verifyCount[who] = (verifyCount[who] || 0) + 1
     calls.verify.push(who)
+    // Default verifier delegates the review to codex (run.sh forced codex decision).
+    if (/team-verify|backend":"codex|codex \(OpenAI/i.test(prompt)) sawCodexVerify = true
     if (who === 'sql' && verifyCount[who] === 1) {
       return { pass: false, reason: 'missing GROUP BY', fix_hint: 'add a GROUP BY clause' }
     }
@@ -150,6 +153,7 @@ ck(!!sql, 'no sql record')
 ck(sql && sql.attempts === 2, 'expected sql attempts=2 (one fix), got ' + (sql && sql.attempts))
 ck(sql && sql.status === 'verified', 'expected sql status=verified, got ' + (sql && sql.status))
 ck(sawUpstreamContext, 'dependency context NOT injected into dependent subtask (sql never saw model result)')
+ck(sawCodexVerify, 'verify stage did NOT delegate to codex by default (no codex relay in the verify prompt)')
 
 // model must be dispatched before sql (dependency ordering / waves).
 const iModel = calls.dispatch.findIndex((l) => l.startsWith('native:model'))
@@ -163,4 +167,4 @@ if (fails.length) {
   console.error('HARNESS_BAD\n - ' + fails.join('\n - '))
   process.exit(1)
 }
-console.log('HARNESS_OK agy=1 native=1 verified=2 fixLoop=1 depCtx=ok')
+console.log('HARNESS_OK agy=1 native=1 verified=2 fixLoop=1 depCtx=ok codexVerify=ok')

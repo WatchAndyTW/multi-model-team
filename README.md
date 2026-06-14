@@ -4,8 +4,9 @@ A Claude Code plugin that lets Claude delegate token-heavy, self-contained tasks
 to local pre-authed CLI backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI) —
 choosing the backend/model dynamically by task size and type, with credit-exhaustion fallback
 through the backend chain to native Claude, and a glanceable statusline HUD. `/team` fans a
-task out across multiple parallel agents (agy + codex + native) with per-backend caps and an
-Ultracode dynamic-workflow path.
+task out across parallel agents — **agy** dispatches commodity subtasks, **native Claude** handles
+judgment/hard-line work and synthesizes, and **codex** verifies each result — with per-backend
+caps and an Ultracode dynamic-workflow path.
 
 The core idea: **offload commodity work** (new UI/components, scaffolding, CRUD, scripts,
 SQL, configs, unit tests, web-research/doc-summarization, bulk ingestion) to a local CLI
@@ -18,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (100/100, including live agy + codex smoke tests). Active
+`tests/run_tests.sh` is green (102/102, including live agy + codex smoke tests). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -101,15 +102,18 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 
 - **`/multi-model-team:team [N:gemini,M:claude] <task>`** — **multi-model team pipeline.**
   A staged **plan → exec → verify → fix** pipeline for *our* model dispatching: the "provider per
-  role" is the **agy (Gemini)** vs **native (Claude)** split, chosen per subtask. Claude
-  decomposes the task, **dispatches** commodity subtasks to
+  role" is **native Claude** for planning/synthesis, **agy (Gemini)** for commodity dispatch, and
+  **codex** for verification. Claude decomposes the task, **dispatches** commodity subtasks to
   **parallel agy** agents and judgment/hard-line ones to **native Claude**, **verifies** each
-  result against an acceptance criterion, **fixes** failures in a bounded loop, then **synthesizes**.
+  result against an acceptance criterion **on codex**, **fixes** failures in a bounded loop, then
+  **synthesizes**.
   - **Dependency-aware:** subtasks declare `deps`; dependents run *after* their upstreams and
     receive those results as context (dispatch proceeds in waves, not one flat batch).
-  - **Verify → fix:** every result is checked; failures are re-dispatched to the same backend
-    with the verifier's feedback (default 1 fix attempt; still-failing subtasks are flagged, not
-    hidden). A bare `MMT_NATIVE_HANDOFF` (agy unavailable) counts as a fail and is solved natively.
+  - **Verify → fix:** every result is reviewed by **codex** (the OpenAI Codex CLI, scoped to code
+    review / tests / verification; native Claude falls back if codex is unavailable). Failures are
+    re-dispatched to the same backend with the verifier's feedback (default 1 fix attempt;
+    still-failing subtasks are flagged, not hidden). A bare `MMT_NATIVE_HANDOFF` (agy unavailable)
+    counts as a fail and is solved natively.
   - Optional leading **agent cap** like `5:gemini,2:claude` (order-agnostic; `gemini`=agy,
     `claude`=native; aliases `agy`/`native`/`flash`/`pro`/`sonnet`/`opus`; default `4:gemini,2:claude`).
     It bounds how many agents of each kind run.
@@ -117,8 +121,9 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
     a native agent designs the data model, then agy agents scaffold + write SQL against it.
     `/team 6:gemini,1:claude build 6 UI components and review them` → 6 agy + 1 native.
   - **Ultracode:** if the Workflow tool is available, `/team` runs the whole pipeline as a
-    deterministic dynamic workflow (`workflows/team.mjs`) — knobs `verify` (default on) and
-    `maxFixLoops` (default 1, max 3) — instead of ad-hoc parallel calls.
+    deterministic dynamic workflow (`workflows/team.mjs`) — knobs `verify` (default on), `verifier`
+    (`codex` default, or `native`), and `maxFixLoops` (default 1, max 3) — instead of ad-hoc
+    parallel calls.
   - Task text is never shell-interpolated — it's written to a `plan.json` (data) and fed to
     `run.sh` on stdin, so it's injection-safe.
 - **`/multi-model-team:route-test <task>`** — dry-run the router. Prints the decision
