@@ -135,10 +135,15 @@
       "when": { "type": ["video", "audio", "watch", "transcribe-av", "image-heavy"] },
       "backend": "agy", "tier": "standard" },
 
-    { "_comment": "Judgment coding — ordered ABOVE the commodity agy rules so refactor/bugfix/integration go to Sonnet even when they also mention a button/script/config.",
+    { "_comment": "Judgment coding — ordered ABOVE the commodity agy rules so refactor/bugfix/integration go to Sonnet even when they also mention a button/script/config. (review/unit-test moved to the codex lane just below.)",
       "name": "judgment-coding",
-      "when": { "type": ["refactor", "integration", "bugfix", "api-design", "state-management", "data-model", "migration", "review", "production-logic", "edge-cases"] },
+      "when": { "type": ["refactor", "integration", "bugfix", "api-design", "state-management", "data-model", "migration", "production-logic", "edge-cases"] },
       "backend": "native", "tier": "sonnet" },
+
+    { "_comment": "Codex's lane — code review, test-writing, and verification: code-specialized, checkable work that sits BETWEEN agy-Standard and native-Sonnet. Ordered below judgment-coding (a refactor/bugfix word still wins -> Sonnet) and below the OPUS hard-line/systems rules (those win -> Opus), but ABOVE the commodity agy rules, so a PURE review/test/verify task lands on codex.",
+      "name": "code-review-test",
+      "when": { "type": ["review", "unit-test", "test-suite", "verify"] },
+      "backend": "codex", "tier": "standard" },
 
     { "_comment": "bulk-ingest BEFORE grounded-research: both match summarize/extract/ingest/scan; the cheap large-input path must win first or a 30k dump would route standard.",
       "name": "bulk-ingest",
@@ -151,7 +156,7 @@
 
     { "_comment": "Standard, verifiable coding — most everyday code work.",
       "name": "standard-coding",
-      "when": { "type": ["frontend", "react-component", "css", "html", "ui", "svg", "animation", "3d", "asset-gen", "mockup", "boilerplate", "scaffold", "crud", "rest-endpoint", "script", "cli-tool", "glue-code", "data-transform", "sql-query", "regex", "config-file", "dockerfile", "rename", "format", "codegen", "unit-test", "fixture"] },
+      "when": { "type": ["frontend", "react-component", "css", "html", "ui", "svg", "animation", "3d", "asset-gen", "mockup", "boilerplate", "scaffold", "crud", "rest-endpoint", "script", "cli-tool", "glue-code", "data-transform", "sql-query", "regex", "config-file", "dockerfile", "rename", "format", "codegen", "fixture"] },
       "backend": "agy", "tier": "standard" },
 
     { "_comment": "Cheap/fast trivia — tiny, throwaway, zero-judgment.",

@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 125/125
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 132/132
 (incl. live agy + codex smoke tests). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -99,16 +99,20 @@ docs/PLAN.md                 original implementation plan (historical)
 
 ## Routing model (the contract — don't regress it)
 
-Three buckets, by "if Gemini gets this subtly wrong, would I notice immediately?":
+Four lanes (agy / codex / Sonnet / Opus), by "if the model gets this subtly wrong, would I notice immediately?":
 
 | → **agy** (commodity, verifiable) | → **Sonnet** (judgment) | → **Opus** (hard line) |
 |---|---|---|
 | new components, CSS, UI, SVG/anim | refactor *existing* code | RE, IL2CPP, protobuf-RE |
 | scaffold, CRUD, REST, scripts, CLI | integration, bugfix root-cause | disasm, decompile, VMProtect |
 | SQL, regex, configs, Dockerfiles | API/data-model *design* | DLL injection, Detours/MinHook |
-| unit tests, fixtures, transforms | production logic, edge cases | FFI, unsafe, shellcode, kernel |
+| fixtures, data transforms, codegen | production logic, edge cases | FFI, unsafe, shellcode, kernel |
 | web research, doc summary, bulk | unclassified / uncertain | concurrency, lock-free, KCP, proc-macro |
 | video/audio (Claude can't anyway) | | (size-irrelevant — always Opus) |
+
+**→ codex** (code-specialized, between agy-Standard and native-Sonnet): **code review** (review a
+diff/PR), **test-writing** (unit / integration / e2e / regression suites), and **verification** (does
+it meet the spec). Pure review/test/verify lands here; a judgment word above still wins → Sonnet.
 
 **Invariants enforced by rule ORDER in `roster.json` (first match wins):**
 1. OPUS hard-line rules sit first — RE/injection/systems-hard can never fall through to agy.
@@ -117,7 +121,10 @@ Three buckets, by "if Gemini gets this subtly wrong, would I notice immediately?
 3. `judgment-coding` is ordered ABOVE the commodity agy rules — a task with a judgment
    signal (refactor/bugfix/integration) goes to Sonnet even if it also mentions a button/
    script/config. "When uncertain between agy and sonnet, prefer sonnet; never agy on a guess."
-4. Unclassified → `catch-all-safe` → Sonnet.
+4. `code-review-test` (codex) sits BELOW judgment-coding (a refactor/bugfix word still wins → Sonnet)
+   and BELOW the OPUS rules, but ABOVE the commodity agy rules — so PURE review/test/verify lands on
+   codex, not agy. (The `integration` tag was tightened so "integration tests" → codex, not Sonnet.)
+5. Unclassified → `catch-all-safe` → Sonnet.
 
 **Tuning needs no code edits:** edit `config/tags.txt` to change *what type* a task is, and
 `config/roster.json` to change *where a type routes*. Verify with `/route-test`. When editing

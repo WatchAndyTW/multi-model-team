@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (125/125, including live agy + codex smoke tests). Active
+`tests/run_tests.sh` is green (132/132, including live agy + codex smoke tests). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -188,13 +188,16 @@ cleans the output.
 | Boilerplate, scaffold, CRUD, REST | Cross-module integration | disasm, decompile, VMProtect |
 | Scripts, CLI tools, glue code | Bugfixes needing root-cause | DLL injection, Detours/MinHook |
 | SQL, regex, configs, Dockerfiles | API/data-model *design* | FFI, unsafe, shellcode, kernel |
-| Unit tests, fixtures, transforms | Production logic, edge cases | concurrency, lock-free, KCP |
+| Fixtures, data transforms, codegen | Production logic, edge cases | concurrency, lock-free, KCP |
 | Web search, doc/research summary | Anything hard to verify | protocol design, proc-macros |
 | Video/audio (Claude can't anyway) | Unclassified / uncertain | (size-irrelevant — always Opus) |
 
-The active CLI backend for each task type is determined by the roster's routing rules. The
-default fallback chain is **agy → codex → native** (if agy is exhausted or unavailable, codex
-is tried before falling through to native Claude).
+Within the CLI lane the routes split by task type: **code review, test-writing (unit / integration /
+e2e), and verification → `codex`** — a code-specialized lane that sits between agy-Standard and
+native-Sonnet — while the rest of the commodity work → **`agy`**. (A judgment word like *refactor* or
+*bugfix* still wins → Sonnet, and the hard line still → Opus; codex catches the *pure* review/test/verify
+tasks.) The default fallback chain is **agy → codex → native** (if agy is exhausted or unavailable,
+codex is tried before falling through to native Claude).
 
 **Presets** (`defaults.preset` in roster.json, or `--preset`):
 `budget` pushes borderline judgment-coding down to a CLI backend; `premium` pulls standard-coding

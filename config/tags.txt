@@ -92,9 +92,15 @@ quick-email    \bemail\b|draft (a|an) (email|message|note)|reply to
 one-liner      one[- ]?liner|one line of|single line( of)?|quick (snippet|command|one-liner)
 explain-snippet explain (this|the) (snippet|code|function|line)|what does (this|the) (code|function|snippet)
 
+# ============================ CODEX: code review / tests / verification ============================
+# codex's lane sits BETWEEN agy-Standard (commodity) and native-Sonnet (judgment): code-specialized,
+# checkable work. `review` + `unit-test` (defined above) also route here via roster.json.
+verify         verify (the |that |this )?(implementation|code|fix|change|output|result|behavior|tests? ?pass)|check (the )?(correctness|implementation)|validate (the )?(implementation|code|fix|against (the )?spec)|does (it|this|the code) (meet|match|satisfy) the spec
+test-suite     test suite|integration tests?|end[- ]to[- ]end tests?|\be2e\b tests?|regression tests?|extend (the |our )?tests?|add (more |some )?tests?
+
 # ============================ SONNET: judgment-coding ============================
 refactor         refactor|restructure|rework|clean up the code|reorgani(z|s)e the code|extract (a )?(method|function|class)
-integration      integrat(e|ion)|hook (it|this) into|wire into the (codebase|app)
+integration      integrat(e|ing|ed)\b|integration (with|of|into|between|layer|point|module|service)|hook (it|this) into|wire into the (codebase|app)
 bugfix           \bbug\b|bug ?fix|fix (the )?(bug|issue|error|crash|failure)|root cause|why (is|does|do).{0,30}(fail|break|crash)
 api-design       api design|design (the |an |a )?api|endpoint design|interface design|public api
 state-management state management|\bredux\b|\bzustand\b|global state|state machine

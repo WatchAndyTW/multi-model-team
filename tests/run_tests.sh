@@ -38,9 +38,19 @@ echo "── Routing: agy (offload) ──────────────�
 assert_route "react->agy-std"    "Create a new React component for the navbar"              agy standard standard-coding
 assert_route "css->agy-std"      "Write the CSS stylesheet for the landing page hero"       agy standard standard-coding
 assert_route "sql->agy-std"      "Write a SQL query to join users and orders tables"        agy standard standard-coding
-assert_route "tests->agy-std"    "Write unit tests for the parser with pytest"              agy standard standard-coding
+assert_route "fixture->agy-std"  "Create mock fixture data for the user records"             agy standard standard-coding
 assert_route "video->agy-mm"     "Watch this YouTube video and summarize the key points"    agy standard multimodal
 assert_route "oneliner->agy-chp" "Write one line of bash to count files"                    agy cheap trivial
+
+echo "── Routing: codex (review / tests / verify) ───────────"
+assert_route "review->codex"     "Review this PR diff for correctness and bugs"             codex standard code-review-test
+assert_route "unittest->codex"   "Add unit tests for the date parser"                       codex standard code-review-test
+assert_route "e2e->codex"        "Write end-to-end tests for the checkout flow"             codex standard code-review-test
+assert_route "inttest->codex"    "Add integration tests for the auth module"                codex standard code-review-test
+assert_route "verify->codex"     "Verify the implementation meets the spec"                 codex standard code-review-test
+# Ordering: a judgment word (refactor/bugfix) still wins over codex -> Sonnet; integrate-verb too.
+assert_route "review+refactor->sonnet" "Review and refactor the auth service"               native sonnet judgment-coding
+assert_route "integrate->sonnet"       "Integrate the Stripe API into the app"              native sonnet judgment-coding
 
 echo "── Routing: bulk vs small summarize ───────────────────"
 BIG="Summarize this log: $(head -c 25000 /dev/zero | tr '\0' x)"
