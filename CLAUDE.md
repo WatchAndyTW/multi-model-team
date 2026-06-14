@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 102/102
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 105/105
 (incl. live agy + codex smoke tests). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -167,7 +167,12 @@ shell out to `run.sh`, native agents solve, upstream results injected as context
 its PASS/FAIL into `{pass, reason, fix_hint}`; `verifier:'native'` keeps it on Claude) →
 **bounded fix** re-dispatch → synthesize. Args:
 `{task, caps, pluginRoot, verify?=true, verifier?='codex', maxFixLoops?=1 (max 3)}`. Returns
-`{plan, counts:{agy,native,verified,failed}, verifier, results, final}`. Determinism-safe (no
+`{plan, counts:{agy,native,verified,failed}, verifier, results, final}`. Agent labels are
+backend-prefixed in the progress tree — `gemini:<label>` (agy relay), `codex:verify:<label>` (codex
+review), `native:`/`native:verify:` (Claude) — and each subtask's tier maps to a concrete model via
+`tierModel` (`sonnet` default, `opus` only when the decompose marks it genuinely hard), so the
+native model is **dynamic by complexity**, not the inherited Opus main-loop model (the old behavior:
+`dispatchNative` set no model → every native subtask ran on Opus regardless of tier). Determinism-safe (no
 Date/random APIs — they break Workflow resume) and tolerates `args` as object **or** JSON string.
 
 ## Proactive delegation hook (opt-in)

@@ -103,7 +103,7 @@ const plan = await agent(
 
 Backend rules (this is the model-dispatch contract):
 - "agy"  = commodity / verifiable / Gemini-edge work: new components, CSS/UI, scaffolding, CRUD, scripts, SQL, regex, configs, unit tests, data transforms, web-research / doc-summary, audio/video. tier = "standard" (or "cheap" for tiny/bulk).
-- "native" = judgment / codebase-context / hard-to-verify work, AND the hard line — RE, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design — which must NEVER be "agy". tier = "sonnet" (or "opus" for the hard line).
+- "native" = judgment / codebase-context / hard-to-verify work, AND the hard line — RE, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design — which must NEVER be "agy". Pick the tier BY COMPLEXITY, do NOT default to opus: "sonnet" is the default for ordinary codebase analysis, understanding, reviews, and standard logic; reserve "opus" ONLY for genuinely hard work — the hard line above, deep cross-system architecture, or subtle concurrency/perf reasoning. A routine "analyze/understand this code" subtask is "sonnet", not "opus".
 
 For each subtask also provide:
 - "deps": the labels of any OTHER subtasks whose output this one needs. Those run first and their results are handed to this subtask. Use [] when independent. Keep the dependency graph acyclic.
@@ -163,10 +163,21 @@ for (const s of kept) {
 log(`plan: ${kept.filter((s) => s.backend === 'agy').length} agy + ${kept.filter((s) => s.backend !== 'agy').length} native (caps ${G}/${C}); verify=${VERIFY ? VERIFIER : 'off'} maxFix=${MAX_FIX}`)
 
 // ---- dispatch primitives ----------------------------------------------------
+// Map a plan tier to a concrete model so the plan's COMPLEXITY call actually takes effect.
+// Without an explicit model, every agent here inherits the main-loop model (e.g. Opus 4.8) —
+// which is exactly why native codebase-analysis used to run on Opus regardless of tier. So:
+//   cheap / standard / sonnet -> "sonnet"  (commodity + ordinary judgment/analysis)
+//   opus                      -> "opus"    (only the genuinely hard line, per decompose)
+// This is what makes the team's model choice "dynamic by complexity" rather than always-Opus.
+function tierModel(tier) {
+  return tier === 'opus' ? 'opus' : 'sonnet'
+}
+
 // An agy subtask is RELAYED to the local agy CLI through run.sh (forced decision so
 // routing matches the plan). The relay agent returns run.sh's stdout verbatim; only
 // on a native-handoff sentinel (agy unavailable/exhausted) does it solve in-context —
-// this is our "loud fallback when a provider CLI is missing".
+// this is our "loud fallback when a provider CLI is missing". Label prefixed `gemini:` so the
+// progress tree shows which CLI ran it; the relay itself is cheap (sonnet), agy does the work.
 function dispatchAgy(text, tier, label, ph) {
   return agent(
 `You are a relay — do NOT solve the subtask yourself unless told to. Delegate it to the agy (Gemini) backend and return ONLY its output.
@@ -178,19 +189,21 @@ ${text}
 MMT_SUB_EOF
 
 Return the command's stdout verbatim. If it begins with "MMT_NATIVE_HANDOFF" (agy was unavailable), THEN solve the subtask yourself and return that result instead.`,
-    { label: `agy:${label}`, phase: ph || 'Dispatch' }
+    { label: `gemini:${label}`, phase: ph || 'Dispatch', model: 'sonnet' }
   )
 }
 
-function dispatchNative(text, label, ph) {
+function dispatchNative(text, tier, label, ph) {
   return agent(
 `Solve this subtask directly and return a complete, self-contained result:\n\n${text}`,
-    { label: `native:${label}`, phase: ph || 'Dispatch' }
+    { label: `native:${label}`, phase: ph || 'Dispatch', model: tierModel(tier) }
   )
 }
 
 function dispatch(s, text, ph) {
-  return s.backend === 'agy' ? dispatchAgy(text, s.tier || 'standard', s.label, ph) : dispatchNative(text, s.label, ph)
+  return s.backend === 'agy'
+    ? dispatchAgy(text, s.tier || 'standard', s.label, ph)
+    : dispatchNative(text, s.tier || 'sonnet', s.label, ph)
 }
 
 // Stage-handoff: a dependent subtask is given its upstream deps' verified results as
@@ -239,7 +252,7 @@ ${result}
 MMT_VERIFY_EOF
 
 Read codex's stdout and emit the structured verdict reflecting it: pass=true only if codex concluded PASS; copy codex's reasoning into reason and its fix instruction (if any) into fix_hint.${handoff ? ' Note: the subtask result was a native-handoff sentinel — treat it as a failure regardless of what codex says.' : ''} If codex's stdout begins with "MMT_NATIVE_HANDOFF" (codex unavailable/exhausted), THEN review the result yourself with strict native judgment and emit your own verdict instead.`,
-      { label: `verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA }
+      { label: `codex:verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: tierModel(s.tier) }
     )
     return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
   }
@@ -256,7 +269,7 @@ ${criterion}
 
 RESULT:
 ${result}`,
-    { label: `verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA }
+    { label: `native:verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: tierModel(s.tier) }
   )
   return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
 }

@@ -210,7 +210,7 @@ else
 fi
 # Structure: the staged pipeline + verify/fix machinery are present. Verify/Fix are tagged on
 # agents (interleaved per subtask), so they appear as `phase: '...'` opts, not phase() calls.
-for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix" "team-verify" "codexVerify"; do
+for marker in "phase('Decompose')" "phase('Dispatch')" "phase('Synthesize')" "phase: 'Verify'" "runSubtask" "verifyResult" "MAX_FIX" "#fix" "team-verify" "codexVerify" "gemini:" "codex:verify:" "tierModel"; do
   if grep -qF "$marker" "$MJS"; then ok "team.mjs has: $marker"; else bad "team.mjs missing: $marker"; fi
 done
 

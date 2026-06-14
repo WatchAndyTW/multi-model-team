@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (102/102, including live agy + codex smoke tests). Active
+`tests/run_tests.sh` is green (105/105, including live agy + codex smoke tests). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -123,7 +123,9 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
   - **Ultracode:** if the Workflow tool is available, `/team` runs the whole pipeline as a
     deterministic dynamic workflow (`workflows/team.mjs`) — knobs `verify` (default on), `verifier`
     (`codex` default, or `native`), and `maxFixLoops` (default 1, max 3) — instead of ad-hoc
-    parallel calls.
+    parallel calls. Agents show backend-prefixed in the progress tree (`gemini:` / `codex:` /
+    `native:`), and each native subtask's model is chosen **by complexity** — `sonnet` for ordinary
+    analysis, `opus` only for genuinely hard work — rather than always inheriting Opus.
   - Task text is never shell-interpolated — it's written to a `plan.json` (data) and fed to
     `run.sh` on stdin, so it's injection-safe.
 - **`/multi-model-team:route-test <task>`** — dry-run the router. Prints the decision

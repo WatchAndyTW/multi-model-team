@@ -51,7 +51,10 @@ Split the task into subtasks. For **each** subtask decide four things:
 - **deps** — the labels of any other subtasks whose output this one needs (it runs *after* them
   and gets their results as context). `[]` if independent. Keep the graph acyclic.
 - **verify** — one short, checkable acceptance criterion (what makes the result correct).
-- **tier** — agy → `standard`/`cheap`; native → `sonnet`/`opus`.
+- **tier** — agy → `standard`/`cheap`; native → **by complexity**: `sonnet` for ordinary codebase
+  analysis / understanding / reviews / standard logic (the default), `opus` ONLY for the hard line
+  or deep architecture / subtle concurrency. Do NOT default analysis to `opus`. (In the Ultracode
+  path the tier maps to the actual model, so this is what keeps the native model cost-adaptive.)
 
 Keep **agy subtasks ≤ G** and **native subtasks ≤ C**. If unsure of a subtask's backend, dry-run
 the router (`scripts/route.sh --explain` with the subtask on a single-quoted heredoc).

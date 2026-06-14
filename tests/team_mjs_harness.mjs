@@ -33,12 +33,15 @@ const body = src.replace(/^\s*export\s+const\s+meta/m, 'const meta')
 const calls = { dispatch: [], verify: [], phases: [] }
 let sawUpstreamContext = false
 let sawCodexVerify = false // verify stage delegates to codex by default
+let sawCodexLabel = false  // verify agent label is prefixed `codex:`
+const models = {}          // label -> opts.model (assert tier->model mapping took effect)
 const verifyCount = {} // label -> times verified
 
 async function agentStub(prompt, opts = {}) {
   const label = String(opts.label || '')
   const schema = opts.schema || null
   const props = (schema && schema.properties) || {}
+  if (label) models[label] = opts.model
 
   // Decompose: schema has a `subtasks` array.
   if (props.subtasks || label === 'decompose') {
@@ -51,23 +54,25 @@ async function agentStub(prompt, opts = {}) {
   }
 
   // Verify: schema has a `pass` boolean. Fail `sql` exactly once to exercise the fix loop.
-  if (props.pass || label.startsWith('verify:')) {
-    const m = label.match(/^verify:(.+)$/)
+  if (props.pass || /verify:/.test(label)) {
+    const m = label.match(/verify:(.+)$/)
     const who = m ? m[1] : 'unknown'
     verifyCount[who] = (verifyCount[who] || 0) + 1
     calls.verify.push(who)
-    // Default verifier delegates the review to codex (run.sh forced codex decision).
+    // Default verifier delegates the review to codex (run.sh forced codex decision) and the
+    // verify agent label is prefixed `codex:`.
     if (/team-verify|backend":"codex|codex \(OpenAI/i.test(prompt)) sawCodexVerify = true
+    if (label.startsWith('codex:')) sawCodexLabel = true
     if (who === 'sql' && verifyCount[who] === 1) {
       return { pass: false, reason: 'missing GROUP BY', fix_hint: 'add a GROUP BY clause' }
     }
     return { pass: true, reason: 'looks correct', fix_hint: '' }
   }
 
-  // Dispatch / fix: label is `agy:<x>` / `native:<x>` (possibly `<x>#fixN`).
+  // Dispatch / fix: label is `gemini:<x>` / `native:<x>` (possibly `<x>#fixN`).
   calls.dispatch.push(label)
   if (label.startsWith('native:model')) return 'MODEL_RESULT_AABBCC'
-  if (label.startsWith('agy:sql')) {
+  if (label.startsWith('gemini:sql')) {
     if (prompt.includes('MODEL_RESULT_AABBCC')) sawUpstreamContext = true
     return 'SQL_RESULT_DDEEFF'
   }
@@ -154,10 +159,14 @@ ck(sql && sql.attempts === 2, 'expected sql attempts=2 (one fix), got ' + (sql &
 ck(sql && sql.status === 'verified', 'expected sql status=verified, got ' + (sql && sql.status))
 ck(sawUpstreamContext, 'dependency context NOT injected into dependent subtask (sql never saw model result)')
 ck(sawCodexVerify, 'verify stage did NOT delegate to codex by default (no codex relay in the verify prompt)')
+ck(sawCodexLabel, 'verify agent label not prefixed `codex:` by default')
+ck(calls.dispatch.some((l) => l.startsWith('gemini:')), 'no dispatch label prefixed `gemini:` (agy relay should be gemini:<label>)')
+ck(models['native:model'] === 'sonnet', 'native sonnet-tier subtask did not run on model=sonnet (tier ignored / still inheriting Opus?), got ' + models['native:model'])
+ck(models['gemini:sql'] === 'sonnet', 'gemini relay agent did not run on model=sonnet, got ' + models['gemini:sql'])
 
 // model must be dispatched before sql (dependency ordering / waves).
 const iModel = calls.dispatch.findIndex((l) => l.startsWith('native:model'))
-const iSql = calls.dispatch.findIndex((l) => l.startsWith('agy:sql'))
+const iSql = calls.dispatch.findIndex((l) => l.startsWith('gemini:sql'))
 ck(iModel >= 0 && iSql >= 0 && iModel < iSql, 'model not dispatched before sql (wave ordering broken)')
 
 // the fix re-dispatch must have happened (a label carrying #fix).
@@ -167,4 +176,4 @@ if (fails.length) {
   console.error('HARNESS_BAD\n - ' + fails.join('\n - '))
   process.exit(1)
 }
-console.log('HARNESS_OK agy=1 native=1 verified=2 fixLoop=1 depCtx=ok codexVerify=ok')
+console.log('HARNESS_OK agy=1 native=1 verified=2 fixLoop=1 depCtx=ok codexVerify=ok labels=gemini/codex tier->model=ok')
