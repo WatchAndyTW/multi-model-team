@@ -20,6 +20,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/workflow-route-guard.sh\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (158/158 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
+`tests/run_tests.sh` is green (169/169 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -275,6 +275,7 @@ scripts/lib/common.sh        shared helpers (python finder)
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
 scripts/hooks/proactive-route.sh    UserPromptSubmit delegation nudge (opt-in)
 scripts/hooks/spawn-route-guard.sh  PreToolUse Task|Agent guard: nudge/deny CLI-routable agent spawns (opt-in)
+scripts/hooks/workflow-route-guard.sh  PreToolUse Workflow guard: nudge dynamic workflows toward run.sh routing (opt-in)
 statusline/statusline.sh     fork-free HUD line
 agents/                      delegate, av-research, bulk-summarizer, codex
 commands/                    team, route-test

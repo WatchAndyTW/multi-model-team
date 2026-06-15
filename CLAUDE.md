@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 158/158 offline
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 169/169 offline
 (plus live agy + codex smoke tests under MMT_LIVE=1). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -92,6 +92,7 @@ scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json `agents` (e
 scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
 scripts/hooks/proactive-route.sh    UserPromptSubmit nudge: agy-routable prompt -> suggest delegating
 scripts/hooks/spawn-route-guard.sh  PreToolUse Task|Agent guard: nudge/deny agent spawns that route to agy/codex (NOT-/team)
+scripts/hooks/workflow-route-guard.sh  PreToolUse Workflow guard: nudge dynamic workflows toward run.sh routing
 statusline/statusline.sh     fork-free HUD
 agents/{delegate,av-research,bulk-summarizer}.md   GENERATED from roster.json (gen_agents.py)
 commands/{team,route-test}.md    /team = multi-agent fan-out; /route-test = dry-run router
@@ -219,7 +220,7 @@ resume) and tolerates `args` as object **or** JSON string.
 
 ## Proactive delegation hooks (opt-in)
 
-Two nudges, both gated by `[proactive].enabled = true` in `roster.json` (off by default):
+Three nudges, all gated by `[proactive].enabled = true` in `roster.json` (off by default):
 
 **(1) Prompt nudge — `scripts/hooks/proactive-route.sh` (UserPromptSubmit).** Runs each submitted
 prompt through `route.sh`; if it routes to agy, injects a one-shot reminder
@@ -246,7 +247,18 @@ report that result back through OMC's TaskList/SendMessage flow — only the hea
 CLI. (Caveat: PreToolUse `additionalContext` reaches the spawning lead's context, not the worker's,
 so it's a best-effort routing hint — compliance stays the model's judgment.)
 
-**Both:** deterministic firing, soft compliance in nudge mode. Config in `[proactive]` (`enabled`,
+**(3) Workflow guard — `scripts/hooks/workflow-route-guard.sh` (PreToolUse, matcher `Workflow`).** A
+dynamic Workflow runs its `agent()` fan-out in an isolated runtime PreToolUse can't reach, so we can't
+redirect a workflow's internal agents from a hook. This fires on the Workflow tool **invocation**: if
+the workflow's `args.task` routes to agy/codex it injects a one-shot **nudge** (never blocks) — *prefer
+`/team` (which routes each subtask via `run.sh`), or have this workflow shell its subtasks to `run.sh`*.
+Our own `team.mjs` is exempt (it already routes). On fire it appends a line to
+`~/.cache/mmt/wf-guard.log` as a **dispatch-verification marker** (launch a workflow → check the file).
+**Open question:** whether Claude Code actually dispatches PreToolUse to a `Workflow` matcher is
+undocumented — verify via the marker after a restart; if it never appears, only the in-`team.mjs`
+`run.sh` dispatch routes workflows.
+
+**All three:** deterministic firing, soft compliance in nudge mode. Config in `[proactive]` (`enabled`,
 `max_chars`, `min_chars`, `rules` CSV allowlist, `guard_spawns`, `enforce_spawns`); `config.py
 proactive-env` emits these as `MMT_PROACTIVE_*`. **Cost discipline:** when disabled (the default) both
 hooks bail via a pure-bash `[proactive].enabled` pre-check **before spawning any python** — so they

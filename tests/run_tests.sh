@@ -322,6 +322,23 @@ assert_contains "proactive-env: guard_spawns override 0"   "$PE_OV" "MMT_PROACTI
 assert_contains "proactive-env: enforce_spawns override 1" "$PE_OV" "MMT_PROACTIVE_ENFORCE_SPAWNS=1"
 rm -rf "$PETMP"
 
+echo "── Unit: workflow-route guard (PreToolUse Workflow) ──"
+WHOOK="$MMT_ROOT/scripts/hooks/workflow-route-guard.sh"
+assert_contains "hooks.json: registers workflow guard" "$(cat "$MMT_ROOT/hooks/hooks.json")" "workflow-route-guard.sh"
+assert_contains "hooks.json: matches Workflow"          "$(cat "$MMT_ROOT/hooks/hooks.json")" '"Workflow"'
+WTMP="$(mktemp -d)"; WFH="$WTMP/home"; mkdir -p "$WFH"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['proactive']['enabled']=True; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$WTMP/on.json"
+mkwf() { "$PY" -c 'import json,sys; print(json.dumps({"tool_name":"Workflow","tool_input":{"name":sys.argv[1],"args":{"task":sys.argv[2]}}}))' "$1" "$2"; }
+whook() { printf '%s' "$1" | HOME="$WFH" MMT_ROSTER="$2" bash "$WHOOK" 2>/dev/null; }
+WAGY="$(mkwf "adhoc-sql" "Write a SQL query to list all users sorted by signup date")"
+WOUR="$("$PY" -c 'import json; print(json.dumps({"tool_name":"Workflow","tool_input":{"scriptPath":"/x/workflows/team.mjs","args":{"task":"Write a SQL query"}}}))')"
+assert_contains "workflow: agy task -> allow nudge" "$(whook "$WAGY" "$WTMP/on.json")"              '"permissionDecision":"allow"'
+assert_contains "workflow: nudge points at run.sh"  "$(whook "$WAGY" "$WTMP/on.json")"              "run.sh"
+assert_eq       "workflow: our team.mjs -> silent"  "$(whook "$WOUR" "$WTMP/on.json")"              ""
+assert_eq       "workflow: disabled -> silent"      "$(whook "$WAGY" "$MMT_ROOT/config/roster.json")" ""
+assert_contains "workflow: fire marker logged"      "$(cat "$WFH/.cache/mmt/wf-guard.log" 2>/dev/null)" "workflow-route-guard fired"
+rm -rf "$WTMP"
+
 echo "── Unit: explicit force overrides the hard-line ───────"
 # An EXPLICIT backend choice (forced agent / forced --decision / team assignment) must be HONORED,
 # not bounced to native by the OPUS hard line. Auto-routing keeps the hard line as its default.
