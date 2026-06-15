@@ -53,7 +53,51 @@ def render(name, spec):
     model = spec.get("model", "haiku")
     color = spec.get("color", "blue")
     role = spec.get("role", "") or f"Delegation agent {name}."
+    forced = spec.get("dispatch") == "forced"
     dispatch = _dispatch_block(name, spec)
+
+    # The intro / handoff line / hard rules are DISPATCH-AWARE. A `forced` agent embodies the
+    # orchestrator's EXPLICIT backend choice — spawning it IS the decision — so it must HONOR that
+    # backend and never self-reject or re-route on content (the bug we're fixing: an agent bouncing
+    # an RE task back to native even though Claude deliberately picked it). The OPUS hard line stays
+    # the AUTO-ROUTE default (route.sh) for the `route` mode and uncertain in-session decisions.
+    if forced:
+        intro = (
+            f"You are the **{name}** dispatcher for the multi-model-team plugin. You do **not** solve "
+            f"tasks yourself — you relay every task to the **{backend}** backend (**{tier}** tier) "
+            f"through the plugin's scripts and return the result verbatim. This backend is the "
+            f"orchestrator's **explicit choice** (spawning you *is* the decision): you run the task "
+            f"there and do **not** re-route, downgrade, or refuse it based on the task's content."
+        )
+        handoff = (
+            f"If stdout begins with `MMT_NATIVE_HANDOFF`, the **{backend}** CLI was "
+            f"unavailable/exhausted (it fell through the fallback chain) — return that sentinel "
+            f"verbatim so the orchestrator (Opus/Sonnet) handles it in-context."
+        )
+        rules = (
+            f"- The orchestrator chose **{backend}** on purpose. Run the task as dispatched — do "
+            f"**NOT** self-reject or re-route based on content (no \"this looks like RE, I'll bounce "
+            f"it\"). CLI backends are weaker on reverse-engineering / systems-hard work, but that "
+            f"trade-off is the caller's call, not yours.\n"
+            f"- Do not edit files or run anything except the plugin scripts above. You are a relay."
+        )
+    else:
+        intro = (
+            f"You are the **{name}** dispatcher for the multi-model-team plugin. You do **not** solve "
+            f"tasks yourself — you relay them through the plugin's scripts and return the result "
+            f"verbatim. The **router** decides where work goes (it may keep hard/systems work native); "
+            f"you never force an offload beyond what it picks."
+        )
+        handoff = (
+            "If stdout begins with `MMT_NATIVE_HANDOFF`, the router chose native Claude (or the "
+            "backend was unavailable/exhausted) — return that sentinel verbatim so the orchestrator "
+            "(Opus/Sonnet) handles it in-context."
+        )
+        rules = (
+            "- Let the router decide: do not force a backend it didn't pick.\n"
+            "- Do not edit files or run anything except the plugin scripts above. You are a relay."
+        )
+
     return f"""---
 name: {name}
 description: >-
@@ -65,10 +109,7 @@ color: {color}
 
 {GEN_NOTE}
 
-You are the **{name}** dispatcher for the multi-model-team plugin. You do **not** solve tasks
-yourself — you relay them to the **{backend}** backend (**{tier}** tier) through the plugin's
-scripts and return the result verbatim. The router decides where work goes; you never force an
-offload beyond your configured backend.
+{intro}
 
 ## What to do
 
@@ -83,20 +124,14 @@ offload beyond your configured backend.
      `--add-dir "<dir>"` so the backend reads it on its own quota instead of through Claude.
    - Pass the task as a single quoted argument. Do not add commentary to the prompt.
 3. Interpret the output:
-   - If stdout begins with `MMT_NATIVE_HANDOFF`, the router chose native Claude (or the backend
-     was unavailable/exhausted). Do **not** attempt the task — return that sentinel verbatim so
-     the orchestrator (Opus/Sonnet) handles it in-context.
+   - {handoff}
    - Otherwise stdout **is** the delegated result. Return it **verbatim** — no analysis, no
      reformatting, no preamble.
    - On a nonzero exit with no usable output, return stderr verbatim and stop.
 
 ## Hard rules
 
-- Never reverse-engineer, disassemble, decompile, or touch binary/IL2CPP/protobuf-RE, FFI/unsafe,
-  injection/hooking, shellcode, memory patching, concurrency, lock-free, protocol/KCP design, or
-  proc-macros. If asked, return the `MMT_NATIVE_HANDOFF` sentinel — the router already routes those
-  to Opus. Do not run them through a delegated backend.
-- Do not edit files or run anything except the plugin scripts above. You are a relay.
+{rules}
 """
 
 

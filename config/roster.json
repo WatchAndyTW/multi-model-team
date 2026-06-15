@@ -82,7 +82,7 @@
       "enabled": true,
       "backend": "agy",
       "tier": "standard",
-      "dispatch": "route",
+      "dispatch": "forced",
       "model": "haiku",
       "color": "blue",
       "role": "Backend-agnostic dispatcher for STANDARD, VERIFIABLE coding and Gemini's edges where the result is compact or easy to verify: new React/UI components, CSS, SVG/animation, scaffolding, CRUD, REST endpoints, scripts, CLI tools, glue code, SQL, regex, configs, Dockerfiles, unit tests, fixtures, data transforms — plus web-search/doc summarization and bulk text ingestion. Explicitly NOT for reverse-engineering, IL2CPP/protobuf-RE, disassembly, FFI/unsafe, binary, injection/hooking, concurrency, protocol/KCP design, proc-macros, or anything systems-hard (those are Opus-only and never offloaded)."
@@ -92,7 +92,7 @@
       "enabled": true,
       "backend": "agy",
       "tier": "standard",
-      "dispatch": "route",
+      "dispatch": "forced",
       "model": "haiku",
       "color": "cyan",
       "role": "Highest-confidence offload — Gemini's categorical edges that Claude can't do or trails on: watch/summarize video, transcribe/analyze audio, synthesize web research, and summarize large grounded documents. Use when the task is multimodal (A/V/image) or grounded research where a compact, verifiable answer suffices. Not for code logic, RE, or systems work."

@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 148/148 offline
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 155/155 offline
 (plus live agy + codex smoke tests under MMT_LIVE=1). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -126,6 +126,17 @@ it meet the spec). Pure review/test/verify lands here; a judgment word above sti
    and BELOW the OPUS rules, but ABOVE the commodity agy rules — so PURE review/test/verify lands on
    codex, not agy. (The `integration` tag was tightened so "integration tests" → codex, not Sonnet.)
 5. Unclassified → `catch-all-safe` → Sonnet.
+
+**These invariants govern AUTO-ROUTING only — an explicit backend choice overrides the hard line.**
+They are what `route.sh` picks when nothing is forced (raw `run.sh "<task>"`, the proactive nudge,
+`/route-test`). When the orchestrator **explicitly** chooses a backend — a forced agent
+(`dispatch:forced`: `delegate` / `av-research` / `bulk-summarizer` / `codex`), a
+`run.sh --decision '{…,"native":false}'` call, or a `/team` subtask assignment — `run.sh` dispatches
+to that backend **without consulting `route.sh`**, so the OPUS hard line never bounces an
+explicitly-chosen job back to native. The plugin honors the choice; whether the backend itself
+accepts the task (e.g. a CLI declining RE) is the backend's call, not a plugin rejection. The
+generated forced-agent bodies reflect this — they run the dispatch as given and never self-reject on
+content. (`route`-mode agents still defer to `route.sh` and its hard line.)
 
 **Tuning needs no code edits:** edit `config/tags.txt` to change *what type* a task is, and
 `config/roster.json` to change *where a type routes*. Verify with `/route-test`. When editing

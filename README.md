@@ -19,7 +19,7 @@ decision is driven by config you can tune without touching code.
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`tests/run_tests.sh` is green (148/148 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
+`tests/run_tests.sh` is green (155/155 offline, plus live agy + codex smoke tests under MMT_LIVE=1). Active
 backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI). `opencode` is a config-only
 stub for a future addition.
 
@@ -150,7 +150,11 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
   extend a test suite; or verify an implementation meets its spec. Not for RE/injection/systems-hard
   (that work is always Opus-only).
 
-There is intentionally **no** RE/injection agent — that work is Opus-only and never offloaded.
+There is intentionally **no** RE/injection agent — that work stays **native by default**. But
+spawning any agent above is an *explicit* backend choice and is **honored as-is**: it forces that
+backend through `run.sh` and is **not** bounced back to native by the router's hard line. (So don't
+spawn one for RE unless you mean it — the auto-router still keeps RE native on its own; an explicit
+pick overrides it. Whether the backend then accepts the task, e.g. a CLI declining RE, is its call.)
 
 ### Proactive delegation (opt-in)
 

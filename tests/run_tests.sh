@@ -314,6 +314,26 @@ assert_contains "proactive-env: guard_spawns override 0"   "$PE_OV" "MMT_PROACTI
 assert_contains "proactive-env: enforce_spawns override 1" "$PE_OV" "MMT_PROACTIVE_ENFORCE_SPAWNS=1"
 rm -rf "$PETMP"
 
+echo "── Unit: explicit force overrides the hard-line ───────"
+# An EXPLICIT backend choice (forced agent / forced --decision / team assignment) must be HONORED,
+# not bounced to native by the OPUS hard line. Auto-routing keeps the hard line as its default.
+RE_TASK='Reverse engineer the IL2CPP dump and reconstruct the protobuf schemas via disassembly'
+assert_contains "force: auto-route still hard-lines RE" \
+  "$(printf '%s' "$RE_TASK" | bash "$MMT_ROOT/scripts/route.sh" 2>/dev/null)" 're-injection-heavy'
+# Forced decision bypasses route.sh entirely. Offline-safe: disable the CLIs so it falls through to a
+# native handoff whose rule is the FORCED rule (delegate-forced), never the auto-route re-injection-heavy.
+FTMP="$(mktemp -d)"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['backends']['agy']['enabled']=False; d['backends']['codex']['enabled']=False; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$FTMP/nocli.json"
+FORCED_OUT="$(MMT_ROSTER="$FTMP/nocli.json" bash "$RUN" --decision '{"backend":"agy","model":"","tier":"standard","rule":"delegate-forced","native":false}' "$RE_TASK" 2>/dev/null)"
+assert_eq       "force: forced decision bypasses hard-line" "$(printf '%s' "$FORCED_OUT" | grep -c 're-injection-heavy')" "0"
+assert_contains "force: forced rule survives to handoff"    "$FORCED_OUT" "delegate-forced"
+rm -rf "$FTMP"
+# The shipped forced agents carry the explicit-choice body and no longer self-reject RE.
+assert_contains "force: delegate.md forces backend"   "$(cat "$MMT_ROOT/agents/delegate.md")" '"native":false'
+assert_contains "force: delegate.md honors explicit"  "$(cat "$MMT_ROOT/agents/delegate.md")" "explicit choice"
+assert_contains "force: codex.md honors explicit"     "$(cat "$MMT_ROOT/agents/codex.md")"    "explicit choice"
+assert_eq       "force: no agent self-rejects RE"     "$(grep -l 'Never reverse-engineer' "$MMT_ROOT"/agents/*.md 2>/dev/null | wc -l | tr -d ' ')" "0"
+
 echo "── Unit: JSON config — backends configurable ──────────"
 CJSON="$MMT_ROOT/config/roster.json"
 CFG() { "$PY" "$MMT_ROOT/scripts/lib/config.py" "$CJSON" backend-env "$1" 2>/dev/null; }
