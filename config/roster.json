@@ -1,5 +1,5 @@
 {
-  "_about": "multi-model-team config. Backends (CLIs) and agents are first-class and individually enable/disable-able; routes pick a backend per task (first match wins). Edit this file to add a CLI, flip a backend/agent on or off, or change an agent's role. After editing agents, run scripts/lib/gen_agents.py to regenerate agents/*.md.",
+  "_about": "multi-model-team config. Backends (CLIs) and agents are first-class and individually enable/disable-able; routes pick a backend per task (first match wins). Edit this file to add a CLI, flip a backend/agent on or off, or change an agent's role. After editing agents, run node src/lib/gen-agents.mjs to regenerate agents/*.md.",
 
   "defaults": {
     "_comment": "preset biases tier (budget|balanced|premium). fallback is the final hop. quota_fallback is the ordered backend chain tried when the chosen backend is unavailable/exhausted.",
@@ -76,7 +76,7 @@
   },
 
   "agents": {
-    "_comment": "Claude Code subagents the model can spawn. 'enabled' controls whether agents/<name>.md is generated (disabled -> the .md is removed so Claude Code won't surface it). 'backend'+'tier' set where the agent relays; 'dispatch' is 'route' (let the router decide) or 'forced' (pin backend+tier). 'role' becomes the agent's description (what the model matches on). Regenerate with scripts/lib/gen_agents.py after editing.",
+    "_comment": "Claude Code subagents the model can spawn. 'enabled' controls whether agents/<name>.md is generated (disabled -> the .md is removed so Claude Code won't surface it). 'backend'+'tier' set where the agent relays; 'dispatch' is 'route' (let the router decide) or 'forced' (pin backend+tier). 'role' becomes the agent's description (what the model matches on). Regenerate with node src/lib/gen-agents.mjs after editing.",
 
     "delegate": {
       "enabled": true,

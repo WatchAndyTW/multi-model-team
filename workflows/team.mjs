@@ -77,13 +77,13 @@ if (!task || !String(task).trim()) {
   return { error: 'mmt-team: no task provided in args.task' }
 }
 if (!root) {
-  return { error: 'mmt-team: args.pluginRoot is required to locate scripts/run.sh' }
+  return { error: 'mmt-team: args.pluginRoot is required to locate src/bin/run.mjs' }
 }
 if (CAP_SUM === 0) {
   return { error: 'mmt-team: caps sum to 0 — no agents available to dispatch' }
 }
 
-const RUN = `${root}/scripts/run.sh`
+const RUN = `${root}/src/bin/run.mjs`
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -241,7 +241,7 @@ function dispatchRelay(backend, text, tier, rule, label, ph) {
 
 Run EXACTLY this with the Bash tool and nothing else (the payload rides in on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line MMT_SUB_EOF, change the delimiter):
 
-bash ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"${rule}","native":false}' <<'MMT_SUB_EOF'
+node ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"${rule}","native":false}' <<'MMT_SUB_EOF'
 ${text}
 MMT_SUB_EOF
 

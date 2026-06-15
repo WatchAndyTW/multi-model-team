@@ -1,105 +1,122 @@
 # multi-model-team — project guide for Claude
 
-A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a local
-pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
-credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
+A Claude Code **plugin** that delegates token-heavy, self-contained tasks to local
+pre-authed CLI backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI) — choosing
+backend/model by task size and type, with credit-exhaustion fallback to native Claude and a
+glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 169/169 offline
-(plus live agy + codex smoke tests under MMT_LIVE=1). Two live backends: **agy** (Gemini) and **codex** (OpenAI
-Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
-`PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
+**Stack:** Node ESM (`.mjs`), zero-build, zero runtime dependencies (Node stdlib only), Node >=18.
+Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
+
+**Status:** built, adversarially reviewed, and green. `npm test` passes **46/46** offline
+(plus live agy + codex smoke tests under `MMT_LIVE=1`). Two live backends: **agy** (Gemini)
+and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
+**`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
+`docs/PLAN.md` (original design plan).
+
+**Why the Node ESM rewrite?** The bash hooks forked ~6–7 processes per invocation under a 10 s
+msys timeout and were intermittently killed ("hooks not triggering sometimes"). Each hook is now
+**one fork-free Node process** (in-process routing via `hook-common.mjs`); the fragile
+substring proactive-gate is replaced by real `JSON.parse`. The dead `Workflow` PreToolUse guard
+was dropped (empirically never fired — Claude Code doesn't dispatch `PreToolUse` to a `Workflow`
+matcher).
 
 ---
 
 ## ⚠️ Backend invocation quirks
 
-### agy (gemini) — needs a TTY
+### agy (Gemini) — needs a TTY
 
-`agy` gates its output on `isatty(stdout)`. Run through a normal pipe (a hook, a subagent
-shell, `bash run.sh`) it **exits 0 and prints nothing** — a silent no-op that looks like
-success. Every invocation MUST therefore:
+`agy` gates its output on `isatty(stdout)`. Run through a normal pipe it **exits 0 and prints
+nothing** — a silent no-op that looks like success. Every invocation MUST therefore:
 
 1. be wrapped in **winpty**: `winpty -Xallow-non-tty -Xplain <agy.exe> --print "<prompt>" …`
-2. be given an **open, idle stdin** (a held-open `mkfifo` pipe) — agy emits nothing if stdin
-   is already at EOF (`/dev/null` or a drained pipe).
+2. be given an **open, idle stdin** — a Node pipe held open until the child exits (replaces the
+   old bash FIFO: `stdio:['pipe',...]` and do NOT close stdin until the child closes).
 
-Both are handled in `scripts/lib/backends.sh` (`_mmt_with_open_stdin`, `mmt_agy_invoke`).
-The health check (`agy --version`) is the exception — it is NOT TTY-gated and must run
-**without** winpty (winpty yields empty output for `--version`). Full detail in `PROBES.md`.
+Both are handled in `src/lib/backends.mjs` (invoke) + `src/lib/platform.mjs` (`ptyWrap`).
+The health check (`agy --version`) is NOT TTY-gated and must run **without** winpty (winpty yields
+empty output for `--version`). Full detail in `PROBES.md`.
+
+**Important caveat:** winpty requires a real Windows console. agy's live invocation works from the
+actual Claude Code terminal. In a headless/piped context (a Bash-tool subshell, a hook subprocess)
+there is no real console — agy falls through the fallback chain to codex or native. This is an
+environmental constraint, not a plugin bug. The bash version had the same constraint.
 
 Real model names (exact `agy models` display strings): `Gemini 3.1 Pro (Low)` (standard),
-`Gemini 3.5 Flash (Low)` (cheap). Binary auto-resolves from `$MMT_AGY_BIN` → PATH →
-`$LOCALAPPDATA/agy/bin/agy.exe`.
+`Gemini 3.5 Flash (Low)` (cheap). Binary auto-resolves via `platform.resolveBinary`: `$MMT_AGY_BIN`
+→ PATH scan → default candidates (`$LOCALAPPDATA/agy/bin/agy.exe` on Windows;
+`~/.local/bin/agy`, `/usr/local/bin/agy`, `/usr/bin/agy` on Linux; same + `/opt/homebrew/bin/agy`
+on macOS).
 
 ### codex — no TTY needed
 
-`codex` is invoked as `codex exec -s read-only --skip-git-repo-check --color never <prompt>`.
-It is non-interactive: diagnostics go to stderr, the final response is printed to stdout, and
-it exits cleanly — **no winpty, no open-stdin pipe needed** (contrast with agy/gemini above).
-`_mmt_invoke_codex` + `_mmt_health_codex` in `backends.sh` handle dispatch; `kind:"codex"`,
-`use_winpty:false`, `oneshot_flag:"exec"` in `config/roster.json`. The sandbox flag
-(`-s read-only`) is baked into `extra`, so `run.sh` skips the generic `--sandbox` append
-(codex sets `sandbox_flag:""`). The codex agent (`agents/codex.md`) is generated with
-`dispatch:forced` — it always pins the codex backend directly.
+`codex` is invoked with the prompt delivered **via stdin** (`codex exec … -` reads from stdin),
+not as a command-line argument. This fixes a real Windows bug where the npm `.cmd` shim spawned
+via `cmd.exe` truncated a multi-line prompt at the first newline. `platform.resolveBinary` prefers
+a PATHEXT match (`codex.cmd`) over the extensionless npm shim, and `.cmd`/`.bat` wrappers are
+spawned via `cmd.exe /d /s /c`. No winpty, no open-stdin keepalive needed.
 
 ---
 
 ## Architecture / data flow
 
 ```
-task text
+task text (stdin — injection-safe boundary)
    │
-   ▼  scripts/route.sh        pure decision, no model call
-   │    ├─ scripts/lib/score.sh   char count + keyword type tags (config/tags.txt)
-   │    └─ scripts/lib/match.py   first-match-wins over config/roster.json "routes" (json)
-   ▼  decision JSON {backend, model, tier, rule, native}
+   ▼  src/bin/route.mjs          pure decision, no model call
+   │    ├─ src/lib/score.mjs     char count + keyword type tags (config/tags.txt)
+   │    └─ src/lib/router.mjs    first-match-wins over config/roster.json "routes"
+   ▼  decision JSON {backend, model, tier, rule, native, preset, score}
    │
-   ▼  scripts/run.sh          executor
-        ├─ scripts/lib/config.py    roster.json → bash-sourceable MMT_BE_*/defaults (json, no jq)
-        ├─ scripts/lib/backends.sh  backend resolve (by kind) + winpty invoke + clean() + quota
-        ├─ scripts/lib/state.sh     HUD state → ~/.cache/mmt/state.json
+   ▼  src/bin/run.mjs            executor
+        ├─ src/lib/config.mjs    roster.json → plain JS objects (no bash eval, real JSON.parse)
+        ├─ src/lib/backends.mjs  backend invoke (by kind: gemini/codex) + clean() + quota
+        ├─ src/lib/platform.mjs  ptyWrap (winpty/script), resolveBinary, stateDir
+        ├─ src/lib/state.mjs     HUD state → stateDir()/state.json
         └─ on backend success: cleaned stdout;  else: MMT_NATIVE_HANDOFF sentinel
    │
-   ▼  statusline/statusline.sh   fork-free HUD line (reads state.json)
+   ▼  statusline/statusline.mjs  fork-free HUD line (reads state.json)
 ```
 
-`run.sh` walks a fallback chain = chosen backend + `quota_fallback` (deduped). `quota_fallback`
-is now `["agy","codex","native:sonnet"]` — agy quota exhaustion falls through to codex, then
-to native Claude as last resort (`MMT_NATIVE_HANDOFF` sentinel). **When a backend fails** (non-zero
-or empty output — e.g. a codex sandbox refusal or a `hard_timeout` kill), run.sh no longer swallows
-it: it prints `run.sh: backend '<be>' returned no usable output (exit N) — stderr: <captured>` to its
-own stderr AND carries that `(last error: …)` into the final handoff `reason=`, so the cause is
-visible instead of a silent empty result. (codex's sandbox is `-s read-only` by default for the
-verifier — that banner line is normal, not an error; the timeout is `backends.codex.hard_timeout`.)
-The compact-return contract ("Return only the result, no preamble.") is prepended to every delegated
-prompt — savings depend on a small return crossing back to Claude.
+`run.mjs` walks a fallback chain = chosen backend + `quota_fallback` (deduped). Default:
+`["agy","codex","native:sonnet"]` — agy quota exhaustion falls through to codex, then to native
+Claude (`MMT_NATIVE_HANDOFF` sentinel). When a backend fails (non-zero or empty output), `run.mjs`
+captures stderr into `last error` and carries it into the handoff `reason=` — so the cause is
+visible instead of a silent empty result.
 
 ---
 
 ## Directory map
 
 ```
-.claude-plugin/plugin.json   manifest (auto-discovers commands/ agents/ hooks/hooks.json)
-settings.json                reference statusLine (see HUD note below)
-config/roster.json           ALL config (JSON): defaults + backends + agents + routes + proactive
-config/tags.txt              task-type classifier — `<type> <ERE>` per line (stays a flat file)
-scripts/route.sh             decision only
-scripts/run.sh               executor + fallback chain + HUD state (one task)
-scripts/team.sh              /team fan-out — run a plan's agy subtasks via run.sh in parallel
-scripts/lib/{score.sh,match.py,config.py,backends.sh,state.sh,common.sh}
-scripts/lib/{team_spec.py,team_plan.py}   cap-spec parser; plan.json -> per-subtask files
-scripts/lib/gen_agents.py    regenerate agents/*.md from roster.json `agents` (enable/disable/role)
-scripts/hooks/heavy-read-guard.sh   PreToolUse guard for oversized RE-dump reads
-scripts/hooks/proactive-route.sh    UserPromptSubmit nudge: agy-routable prompt -> suggest delegating
-scripts/hooks/spawn-route-guard.sh  PreToolUse Task|Agent guard: nudge/deny agent spawns that route to agy/codex (NOT-/team)
-scripts/hooks/workflow-route-guard.sh  PreToolUse Workflow guard: nudge dynamic workflows toward run.sh routing
-statusline/statusline.sh     fork-free HUD
-agents/{delegate,av-research,bulk-summarizer}.md   GENERATED from roster.json (gen_agents.py)
-commands/{team,route-test}.md    /team = multi-agent fan-out; /route-test = dry-run router
-workflows/team.mjs           Ultracode dynamic-workflow fan-out (Workflow tool)
-hooks/hooks.json             PreToolUse (Read guard + Task|Agent spawn guard) + UserPromptSubmit (proactive nudge)
-tests/run_tests.sh           offline suite + opt-in live agy smoke (MMT_LIVE=1)
-docs/PLAN.md                 original implementation plan (historical)
+.claude-plugin/plugin.json      manifest (auto-discovers commands/ agents/ hooks/hooks.json)
+settings.json                   reference statusLine (see README HUD note)
+config/roster.json              ALL config: defaults + backends + agents + routes + proactive + team
+config/tags.txt                 task-type classifier — `<type> <ERE>` per line (stays a flat file)
+src/lib/platform.mjs            cross-platform OS layer: PTY wrap, binary resolve, state dir (NEW)
+src/lib/config.mjs              roster.json loader → plain JS objects (replaces config.py)
+src/lib/score.mjs               char count + keyword type classification (replaces score.sh)
+src/lib/router.mjs              first-match-wins decision engine (replaces match.py)
+src/lib/backends.mjs            agy/codex invokers + clean() + quota (replaces backends.sh)
+src/lib/state.mjs               HUD state read/write (replaces state.sh)
+src/lib/hook-common.mjs         shared hook runtime — one fork-free node process (NEW; reliability core)
+src/lib/team-spec.mjs           /team cap-spec parser (replaces team_spec.py)
+src/lib/team-plan.mjs           plan.json → per-subtask files (replaces team_plan.py)
+src/lib/gen-agents.mjs          regenerate agents/*.md from roster.json (replaces gen_agents.py)
+src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
+src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
+src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
+hooks/heavy-read-guard.mjs      PreToolUse(Read) guard for oversized RE-dump reads
+hooks/proactive-route.mjs       UserPromptSubmit nudge: CLI-routable prompt → suggest delegating
+hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard: nudge/deny CLI-routable agent spawns
+hooks/hooks.json                hook registrations (all commands: `node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`)
+statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
+agents/{delegate,av-research,bulk-summarizer,codex}.md   GENERATED from roster.json (gen-agents.mjs)
+commands/{team,route-test}.md   /team = multi-agent fan-out; /route-test = dry-run router
+workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
+test/*.test.mjs                 offline test suite (npm test — node --test)
+docs/PLAN.md                    original implementation plan (historical)
 ```
 
 ---
@@ -126,30 +143,25 @@ it meet the spec). Pure review/test/verify lands here; a judgment word above sti
 2. `multimodal` (Gemini-exclusive) is the first agy rule — A/V must go to agy even if it
    also carries a judgment word.
 3. `judgment-coding` is ordered ABOVE the commodity agy rules — a task with a judgment
-   signal (refactor/bugfix/integration) goes to Sonnet even if it also mentions a button/
-   script/config. "When uncertain between agy and sonnet, prefer sonnet; never agy on a guess."
-4. `code-review-test` (codex) sits BELOW judgment-coding (a refactor/bugfix word still wins → Sonnet)
-   and BELOW the OPUS rules, but ABOVE the commodity agy rules — so PURE review/test/verify lands on
-   codex, not agy. (The `integration` tag was tightened so "integration tests" → codex, not Sonnet.)
+   signal (refactor/bugfix/integration) goes to Sonnet even if it also mentions a button/script/
+   config. "When uncertain between agy and sonnet, prefer sonnet; never agy on a guess."
+4. `code-review-test` (codex) sits BELOW judgment-coding (a refactor/bugfix word still wins →
+   Sonnet) and BELOW the OPUS rules, but ABOVE the commodity agy rules — so PURE review/test/
+   verify lands on codex, not agy.
 5. Unclassified → `catch-all-safe` → Sonnet.
 
 **These invariants govern AUTO-ROUTING only — an explicit backend choice overrides the hard line.**
-They are what `route.sh` picks when nothing is forced (raw `run.sh "<task>"`, the proactive nudge,
-`/route-test`). When the orchestrator **explicitly** chooses a backend — a forced agent
-(`dispatch:forced`: `delegate` / `av-research` / `bulk-summarizer` / `codex`), a
-`run.sh --decision '{…,"native":false}'` call, or a `/team` subtask assignment — `run.sh` dispatches
-to that backend **without consulting `route.sh`**, so the OPUS hard line never bounces an
-explicitly-chosen job back to native. The plugin honors the choice; whether the backend itself
-accepts the task (e.g. a CLI declining RE) is the backend's call, not a plugin rejection. The
-generated forced-agent bodies reflect this — they run the dispatch as given and never self-reject on
-content. (`route`-mode agents still defer to `route.sh` and its hard line.)
+They are what `route.mjs` picks when nothing is forced. When the orchestrator **explicitly**
+chooses a backend — a forced agent (`dispatch:forced`), a `run.mjs --decision '{…,"native":false}'`
+call, or a `/team` subtask assignment — `run.mjs` dispatches to that backend **without consulting
+the router**, so the OPUS hard line never bounces an explicitly-chosen job back to native.
 
 **Tuning needs no code edits:** edit `config/tags.txt` to change *what type* a task is, and
 `config/roster.json` to change *where a type routes*. Verify with `/route-test`. When editing
 the OPUS hard-line regexes, keep them tight — a bare word like `binary`/`hooks`/`injection`
-will false-positive on "binary search" / React "hooks" / "dependency injection" and force
-Opus. When editing agy regexes, keep them specific — bare `extract`/`config file` steal
-refactor/judgment work. Add a regression test in `tests/run_tests.sh` for any routing change.
+will false-positive on "binary search" / React "hooks" / "dependency injection" and force Opus.
+When editing agy regexes, keep them specific — bare `extract`/`config file` steal
+refactor/judgment work. Add a regression test in `test/*.test.mjs` for any routing change.
 
 Presets (`[defaults].preset` or `--preset`): `budget` pushes borderline judgment-coding to
 agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical edges).
@@ -159,174 +171,127 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 ## /team — multi-model team pipeline (v0.3)
 
 `/team [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
-pipeline built for **our model dispatching**: **native, agy and codex are equal, configurable tools**
-— the decomposer assigns each subtask to its best-fit backend, native Claude plans/synthesizes, and
-any backend (default codex) verifies. The stages are
-**decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**. Flow
-(in `commands/team.md`):
-1. parse the optional cap spec via `scripts/lib/team_spec.py` → `{gemini, claude}` (caps =
-   max agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
+pipeline: **native, agy and codex are equal, configurable tools** — the decomposer assigns each
+subtask to its best-fit backend, native Claude plans/synthesizes, and any backend (default codex)
+verifies. Stages: **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**.
+Flow (in `commands/team.md`):
+
+1. Parse the optional cap spec via `src/lib/team-spec.mjs` → `{gemini, claude}` (caps = max
+   agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
 2. Claude decomposes the task, then **writes a `plan.json`** (array of
    `{label, task, backend, tier, deps?, verify?}`) via the Write tool — task text stays inert
    data, never shell-parsed (injection-safe boundary; same reason `/route-test` uses stdin).
-   `deps` = labels this subtask consumes (run after them, results handed in); `verify` = a
-   one-line acceptance criterion. `team_plan.py` **ignores `deps`/`verify`** (they're inert),
-   so the script path tolerates the richer schema without change.
-3. Claude dispatches each subtask as its **own parallel `Task` sub-agent**, a dependency **wave** at
-   a time — the whole wave spawned in ONE message (true parallel, OMC-style fan-out, **not** inline
-   single-session). CLI subtasks (agy/codex) get a **faithful-relay** worker that runs
-   `run.sh --decision {backend}` and returns the CLI's stdout verbatim (a bare `MMT_NATIVE_HANDOFF`
-   → the lead spawns a **visible** native worker — same no-dress-up contract as `team.mjs`); native
-   subtasks get a **solver** worker. Every worker prompt is tagged `[mmt-team-worker]` so the
-   spawn-guard hook exempts it. (`scripts/team.sh --plan <file> --gemini-cap G` remains as a
-   **scripted no-agents alternative** — parallel `run.sh` subprocesses, `--- AGY/CODEX/NATIVE
-   [label] ---` blocks, addressing each subtask by **msys-form `$WORK/<idx>.task`**.)
-4. The lead **verifies** every result against its criterion **by delegating the review to the
-   configured verifier** (default codex; forced `backend:codex` via `run.sh`, rule `team-verify`;
-   native judgment falls back if codex is unavailable), **fixes** failures in a bounded loop (default
-   1 attempt; a bare `MMT_NATIVE_HANDOFF` counts as a fail → solve natively), then synthesizes.
+   `deps` = labels this subtask consumes; `verify` = a one-line acceptance criterion.
+   `src/lib/team-plan.mjs` **ignores `deps`/`verify`** (inert in the scripted path).
+3. Claude dispatches each subtask as its **own parallel `Task` sub-agent**, a dependency **wave**
+   at a time — the whole wave spawned in ONE message (OMC-style fan-out). CLI subtasks get a
+   **faithful-relay** worker that runs `node src/bin/run.mjs --decision {backend}` and returns the
+   CLI's stdout verbatim (a bare `MMT_NATIVE_HANDOFF` → lead spawns a visible native worker).
+   Every worker prompt is tagged `[mmt-team-worker]` so the spawn-guard hook exempts it.
+   (`src/bin/team.mjs --plan <file> --gemini-cap G` remains as a **scripted no-agents alternative**
+   — parallel `run.mjs` subprocesses, `--- AGY/CODEX/NATIVE [label] ---` blocks.)
+4. The lead **verifies** every result against its criterion via the configured verifier (default
+   codex; forced `backend:codex` via `run.mjs`, rule `team-verify`; native judgment falls back if
+   codex is unavailable), **fixes** failures in a bounded loop (default 1 attempt), then synthesizes.
 
-**Ultracode path (the full implementation):** when the Workflow tool is available, `/team`
-runs `workflows/team.mjs`, which does the entire pipeline deterministically: decompose agent
-(emits `deps` + `verify`) → dependency-ordered **waves** (`parallel()` per wave; native agents
-solve in-context, CLI agents go through the **faithful relay**, upstream results injected as
-context) → per-result **verify** stage → **bounded fix** re-dispatch → synthesize.
-
-**Faithful relay (the no-dress-up contract).** The Workflow runtime can't shell out itself, so a
-non-native backend is reached by spawning a sub-agent (it has Bash) to run `run.sh`. That sub-agent
-(`dispatchRelay`) is a **PURE PIPE**: forced into a `{stdout, backend_ran}` schema, forbidden from
-solving/analyzing the payload — it just runs the one command and reports the verbatim stdout plus
-whether the CLI actually produced output. **The fallback decision lives in deterministic code, not in
-the agent:** if `backend_ran` is false (CLI unavailable / `MMT_NATIVE_HANDOFF` / empty), `dispatch()`
-re-dispatches the subtask to a **VISIBLE `native:<label>-fallback` agent** — Claude never does the work
-behind a `gemini:`/`codex:` label. Each result record carries **`ranOn`** = the backend that *actually*
-produced it (`agy`/`codex`/`native`, or `native-fallback(<cli>)`), and fallbacks are logged + counted
-(`counts.nativeFallbacks`). This is the fix for the bug where a relay told to "solve it yourself on
-handoff" silently turned a Gemini subtask into a Claude one. **Verify** uses the same pipe: it drives
-the configured `verifier` CLI through `dispatchRelay` (rule `team-verify`) and parses its `PASS/FAIL`
-verdict **deterministically** (`parseVerdict`) — no Claude agent re-judges the CLI's output; if that CLI
-is unavailable it falls back to a visible `native:verify:` agent. `verifier:'native'` skips the relay
-and judges on Claude directly.
+**Ultracode path:** when the Workflow tool is available, `/team` runs `workflows/team.mjs`, which
+does the entire pipeline deterministically: decompose → dependency-ordered waves → verify →
+bounded fix re-dispatch → synthesize. The faithful relay (`dispatchRelay`) is a PURE PIPE:
+forced into `{stdout, backend_ran}` schema, forbidden from solving/analyzing the payload. Each
+result carries `ranOn` = the backend that *actually* produced it. `verifier:'native'` skips the
+relay and judges on Claude directly.
 
 Args: `{task, caps, pluginRoot, verify?=true, verifier?='codex', maxFixLoops?=1 (max 3)}`. Returns
 `{plan, backends, caps, verifier, counts:{byBackend,ranOn,verified,failed,nativeFallbacks}, results, final}`.
-Agent labels are backend-prefixed in the progress tree — `gemini:<label>` (agy relay pipe),
-`codex:verify:<label>` (codex review pipe), `native:`/`native:verify:`/`native:<label>-fallback`
-(Claude) — and each subtask's tier maps to a concrete model via `tierModel` (`sonnet` default, `opus`
-only when the decompose marks it genuinely hard), so the native model is **dynamic by complexity**, not
-the inherited Opus main-loop model (the old behavior: `dispatchNative` set no model → every native
-subtask ran on Opus regardless of tier). Determinism-safe (no Date/random APIs — they break Workflow
-resume) and tolerates `args` as object **or** JSON string.
+Agent labels are backend-prefixed — `gemini:<label>`, `codex:verify:<label>`, `native:` etc.
+Native subtask model is **dynamic by complexity** (`sonnet` default, `opus` only when genuinely
+hard). Determinism-safe (no Date/random APIs) and tolerates `args` as object **or** JSON string.
 
 ## Proactive delegation hooks (opt-in)
 
-Three nudges, all gated by `[proactive].enabled = true` in `roster.json` (off by default):
+Two nudges (was three — the `Workflow` guard is dropped; it empirically never fired), all gated by
+`[proactive].enabled = true` in `roster.json` (off by default):
 
-**(1) Prompt nudge — `scripts/hooks/proactive-route.sh` (UserPromptSubmit).** Runs each submitted
-prompt through `route.sh`; if it routes to agy, injects a one-shot reminder
-(`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
-`multi-model-team:delegate` agent / `/team` instead of solving inline. Never fires for slash commands
-or prompts that route to native (judgment/RE/systems).
+**(1) Prompt nudge — `hooks/proactive-route.mjs` (UserPromptSubmit).** Runs each submitted prompt
+through the router **in-process** (no fork); if it routes to a CLI backend, injects a one-shot
+reminder (`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
+`multi-model-team:delegate` agent / `/team` instead of solving inline. Never fires for slash
+commands or prompts that route to native (judgment/RE/systems).
 
-**(2) Spawn guard — `scripts/hooks/spawn-route-guard.sh` (PreToolUse, matcher `Task|Agent`).** The
-"NOT /team" enforcer the user asked for: when you spawn an agent **outside** the team pipeline and its
-task routes to a CLI backend (agy or codex), it makes the work actually run on that CLI.
-`enforce_spawns=false` (default) → a **non-blocking nudge** (`permissionDecision:"allow"` +
-`additionalContext`) to dispatch via `run.sh` / the matching plugin agent; `enforce_spawns=true` → a
-hard **`permissionDecision:"deny"`** with the same instruction, forcing a re-dispatch. **Exempt:** our
-own subagents (`subagent_type` `multi-model-team:*`) and the plugin's `/team` workers (relay workers
-carry `run.sh`/`--decision`; native workers are tagged `[mmt-team-worker]`). `guard_spawns=false`
-disables just this guard. native-routing spawns are left untouched (correctly a Claude agent).
-**OMC-aware (interop with oh-my-claudecode team mode):** a spawn detected as an OMC **team worker**
-(`tool_input.team_name` set, an `oh-my-claudecode:*` subagent, or the OMC worker preamble — "TEAM
-WORKER"/"team-lead"/"shutdown_request") is **always nudged, never denied** — even under
-`enforce_spawns` — so the guard can't stall OMC's persistent-teammate orchestration. Its
-`additionalContext` is tailored: it tells the OMC worker to **execute** its assigned task via
-`bash <root>/scripts/run.sh "<task>"` (our router then picks agy/codex/native per our config) and
-report that result back through OMC's TaskList/SendMessage flow — only the heavy lifting moves to our
-CLI. (Caveat: PreToolUse `additionalContext` reaches the spawning lead's context, not the worker's,
-so it's a best-effort routing hint — compliance stays the model's judgment.)
+**(2) Spawn guard — `hooks/spawn-route-guard.mjs` (PreToolUse, matcher `Task|Agent`).** The
+"NOT /team" enforcer: when you spawn an agent **outside** the team pipeline and its task routes
+to a CLI backend (agy or codex), the guard makes the work actually run on that CLI.
+`enforce_spawns=false` (default) → a **non-blocking nudge**; `enforce_spawns=true` → a hard
+**`permissionDecision:"deny"`**, forcing a re-dispatch. **Exempt:** our own subagents
+(`subagent_type` `multi-model-team:*`) and `/team` workers (tagged `[mmt-team-worker]`).
+**OMC-aware:** an OMC team worker (`tool_input.team_name` set, an `oh-my-claudecode:*` subagent,
+or the OMC worker preamble) is **always nudged, never denied** — even under `enforce_spawns` — so
+the guard can't stall OMC's persistent-teammate orchestration. Its `additionalContext` tells that
+worker to execute its task via `node <root>/src/bin/run.mjs` and report back through OMC's
+TaskList/SendMessage flow.
 
-**(3) Workflow guard — `scripts/hooks/workflow-route-guard.sh` (PreToolUse, matcher `Workflow`).** A
-dynamic Workflow runs its `agent()` fan-out in an isolated runtime PreToolUse can't reach, so we can't
-redirect a workflow's internal agents from a hook. This fires on the Workflow tool **invocation**: if
-the workflow's `args.task` routes to agy/codex it injects a one-shot **nudge** (never blocks) — *prefer
-`/team` (which routes each subtask via `run.sh`), or have this workflow shell its subtasks to `run.sh`*.
-Our own `team.mjs` is exempt (it already routes). On fire it appends a line to
-`~/.cache/mmt/wf-guard.log` as a **dispatch-verification marker** (launch a workflow → check the file).
-**Open question:** whether Claude Code actually dispatches PreToolUse to a `Workflow` matcher is
-undocumented — verify via the marker after a restart; if it never appears, only the in-`team.mjs`
-`run.sh` dispatch routes workflows.
-
-**All three:** deterministic firing, soft compliance in nudge mode. Config in `[proactive]` (`enabled`,
-`max_chars`, `min_chars`, `rules` CSV allowlist, `guard_spawns`, `enforce_spawns`); `config.py
-proactive-env` emits these as `MMT_PROACTIVE_*`. **Cost discipline:** when disabled (the default) both
-hooks bail via a pure-bash `[proactive].enabled` pre-check **before spawning any python** — so they
-cost ~nothing until opted in. Hard kill switch: `MMT_PROACTIVE_DISABLE=1`. Injection-safe: the
-prompt/spawned-task reaches `route.sh` only on stdin, never as an argument, and is never echoed back
-into the reminder. Tests: `── Unit: proactive hook` and `── Unit: spawn-route guard` in
-`tests/run_tests.sh`.
+**Both hooks:** one fork-free node process each. Gate check uses real `JSON.parse` (no substring
+scan). **Cost discipline:** when disabled both exit immediately (no forks) — zero cost. Hard kill
+switch: `MMT_PROACTIVE_DISABLE=1`. Injection-safe: the prompt/spawned-task reaches the router only
+in-memory, never as a shell argument. Tests: `── Unit: proactive hook` and
+`── Unit: spawn-route guard` in `test/*.test.mjs`.
 
 ## Config = one JSON file (`config/roster.json`)
 
-All config is JSON (hard cut from TOML). Six top-level sections (`_comment`/`_about`/`_note`
-keys are inline docs the parsers ignore):
+All config is JSON. Six top-level sections (`_comment`/`_about`/`_note` keys are inline docs
+the parsers ignore):
 
 - **`defaults`** — `preset`, `fallback`, `quota_fallback` (ordered backend chain).
 - **`backends`** — each key is a backend a route can target. `enabled` gates use; `kind` selects
-  the invoker in `backends.sh`. **`kind:"gemini"` (agy) and `kind:"codex"` both have live
-  invokers**; `opencode` is the only `enabled:false` stub remaining — enabling it without an
-  invoker just health-fails and falls through to the next hop. Adding a future backend = add
-  `_mmt_invoke_<kind>` + `_mmt_health_<kind>` + dispatch case in `mmt_be_invoke`/`mmt_be_health`
-  and flip `enabled`; no other code changes.
+  the invoker in `src/lib/backends.mjs`. **`kind:"gemini"` (agy) and `kind:"codex"` both have live
+  invokers**; `opencode` is the only `enabled:false` stub remaining. Adding a future backend =
+  add `invoke`/`health` dispatch cases in `backends.mjs` and flip `enabled`; no other code changes.
 - **`agents`** — each delegation subagent: `enabled`, `backend`, `tier`, `dispatch`
   (`route`=let the router decide; `forced`=pin backend+tier), `model`, `color`, `role`. The
-  `.md` files in `agents/` are **generated** from this by `scripts/lib/gen_agents.py` — edit the
-  JSON then run it; `enabled:false` deletes the agent's `.md` so Claude Code stops surfacing it.
-- **`routes`** — first-match-wins rules (was `[[route]]`); `match.py` skips the array's `_comment`
-  marker objects. Route invariants (Opus hard-line first, multimodal before judgment-coding,
-  judgment-coding above the commodity agy rules) are unchanged — just JSON now.
+  `.md` files in `agents/` are **generated** from this by `src/lib/gen-agents.mjs` — edit the
+  JSON then run `node src/lib/gen-agents.mjs`; `enabled:false` deletes the agent's `.md`.
+- **`routes`** — first-match-wins rules; `src/lib/router.mjs` skips `_comment` marker objects.
+  Route invariants (Opus hard-line first, multimodal before judgment-coding, judgment-coding above
+  commodity agy rules) are unchanged.
 - **`proactive`** — the UserPromptSubmit nudge config.
-- **`team`** — the `/team` pipeline roles + defaults, emitted as JSON by `config.py team-config` and
-  passed into `team.mjs` via `args.teamConfig` (the Workflow runtime can't read files itself). **native,
-  agy and codex are EQUAL** — any can be assigned any subtask, any can verify: `dispatch_backends` (the
-  eligible set the decomposer picks from), `verifier` (default codex; `"native"`=Claude), `caps`
-  (per-backend), `tier_models` (tier→model), `verify`, `max_fix_loops`, `relay_model`. Nothing is
-  hardcoded — precedence is built-in default < `team` < per-invocation arg.
+- **`team`** — the `/team` pipeline roles + defaults, read by `src/lib/config.mjs teamConfig()`
+  and passed into `team.mjs` via `args.teamConfig`. **native, agy and codex are EQUAL** — any can
+  be assigned any subtask, any can verify: `dispatch_backends`, `verifier`, `caps`, `tier_models`,
+  `verify`, `max_fix_loops`, `relay_model`. Precedence: built-in default < `team` < invocation arg.
 
-**Parser contract:** `config.py <roster.json> {defaults-env|backend-env <name>|proactive-env}`
-emits bash-sourceable vars. `run.sh` loads `defaults-env` once, then `backend-env <name>` per
-fallback hop; `backends.sh` reads `MMT_BE_*` and dispatches on `MMT_BE_KIND`. A disabled/unknown
-backend yields `MMT_BE_ENABLED=0` → run.sh skips it.
+**Module contract:** `src/lib/config.mjs` exports `loadRoster`, `defaults`, `backend`, `agents`,
+`routes`, `proactive`, `teamConfig` — plain JS objects, real `JSON.parse`, no bash eval, no
+substring gating. `run.mjs` calls `config.defaults()` once, then `config.backend(name)` per
+fallback hop.
 
-## Conventions & constraints (Windows / msys)
+## Conventions & constraints
 
-- **No `jq`.** statusline parses state.json with a fork-free pure-bash loop (state.json is
-  always one-field-per-line). `python3` (stdlib `json`, any version) parses `roster.json` in
-  route/run/hooks; the proactive hook's `enabled` pre-check reads JSON in pure bash (`$(<file)`
-  + substring) so it forks nothing when off. (Config is JSON now — `tomllib` is no longer used.)
-- **Native python can't open embedded msys paths.** Pass file paths as separate args (MSYS2
-  converts those) or pipe content via stdin; never embed `/tmp/...` inside a python `-c` string.
-- **No `grep` in hot/looping paths.** msys grep can core-dump under rapid forking; quota
-  detection is pure-bash substring matching.
+- **Zero runtime deps.** All modules use Node stdlib only. No `jq`, no `python3`, no `grep` in
+  hot paths. `state.mjs` writes flat one-field-per-line JSON so `statusline.mjs` can parse it
+  without a real JSON parser (fork-free).
 - **Untrusted task text is injection-unsafe in slash commands.** Claude Code textually pastes
-  `$ARGUMENTS` into `` !`bash` `` blocks (RCE). `/team` and `/route-test` therefore do NOT
-  inline-exec — they instruct Claude to run the script via the Bash tool, feeding the task on
-  stdin via a single-quoted heredoc. Keep it that way.
+  `$ARGUMENTS` into `!` bash blocks (RCE). `/team` and `/route-test` do NOT inline-exec — they
+  instruct Claude to run the binary via the Bash tool, feeding the task on stdin. Keep it that way.
 - **HUD registration is manual.** A plugin's bundled `settings.json` does not register a
-  top-level `statusLine` (only `agent`/`subagentStatusLine`); the user adds the statusLine to
-  their own `~/.claude/settings.json` with an absolute path. `settings.json` here is a reference.
-- Scripts self-locate via `BASH_SOURCE`; agents/commands reference `${CLAUDE_PLUGIN_ROOT}`.
+  top-level `statusLine`; the user adds the `statusLine` to their own `~/.claude/settings.json`
+  with an absolute path pointing to `statusline/statusline.mjs`. `settings.json` here is a reference.
+- **Binary self-location.** `src/bin/*.mjs` and `hooks/*.mjs` resolve sibling files via
+  `import.meta.url` (Node ESM); agents/commands reference `${CLAUDE_PLUGIN_ROOT}`.
+- **Cross-platform:** `src/lib/platform.mjs` is the only place OS branching for PTY/binary/state
+  belongs. Developed and tested on Windows; Linux/macOS POSIX paths are wired up but not yet
+  exercised on a real POSIX box.
 
 ---
 
 ## Testing
 
 ```bash
-bash tests/run_tests.sh             # offline: routing + unit tests (no agy calls)
-MMT_LIVE=1 bash tests/run_tests.sh  # + live agy smoke tests (network + agy)
+npm test                         # offline: 46/46 routing + unit tests (no backend calls)
+MMT_LIVE=1 npm test              # + live agy + codex smoke tests (network required)
 ```
-Keep the suite green. Add cases for any routing or behavior change.
+
+Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`
+and run with `node --test`.
 
 ---
 
@@ -335,5 +300,6 @@ Keep the suite green. Add cases for any routing or behavior change.
 - **P2 — quota grounding:** `quota_patterns` in `roster.json` are unvalidated defaults;
   harden `quota_patterns`/`quota_exit_codes` on the first real agy credit-exhaustion error.
 - **Backends:** opencode is config-only (stub, `enabled:false`); codex is live. Health-gate
-  ensures an unavailable CLI falls through to the next fallback hop. Hook is intentionally
-  `Read`-only for now (widen on evidence).
+  ensures an unavailable CLI falls through to the next fallback hop.
+- **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir are wired up in `platform.mjs`
+  but not yet exercised on a real POSIX box.

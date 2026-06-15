@@ -31,7 +31,7 @@ equal). Let the parser split it off **deterministically**. Feed the **whole raw 
 single-quoted heredoc (the injection-safe boundary — never put the input on the command line):
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/team_spec.py" --split <<'MMT_ARGS_EOF'
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/team-spec.mjs" --split <<'MMT_ARGS_EOF'
 <the entire raw input shown above>
 MMT_ARGS_EOF
 ```
@@ -40,14 +40,14 @@ MMT_ARGS_EOF
 "note": "..." }`. Use **`.task`** as the task. The caps bound parallel agents per backend
 (`gemini`=agy, `codex`=codex, `claude`=native). **Only pass these as `args.caps` when `.source` is
 `"spec"`** (the user actually typed a spec); on `"default"`, omit caps so the roster `team.caps`
-applies. If `.note` is non-empty, surface it. (`team_spec.py` is **Python** — call it with `python3`.)
+applies. If `.note` is non-empty, surface it.
 
 ## 1.5 · Load the team roles config (and honor in-session overrides)
 The pipeline's roles are **config-driven**, not hardcoded. Read the merged team config (roster
 `team` over built-in defaults) — this never touches the task text, so it's safe to run plainly:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/config.py" "${CLAUDE_PLUGIN_ROOT}/config/roster.json" team-config
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" "${CLAUDE_PLUGIN_ROOT}/config/roster.json" team-config
 ```
 
 → `{ dispatch_backends, verifier, verify, max_fix_loops, caps, tier_models, relay_model }` — the
@@ -80,7 +80,7 @@ Split the task into subtasks. For **each** subtask decide four things:
   cost-adaptive.)
 
 Respect the **per-backend caps** (≤ the cap for each backend). If unsure of a subtask's backend,
-dry-run the router (`scripts/route.sh --explain` with the subtask on a single-quoted heredoc).
+dry-run the router (`src/bin/route.mjs --explain` with the subtask on a single-quoted heredoc).
 
 ## 3 · Write the plan (injection-safe)
 Use the **Write tool** to write a plan JSON file — an array of subtasks. Include `deps`/`verify`
@@ -119,7 +119,7 @@ alone. There are two worker kinds:
   on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line
   MMT_SUB_EOF, change the delimiter), then return its stdout VERBATIM with no preamble:
 
-  bash "<PLUGIN_ROOT>/scripts/run.sh" --decision '{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false}' <<'MMT_SUB_EOF'
+  node "<PLUGIN_ROOT>/src/bin/run.mjs" --decision '{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false}' <<'MMT_SUB_EOF'
   <subtask text — with any "Upstream result — <dep>:" blocks appended>
   MMT_SUB_EOF
 
@@ -141,19 +141,19 @@ alone. There are two worker kinds:
 spawn a **visible native solver agent** for that subtask instead — never let a `gemini:`/`codex:`
 result be quietly produced by Claude. Track which backend **actually** ran each subtask for step 7.
 
-> Scripted alternative (no agents): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/team.sh" --plan <wave.json>
-> --gemini-cap G` runs a wave's CLI subtasks as parallel `run.sh` subprocesses and lists the native
+> Scripted alternative (no agents): `node "${CLAUDE_PLUGIN_ROOT}/src/bin/team.mjs" --plan <wave.json>
+> --gemini-cap G` runs a wave's CLI subtasks as parallel `run.mjs` subprocesses and lists the native
 > ones. Use it for a non-interactive batch; the **Task-agent fan-out above is the default for `/team`**.
 
 ## 5 · Verify each result — on the configured verifier
 **Delegate the review to the configured `verifier` backend** (`team.verifier`, default codex — any
 backend, or `native` for Claude judgment). For every subtask result, run that backend through
-`run.sh` with a forced decision, feeding the review brief — the subtask, its `verify` criterion, and
+`run.mjs` with a forced decision, feeding the review brief — the subtask, its `verify` criterion, and
 the result — on a single-quoted heredoc so it stays inert data (swap `codex` below for the configured
 verifier):
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
+node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
 You are a strict reviewer. Reply with a first line of exactly PASS or FAIL, one sentence why, then (only if FAIL) a one-line fix instruction.
 SUBTASK: <text>   ACCEPTANCE CRITERION: <verify>   RESULT: <result>
 MMT_VERIFY_EOF
@@ -195,7 +195,7 @@ Workflow({
 ```
 
 `team.mjs` decomposes the task (deps + verify criteria), dispatches each subtask in dependency-ordered
-waves **on its assigned backend** (any non-native backend is relayed to its CLI via `run.sh`; native
+waves **on its assigned backend** (any non-native backend is relayed to its CLI via `run.mjs`; native
 solves in-context), verifies each result on the configured **verifier** backend (native Claude falls
 back if it's unavailable), runs a bounded fix loop on failures, and synthesizes. Roles come from
 `args.teamConfig` (the roster `team` section): `dispatch_backends` (the equal set), `verifier`
