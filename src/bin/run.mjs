@@ -26,7 +26,7 @@ const COMPACT_PROMPT = (task) => `${COMPACT_CONTRACT}\n\n${task}`;
 
 // ---- arg parsing -----------------------------------------------------------
 function parseArgs(argv) {
-  const o = { preset: '', tags: '', roster: '', decision: '', sandbox: false, task: '' };
+  const o = { preset: '', tags: '', roster: '', decision: '', sandbox: false, addDir: '', task: '' };
   let i = 0;
   const positional = [];
   while (i < argv.length) {
@@ -40,6 +40,7 @@ function parseArgs(argv) {
       case '--tags':     o.tags = next() ?? ''; break;
       case '--roster':   o.roster = next() ?? ''; break;
       case '--decision': o.decision = next() ?? ''; break;
+      case '--add-dir':  o.addDir = next() ?? ''; break;
       case '--sandbox':  o.sandbox = true; break;
       case '--':         positional.push(...argv.slice(i + 1)); i = argv.length; break;
       default:
@@ -199,7 +200,7 @@ async function main() {
     const startMs = Date.now();
     let res;
     try {
-      res = await invoke(invokeCfg, fullPrompt, { model, tier: D_tier });
+      res = await invoke(invokeCfg, fullPrompt, { model, tier: D_tier, addDir: opts.addDir });
     } catch (e) {
       res = { ok: false, stdout: '', stderr: String(e && e.message || e), code: 1, quota: false };
     }

@@ -241,7 +241,7 @@ function dispatchRelay(backend, text, tier, rule, label, ph) {
 
 Run EXACTLY this with the Bash tool and nothing else (the payload rides in on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line MMT_SUB_EOF, change the delimiter):
 
-bash ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"${rule}","native":false}' <<'MMT_SUB_EOF'
+node ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"${rule}","native":false}' <<'MMT_SUB_EOF'
 ${text}
 MMT_SUB_EOF
 

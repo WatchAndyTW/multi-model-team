@@ -148,7 +148,7 @@ result be quietly produced by Claude. Track which backend **actually** ran each 
 ## 5 · Verify each result — on the configured verifier
 **Delegate the review to the configured `verifier` backend** (`team.verifier`, default codex — any
 backend, or `native` for Claude judgment). For every subtask result, run that backend through
-`run.sh` with a forced decision, feeding the review brief — the subtask, its `verify` criterion, and
+`run.mjs` with a forced decision, feeding the review brief — the subtask, its `verify` criterion, and
 the result — on a single-quoted heredoc so it stays inert data (swap `codex` below for the configured
 verifier):
 
@@ -195,7 +195,7 @@ Workflow({
 ```
 
 `team.mjs` decomposes the task (deps + verify criteria), dispatches each subtask in dependency-ordered
-waves **on its assigned backend** (any non-native backend is relayed to its CLI via `run.sh`; native
+waves **on its assigned backend** (any non-native backend is relayed to its CLI via `run.mjs`; native
 solves in-context), verifies each result on the configured **verifier** backend (native Claude falls
 back if it's unavailable), runs a bounded fix loop on failures, and synthesizes. Roles come from
 `args.teamConfig` (the roster `team` section): `dispatch_backends` (the equal set), `verifier`

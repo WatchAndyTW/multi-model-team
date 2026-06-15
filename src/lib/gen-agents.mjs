@@ -207,8 +207,15 @@ import { loadRoster } from './config.mjs';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const arg = process.argv[2];
+  // A flag-looking positional (e.g. --help) must NOT be taken as the output dir (it would create a
+  // literal `--help/` directory). Print usage for --help/-h; ignore any other leading-dash token.
+  if (arg === '--help' || arg === '-h') {
+    console.log('Usage: node src/lib/gen-agents.mjs [agentsDir]\n  Regenerates agents/*.md from config/roster.json (MMT_ROSTER overrides).\n  agentsDir defaults to <repo>/agents.');
+    process.exit(0);
+  }
   const rosterPath = process.env.MMT_ROSTER || join(root, 'config', 'roster.json');
-  const agentsDir = process.argv[2] || join(root, 'agents');
+  const agentsDir = (arg && !arg.startsWith('-')) ? arg : join(root, 'agents');
   const { wrote, removed, skipped } = generateAgents(loadRoster(rosterPath), agentsDir);
   console.log(
     `gen-agents: wrote [${wrote.join(', ')}] removed [${removed.join(', ')}] skipped [${skipped.join(', ')}] -> ${agentsDir}`,

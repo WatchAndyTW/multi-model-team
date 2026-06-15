@@ -31,3 +31,26 @@ test('team.mjs: staged-pipeline + faithful-relay markers present', () => {
     assert.ok(SRC.includes(m), `team.mjs missing marker: ${m}`);
   }
 });
+
+test('team.mjs: relay/verify command template shells `node`, never `bash …run.mjs`', () => {
+  // Regression for the find-replace bug class: the relay command ran `bash <run.mjs>` (exit 2, empty)
+  // so every agy/codex dispatch AND the codex verify silently fell back to native. The command is a
+  // template literal `... ${JSON.stringify(RUN)} --decision ...` where RUN ends in src/bin/run.mjs.
+  // Assert every `run.mjs` invocation in the source is prefixed with `node `, and that no `bash `
+  // shells a run.mjs (a substring source check, since this is a static-analysis suite).
+
+  // 1. No `bash …run.mjs` anywhere (the exact broken form, tolerating the ${JSON.stringify(RUN)} expr).
+  assert.doesNotMatch(
+    SRC,
+    /bash\s+\$\{[^}]*RUN[^}]*\}/,
+    'team.mjs relay command must not shell `bash` at the run.mjs path',
+  );
+  assert.doesNotMatch(SRC, /bash\s+\S*run\.mjs/, 'team.mjs must not run `bash …run.mjs`');
+
+  // 2. The relay command template (the line carrying --decision + the heredoc) starts with `node `.
+  const relayLine = SRC.split(/\r?\n/).find(
+    (l) => l.includes('--decision') && l.includes('RUN') && l.includes('MMT_SUB_EOF'),
+  );
+  assert.ok(relayLine, 'relay command template line not found');
+  assert.match(relayLine.trim(), /^node\s+\$\{/, 'relay command must start with `node ${RUN}`');
+});

@@ -12,7 +12,7 @@ $ARGUMENTS
 
 ---
 
-Show the routing decision. **Use the Bash tool** to invoke `route.sh`, passing the task on
+Show the routing decision. **Use the Bash tool** to invoke `route.mjs`, passing the task on
 **stdin via a single-quoted heredoc** (never interpolate the task into the command string —
 it is untrusted text and must not be parsed by the shell):
 

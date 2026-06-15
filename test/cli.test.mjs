@@ -90,3 +90,19 @@ test('config.mjs missing args: exits 2', () => {
   );
   assert.equal(result.status, 2, 'missing args → exit 2');
 });
+
+// ── run.mjs CLI (--add-dir is accepted, not rejected as an unknown flag) ──────
+
+test('run.mjs --add-dir: accepted (not an unknown flag) with a forced native decision', () => {
+  // Regression: --add-dir is instructed by every agent + heavy-read-guard, but run.mjs parseArgs
+  // lacked it, so it bombed with "unknown flag" (exit 2). A native decision short-circuits to the
+  // handoff sentinel (no backend invoked) — so this exercises arg parsing without touching agy/codex.
+  const result = spawnSync(
+    process.execPath,
+    [join(ROOT, 'src/bin/run.mjs'), '--add-dir', ROOT, '--decision', '{"backend":"native","native":true}'],
+    { input: 'x', encoding: 'utf8' }
+  );
+  assert.equal(result.status, 0, `--add-dir should be accepted; exit ${result.status}; stderr: ${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /unknown flag/, 'must not report --add-dir as an unknown flag');
+  assert.match(result.stdout, /MMT_NATIVE_HANDOFF/, 'native decision emits the handoff sentinel');
+});
