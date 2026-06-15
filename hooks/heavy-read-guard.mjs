@@ -55,7 +55,7 @@ async function main() {
   const reason =
     `multi-model-team: '${base}' is ${kib} KiB. Reading it straight into context is ` +
     `token-expensive. Delegate the ingestion instead: spawn the bulk-summarizer agent (or run ` +
-    `$CLAUDE_PLUGIN_ROOT/scripts/run.sh with --add-dir "${dir}") so agy reads ` +
+    `node "$CLAUDE_PLUGIN_ROOT/src/bin/run.mjs" --add-dir "${dir}") so agy reads ` +
     `it on Google's quota and returns a compact, grounded extract. If you truly need the raw ` +
     `bytes (e.g. precise RE work), re-issue the Read -- this guard only fires once per call.`;
 

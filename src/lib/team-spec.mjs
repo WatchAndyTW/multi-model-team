@@ -153,3 +153,19 @@ export function splitSpec(rawText) {
 function _reEscape(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ─── CLI entry ────────────────────────────────────────────────────────────────
+
+import { pathToFileURL } from 'node:url';
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const chunks = [];
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (c) => chunks.push(c));
+  process.stdin.on('end', () => {
+    const raw = chunks.join('');
+    const useSplit = process.argv.includes('--split');
+    const result = useSplit ? splitSpec(raw) : parseCaps(raw.trim());
+    process.stdout.write(JSON.stringify(result) + '\n');
+  });
+}

@@ -40,7 +40,7 @@ MMT_ARGS_EOF
 "note": "..." }`. Use **`.task`** as the task. The caps bound parallel agents per backend
 (`gemini`=agy, `codex`=codex, `claude`=native). **Only pass these as `args.caps` when `.source` is
 `"spec"`** (the user actually typed a spec); on `"default"`, omit caps so the roster `team.caps`
-applies. If `.note` is non-empty, surface it. (`team_spec.py` is **Python** — call it with `python3`.)
+applies. If `.note` is non-empty, surface it.
 
 ## 1.5 · Load the team roles config (and honor in-session overrides)
 The pipeline's roles are **config-driven**, not hardcoded. Read the merged team config (roster

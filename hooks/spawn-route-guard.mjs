@@ -28,7 +28,7 @@ import {
 import { loadRoster } from '../src/lib/config.mjs';
 import { charCount } from '../src/lib/score.mjs';
 
-const SKIP_MARKERS = ['run.sh', '--decision', 'MMT_NATIVE_HANDOFF', 'mmt-team-worker'];
+const SKIP_MARKERS = ['run.mjs', 'run.sh', '--decision', 'MMT_NATIVE_HANDOFF', 'mmt-team-worker'];
 const OMC_MARKERS = ['TEAM WORKER', 'team-lead', 'shutdown_request', 'shutdown_response', 'oh-my-claudecode'];
 
 async function main() {
@@ -88,10 +88,10 @@ async function main() {
   const beAgent = d.backend === 'codex' ? 'multi-model-team:codex' : 'multi-model-team:delegate';
   const rule = d.rule || '?';
   const tier = d.tier || '?';
-  const runsh = path.join(root, 'scripts', 'run.sh');
+  const runMjs = path.join(root, 'src', 'bin', 'run.mjs');
   const how =
-    `run scripts/run.sh with a forced {"backend":"${d.backend}"} decision (subtask on a single-quoted ` +
-    `heredoc), or spawn the \`${beAgent}\` agent`;
+    `run \`node src/bin/run.mjs\` with a forced {"backend":"${d.backend}"} decision (subtask via stdin / ` +
+    `a single-quoted heredoc), or spawn the \`${beAgent}\` agent`;
 
   // OMC team workers are NEVER hard-denied — always a nudge, even under enforce_spawns.
   const enforce = p.enforce_spawns && !isOmc;
@@ -112,7 +112,7 @@ async function main() {
     allow(
       `multi-model-team: this oh-my-claudecode TEAM worker has work that routes to ${beDisp} [rule=${rule}, ` +
       `tier=${tier}] per the multi-model-team config. To honor our routing, the worker should EXECUTE ` +
-      `its assigned task by running \`bash ${runsh} "<the task text>"\` (our router then dispatches to ` +
+      `its assigned task by running \`node ${runMjs} "<the task text>"\` (our router then dispatches to ` +
       `${d.backend}, or native for hard work) and report THAT result back through its team protocol — ` +
       `instead of solving the task directly in Claude. It keeps following the OMC ` +
       `TaskList/SendMessage flow; only the heavy lifting moves to our CLI. Not blocking — ignore ` +

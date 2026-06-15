@@ -104,7 +104,8 @@ test('spawn guard: OMC team worker is nudged-never-denied (even under enforce)',
   });
   const a = sh(omc, on);
   assert.match(a, /"permissionDecision":"allow"/, 'OMC worker -> allow nudge');
-  assert.match(a, /run\.sh/, 'OMC nudge points at run.sh');
+  assert.match(a, /node .*run\.mjs/, 'OMC nudge points at node src/bin/run.mjs');
+  assert.doesNotMatch(a, /scripts[\\/]run\.sh/, 'OMC nudge must not reference the deleted scripts/run.sh');
   // The key OMC-aware invariant: NEVER denied, even with enforce_spawns on.
   assert.match(sh(omc, enforce), /"permissionDecision":"allow"/, 'OMC worker under enforce -> still allow (never deny)');
 });

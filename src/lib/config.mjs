@@ -185,3 +185,28 @@ function _int(value, defaultVal = 0) {
   const n = parseInt(value, 10);
   return Number.isFinite(n) ? n : defaultVal;
 }
+
+// ─── CLI entry ────────────────────────────────────────────────────────────────
+
+import { pathToFileURL } from 'node:url';
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [,, rosterPath, mode] = process.argv;
+  if (!rosterPath || !mode) {
+    process.stderr.write('Usage: node config.mjs <rosterPath> <mode>\n');
+    process.exit(2);
+  }
+  let roster;
+  try {
+    roster = loadRoster(rosterPath);
+  } catch (e) {
+    process.stderr.write(`config.mjs: failed to load roster: ${e.message}\n`);
+    process.exit(1);
+  }
+  if (mode === 'team-config') {
+    process.stdout.write(JSON.stringify(teamConfig(roster)) + '\n');
+  } else {
+    process.stderr.write(`config.mjs: unknown mode '${mode}'. Supported: team-config\n`);
+    process.exit(2);
+  }
+}
