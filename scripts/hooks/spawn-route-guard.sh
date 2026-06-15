@@ -15,6 +15,12 @@
 # `run.sh`/`--decision`, native workers are tagged `[mmt-team-worker]`, and our subagents have a
 # `multi-model-team:` subagent_type. So this only governs agents you spawn OUTSIDE the team pipeline.
 #
+# OMC-AWARE: an oh-my-claudecode TEAM worker (spawned with team_name, an `oh-my-claudecode:` agent,
+# or the OMC worker preamble) is recognized and ALWAYS nudged, NEVER denied — even when
+# enforce_spawns is on — so we can't break OMC's persistent-teammate orchestration. The nudge tells
+# that worker to route its assigned task through our run.sh (our router picks agy/codex/native per
+# our config) while still following OMC's TaskList/SendMessage protocol.
+#
 # OFF by default. Bails in pure bash before spending a python process when proactive is disabled, so
 # it costs ~nothing per spawn until opted in. Fail-OPEN: any uncertainty exits 0 (tool proceeds).
 # Hard override: MMT_PROACTIVE_DISABLE=1.
@@ -70,6 +76,7 @@ except Exception:
 tool = str(d.get("tool_name", "") or "")
 ti = d.get("tool_input", {}) or {}
 sub = str(ti.get("subagent_type", "") or "")
+team = str(ti.get("team_name", "") or "")     # set only when spawning a persistent team teammate
 prompt = ti.get("prompt", "") or ""
 desc = ti.get("description", "") or ""
 if not isinstance(prompt, str): prompt = ""
@@ -77,6 +84,10 @@ if not isinstance(desc, str): desc = ""
 task = prompt if prompt.strip() else desc
 blob = (prompt + "\n" + desc)
 markers = ("run.sh", "--decision", "MMT_NATIVE_HANDOFF", "mmt-team-worker")
+# OMC team-worker signals: a team teammate (team_name set), an oh-my-claudecode agent, or the OMC
+# worker preamble. Such spawns are NUDGED, never denied (a deny would break OMC orchestration).
+omc_markers = ("TEAM WORKER", "team-lead", "shutdown_request", "shutdown_response", "oh-my-claudecode")
+is_omc = 1 if (team.strip() or sub.startswith("oh-my-claudecode:") or any(m in blob for m in omc_markers)) else 0
 skip = 0
 if tool not in ("Task", "Agent"):
     skip = 1
@@ -87,6 +98,7 @@ elif not task.strip():
 elif any(m in blob for m in markers):
     skip = 1
 print("MMT_SKIP=%s" % ("1" if skip else "0"))
+print("MMT_IS_OMC=%s" % ("1" if is_omc else "0"))
 print("MMT_TASK_CHARS=%s" % shlex.quote(str(len(task))))
 ' 2>/dev/null)" || exit 0
 
@@ -157,7 +169,8 @@ esac
 # Emit the verdict. The task text is NEVER echoed back — only our own routing (backend/rule/tier).
 # enforce_spawns=1 -> hard deny; else a non-blocking allow + additionalContext nudge.
 MMT_BE="$D_backend" MMT_BE_DISP="$be_disp" MMT_BE_AGENT="$be_agent" \
-MMT_RULE="${D_rule:-?}" MMT_TIER="${D_tier:-?}" \
+MMT_RULE="${D_rule:-?}" MMT_TIER="${D_tier:-?}" MMT_IS_OMC="${MMT_IS_OMC:-0}" \
+MMT_ROOT_ENV="$MMT_ROOT" \
 MMT_ENFORCE="${MMT_PROACTIVE_ENFORCE_SPAWNS:-0}" "$PY" -c '
 import os, json
 be   = os.environ.get("MMT_BE", "")
@@ -165,7 +178,11 @@ disp = os.environ.get("MMT_BE_DISP", be)
 agent= os.environ.get("MMT_BE_AGENT", "")
 rule = os.environ.get("MMT_RULE", "?")
 tier = os.environ.get("MMT_TIER", "?")
-enforce = os.environ.get("MMT_ENFORCE", "0") == "1"
+root = os.environ.get("MMT_ROOT_ENV", "")
+is_omc = os.environ.get("MMT_IS_OMC", "0") == "1"
+# OMC team workers are NEVER hard-denied (a deny would stall OMC orchestration) — always a nudge.
+enforce = (os.environ.get("MMT_ENFORCE", "0") == "1") and not is_omc
+runsh = (root + "/scripts/run.sh") if root else "scripts/run.sh"
 how = ("run scripts/run.sh with a forced {\"backend\":\"%s\"} decision (subtask on a single-quoted "
        "heredoc), or spawn the `%s` agent" % (be, agent))
 if enforce:
@@ -178,6 +195,20 @@ if enforce:
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": reason,
+    }}
+elif is_omc:
+    ctx = ("multi-model-team: this oh-my-claudecode TEAM worker has work that routes to %s [rule=%s, "
+           "tier=%s] per the multi-model-team config. To honor our routing, the worker should EXECUTE "
+           "its assigned task by running `bash %s \"<the task text>\"` (our router then dispatches to "
+           "%s, or native for hard work) and report THAT result back through its team protocol — "
+           "instead of solving the task directly in Claude. It keeps following the OMC "
+           "TaskList/SendMessage flow; only the heavy lifting moves to our CLI. Not blocking — ignore "
+           "for work that needs in-context / codebase judgment."
+           % (disp, rule, tier, runsh, be))
+    out = {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "additionalContext": ctx,
     }}
 else:
     ctx = ("multi-model-team: this spawned task routes to %s [rule=%s, tier=%s] per your config. "

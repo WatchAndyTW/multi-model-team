@@ -169,7 +169,11 @@ above, or when you run `/team`. Two opt-in, config-gated hooks make it reach for
    "outside `/team`" enforcer: whenever Claude spawns an agent whose task routes to **agy or codex**,
    the guard makes that work actually run on the CLI — a non-blocking nudge by default, or a hard
    block when `enforce_spawns` is on. Your own `/team` workers and the plugin's subagents are exempt;
-   native-routing spawns are left alone.
+   native-routing spawns are left alone. **oh-my-claudecode interop:** an OMC **team worker** (spawned
+   with `team_name`, an `oh-my-claudecode:*` agent, or the OMC worker preamble) is **always nudged,
+   never denied** — even under `enforce_spawns` — so it can't stall OMC's team; the nudge tells that
+   worker to run its task through our `run.sh` (our router picks the backend) while it keeps following
+   OMC's TaskList/SendMessage protocol.
 
 Both fire deterministically; in nudge mode whether Claude complies is still its judgment. **Off by
 default.** Turn on and tune in `config/roster.json`:

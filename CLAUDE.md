@@ -236,6 +236,15 @@ hard **`permissionDecision:"deny"`** with the same instruction, forcing a re-dis
 own subagents (`subagent_type` `multi-model-team:*`) and the plugin's `/team` workers (relay workers
 carry `run.sh`/`--decision`; native workers are tagged `[mmt-team-worker]`). `guard_spawns=false`
 disables just this guard. native-routing spawns are left untouched (correctly a Claude agent).
+**OMC-aware (interop with oh-my-claudecode team mode):** a spawn detected as an OMC **team worker**
+(`tool_input.team_name` set, an `oh-my-claudecode:*` subagent, or the OMC worker preamble — "TEAM
+WORKER"/"team-lead"/"shutdown_request") is **always nudged, never denied** — even under
+`enforce_spawns` — so the guard can't stall OMC's persistent-teammate orchestration. Its
+`additionalContext` is tailored: it tells the OMC worker to **execute** its assigned task via
+`bash <root>/scripts/run.sh "<task>"` (our router then picks agy/codex/native per our config) and
+report that result back through OMC's TaskList/SendMessage flow — only the heavy lifting moves to our
+CLI. (Caveat: PreToolUse `additionalContext` reaches the spawning lead's context, not the worker's,
+so it's a best-effort routing hint — compliance stays the model's judgment.)
 
 **Both:** deterministic firing, soft compliance in nudge mode. Config in `[proactive]` (`enabled`,
 `max_chars`, `min_chars`, `rules` CSV allowlist, `guard_spawns`, `enforce_spawns`); `config.py

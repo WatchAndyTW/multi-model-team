@@ -301,6 +301,14 @@ assert_eq       "spawn: already-dispatching -> silent" "$(shook "$RUNSPAWN"   "$
 assert_eq       "spawn: team-worker tag -> silent"     "$(shook "$WORKERSPAWN" "$STMP/on.json")"     ""
 assert_eq       "spawn: guard_spawns=false -> silent"  "$(shook "$SQLSPAWN"   "$STMP/guardoff.json")" ""
 assert_eq       "spawn: env DISABLE -> silent"         "$(printf '%s' "$SQLSPAWN" | MMT_PROACTIVE_DISABLE=1 MMT_ROSTER="$STMP/on.json" bash "$SHOOK" 2>/dev/null)" ""
+# OMC-aware: an oh-my-claudecode TEAM worker (team_name set / oh-my-claudecode:* / OMC preamble) is
+# NUDGED toward run.sh but NEVER denied — even under enforce_spawns — so we can't break OMC's
+# teammate orchestration. (A plain worker under enforce DOES deny — asserted above.)
+assert_contains "spawn-guard: OMC-aware code"            "$(cat "$SHOOK")" "is_omc"
+OMCSPAWN="$("$PY" -c 'import json; print(json.dumps({"tool_name":"Task","tool_input":{"subagent_type":"oh-my-claudecode:executor","team_name":"fix-ts","name":"worker-1","description":"write sql","prompt":"You are a TEAM WORKER in team fix-ts. You report to team-lead. Write a SQL query to list all users sorted by signup date."}}))')"
+assert_contains "spawn: OMC worker -> allow nudge"        "$(shook "$OMCSPAWN" "$STMP/on.json")"      '"permissionDecision":"allow"'
+assert_contains "spawn: OMC nudge points at run.sh"       "$(shook "$OMCSPAWN" "$STMP/on.json")"      "run.sh"
+assert_contains "spawn: OMC worker under enforce -> allow" "$(shook "$OMCSPAWN" "$STMP/enforce.json")" '"permissionDecision":"allow"'
 rm -rf "$STMP"
 
 echo "── Unit: proactive-env (spawn-guard knobs) ────────────"
