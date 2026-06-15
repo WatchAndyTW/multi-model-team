@@ -334,6 +334,27 @@ assert_contains "force: delegate.md honors explicit"  "$(cat "$MMT_ROOT/agents/d
 assert_contains "force: codex.md honors explicit"     "$(cat "$MMT_ROOT/agents/codex.md")"    "explicit choice"
 assert_eq       "force: no agent self-rejects RE"     "$(grep -l 'Never reverse-engineer' "$MMT_ROOT"/agents/*.md 2>/dev/null | wc -l | tr -d ' ')" "0"
 
+echo "── Unit: backend failure surfaces stderr ─────────────"
+# A failing backend (e.g. codex hitting a sandbox/timeout) must NOT vanish into a silent empty
+# result — run.sh announces the failure + exit code + the captured stderr, and carries it into the
+# native-handoff. Deterministic + offline: a fake CLI passes health (--version) then fails `exec`.
+EFTMP="$(mktemp -d)"
+FAKE="$EFTMP/fakecodex.sh"
+cat > "$FAKE" <<'FAKEEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) echo "fakecodex 9.9" ;;                                   # health passes
+  *) echo "FAKE_SANDBOX_DENIED sandbox read-only refused" >&2; exit 1 ;;  # invoke fails w/ stderr
+esac
+FAKEEOF
+chmod +x "$FAKE"
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); d['backends']['agy']['enabled']=False; d['defaults']['quota_fallback']=['codex','native:sonnet']; print(json.dumps(d))" "$MMT_ROOT/config/roster.json" > "$EFTMP/r.json"
+EF_OUT="$(MMT_BE_BIN="$FAKE" MMT_ROSTER="$EFTMP/r.json" bash "$RUN" --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' "review this" 2>&1)"
+assert_contains "fail: run.sh announces backend failure" "$EF_OUT" "returned no usable output (exit 1)"
+assert_contains "fail: backend stderr is surfaced"       "$EF_OUT" "FAKE_SANDBOX_DENIED"
+assert_contains "fail: handoff carries last error"       "$EF_OUT" "last error:"
+rm -rf "$EFTMP"
+
 echo "── Unit: JSON config — backends configurable ──────────"
 CJSON="$MMT_ROOT/config/roster.json"
 CFG() { "$PY" "$MMT_ROOT/scripts/lib/config.py" "$CJSON" backend-env "$1" 2>/dev/null; }

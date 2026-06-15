@@ -4,7 +4,7 @@ A Claude Code **plugin** that delegates token-heavy, self-contained tasks to a l
 pre-authed **`agy`** (Gemini) CLI — choosing backend/model by task size and type, with
 credit-exhaustion fallback to native Claude and a glanceable statusline HUD.
 
-**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 155/155 offline
+**Status:** built, adversarially reviewed, and green. `tests/run_tests.sh` passes 158/158 offline
 (plus live agy + codex smoke tests under MMT_LIVE=1). Two live backends: **agy** (Gemini) and **codex** (OpenAI
 Codex CLI); opencode remains a config-only stub. codex also serves as the **`/team` verifier**. See `README.md` (user-facing),
 `PROBES.md` (grounded CLI findings), and `docs/PLAN.md` (original design plan).
@@ -65,9 +65,14 @@ task text
 
 `run.sh` walks a fallback chain = chosen backend + `quota_fallback` (deduped). `quota_fallback`
 is now `["agy","codex","native:sonnet"]` — agy quota exhaustion falls through to codex, then
-to native Claude as last resort (`MMT_NATIVE_HANDOFF` sentinel). The compact-return contract ("Return only the
-result, no preamble.") is prepended to every delegated prompt — savings depend on a small
-return crossing back to Claude.
+to native Claude as last resort (`MMT_NATIVE_HANDOFF` sentinel). **When a backend fails** (non-zero
+or empty output — e.g. a codex sandbox refusal or a `hard_timeout` kill), run.sh no longer swallows
+it: it prints `run.sh: backend '<be>' returned no usable output (exit N) — stderr: <captured>` to its
+own stderr AND carries that `(last error: …)` into the final handoff `reason=`, so the cause is
+visible instead of a silent empty result. (codex's sandbox is `-s read-only` by default for the
+verifier — that banner line is normal, not an error; the timeout is `backends.codex.hard_timeout`.)
+The compact-return contract ("Return only the result, no preamble.") is prepended to every delegated
+prompt — savings depend on a small return crossing back to Claude.
 
 ---
 

@@ -102,11 +102,12 @@ if [ -n "${MMT_QUOTA_FALLBACK+x}" ]; then
 fi
 
 FALLBACK_COUNT=0
+LAST_ERR=""   # short, sanitized reason from the last backend that actually failed (surfaced below)
 for entry in "${CHAIN[@]}"; do
   case "$entry" in
     native|native:*)
       tier="${entry#native}"; tier="${tier#:}"; tier="${tier:-$D_tier}"
-      native_sentinel "$tier" "$D_rule" "backend options exhausted; falling back to native"
+      native_sentinel "$tier" "$D_rule" "backend options exhausted; falling back to native${LAST_ERR:+ (last error: $LAST_ERR)}"
       exit 0
       ;;
     *)
@@ -145,12 +146,21 @@ for entry in "${CHAIN[@]}"; do
       out_chars="$(printf '%s' "$clean_out" | wc -m | tr -d ' ')"
 
       if mmt_quota_exhausted "$raw_out" "$err" "$code"; then
+        LAST_ERR="quota/credit limit on '$be'"
+        echo "run.sh: backend '$be' hit a quota/credit limit — falling back" >&2
         mmt_state_end "$CALL_ID" "$be" "$model" "$D_rule" "$code" "$dur" "$out_chars" 1; CALL_OPEN=0
         FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
       fi
       if [ "$code" != "0" ] || [ -z "$clean_out" ]; then
-        # Non-quota failure or suspicious empty output -> fall back to the next backend.
-        # ($code is always set by code=$? above; pass it through honestly.)
+        # Non-quota failure or suspicious empty output -> fall back to the next backend. SURFACE the
+        # backend's stderr (newlines->spaces, quotes sanitized, tail-truncated) so the reason is
+        # VISIBLE — e.g. a codex sandbox/timeout message run.sh used to swallow — instead of a silent
+        # empty result, and carry it into the eventual native-handoff sentinel. ($code set above.)
+        LAST_ERR="${err//$'\n'/ }"; LAST_ERR="${LAST_ERR//\"/\'}"
+        # Tail-truncate only when longer than the cap — bash `${v: -N}` yields EMPTY when N exceeds
+        # the length, which would blank short error messages.
+        [ "${#LAST_ERR}" -gt 240 ] && LAST_ERR="...${LAST_ERR: -240}"
+        echo "run.sh: backend '$be' returned no usable output (exit $code)${LAST_ERR:+ — stderr: $LAST_ERR}" >&2
         mmt_state_end "$CALL_ID" "$be" "$model" "$D_rule" "$code" "$dur" "$out_chars" 1; CALL_OPEN=0
         FALLBACK_COUNT=$((FALLBACK_COUNT + 1)); continue
       fi
@@ -164,5 +174,5 @@ done
 # ---- 5. Everything exhausted -> guaranteed native fallback ------------------
 # Default the roster var so an unloaded/!malformed roster (set -u) can't abort here.
 _df="${MMT_DEFAULT_FALLBACK:-native:sonnet}"
-native_sentinel "${_df#native:}" "$D_rule" "all backends exhausted"
+native_sentinel "${_df#native:}" "$D_rule" "all backends exhausted${LAST_ERR:+ (last error: $LAST_ERR)}"
 exit 0
