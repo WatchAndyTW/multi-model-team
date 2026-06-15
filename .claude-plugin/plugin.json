@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "multi-model-team",
   "displayName": "Multi-Model Team",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Delegates token-heavy, self-contained tasks to local CLI backends chosen by task size and type, with credit-exhaustion fallback through the backend chain to native Claude and a glanceable statusline HUD. All config lives in a single JSON file (config/roster.json) where backends and agents are first-class and individually enable/disable-able, so new CLIs slot in without code changes. /team runs a decompose → dispatch → verify → fix → synthesize pipeline; an optional config-gated UserPromptSubmit hook can proactively nudge delegation.",
   "author": {
     "name": "WatchAndyTW",

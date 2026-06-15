@@ -18,6 +18,16 @@ const TEAM_DEFAULTS = {
   relay_model: 'sonnet',
 };
 
+// ─── reasoning defaults (mirrors REASONING_DEFAULTS in docs/REASONING.md) ─────
+const REASONING_DEFAULTS = {
+  panel: ['opus', 'sonnet', 'gemini'],
+  judge: 'native:opus',
+  synthesizer: 'native:opus',
+  cap: 6,
+  tier_models: { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', haiku: 'haiku' },
+  relay_model: 'sonnet',
+};
+
 // ─── loadRoster ──────────────────────────────────────────────────────────────
 
 /**
@@ -179,6 +189,43 @@ export function teamConfig(roster) {
   return merged;
 }
 
+// ─── reasoningConfig ─────────────────────────────────────────────────────────
+
+/**
+ * Return reasoning config merged over built-in defaults (mirrors teamConfig).
+ * `tier_models` is merged key-by-key; `panel` is replaced wholesale if present.
+ * Keys starting with `_` are ignored.
+ *
+ * @param {object} roster
+ * @returns {object}
+ */
+export function reasoningConfig(roster) {
+  const r = roster.reasoning ?? {};
+
+  // deep-copy defaults so we don't mutate the constant
+  const merged = Object.fromEntries(
+    Object.entries(REASONING_DEFAULTS).map(([k, v]) => [
+      k,
+      Array.isArray(v) ? [...v] : (v && typeof v === 'object' ? { ...v } : v),
+    ])
+  );
+
+  for (const [k, v] of Object.entries(r)) {
+    if (k.startsWith('_')) continue;
+    if (
+      k === 'tier_models' &&
+      v && typeof v === 'object' && !Array.isArray(v) &&
+      merged[k] && typeof merged[k] === 'object'
+    ) {
+      Object.assign(merged[k], v);
+    } else {
+      merged[k] = v;
+    }
+  }
+
+  return merged;
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function _int(value, defaultVal = 0) {
@@ -205,8 +252,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   if (mode === 'team-config') {
     process.stdout.write(JSON.stringify(teamConfig(roster)) + '\n');
+  } else if (mode === 'reasoning-config') {
+    process.stdout.write(JSON.stringify(reasoningConfig(roster)) + '\n');
   } else {
-    process.stderr.write(`config.mjs: unknown mode '${mode}'. Supported: team-config\n`);
+    process.stderr.write(`config.mjs: unknown mode '${mode}'. Supported: team-config, reasoning-config\n`);
     process.exit(2);
   }
 }

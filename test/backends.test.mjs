@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { clean, quotaExhausted } from '../src/lib/backends.mjs';
+import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
 import { backend, teamConfig, proactive } from '../src/lib/config.mjs';
 import { ROSTER, ROSTER_PATH, BIN_RUN, tmp, writeRosterVariant, runNode } from './helpers.mjs';
 
@@ -23,6 +23,54 @@ test('quota detection', () => {
 test('quota: exit-code match short-circuits', () => {
   assert.equal(quotaExhausted('nothing here', [], 7, [7]), true);
   assert.equal(quotaExhausted('nothing here', [], 0, [7]), false);
+});
+
+// ── quotaFromResult: a SUCCESSFUL answer is never quota (the codex-read-the-roster false positive) ──
+test('quotaFromResult: clean exit-0 with quota words in STDOUT is NOT exhaustion', () => {
+  const pats = ['quota', '429', 'rate limit', 'exceeded', 'too many requests'];
+  // codex read this repo's roster.json and quoted its quota_patterns in a PASS answer — exit 0.
+  const ok = { code: 0, stdout: 'PASS. quota 429 rate limit exceeded too many requests', stderr: '' };
+  assert.equal(quotaFromResult(ok, clean(ok.stdout), pats, []), false, 'successful answer must not be quota');
+  // genuine exhaustion is a FAILURE: non-zero exit + the signal on stderr.
+  const bad = { code: 1, stdout: '', stderr: 'Error: 429 too many requests, quota exceeded' };
+  assert.equal(quotaFromResult(bad, clean(bad.stdout), pats, []), true, 'failure with quota stderr IS quota');
+  // empty output on exit 0 (agy silent no-op) with a stderr signal still counts.
+  const empty = { code: 0, stdout: '', stderr: 'rate limit hit' };
+  assert.equal(quotaFromResult(empty, '', pats, []), true, 'empty output -> not ok -> scan applies');
+  // exit-code-based detection still works through the helper.
+  assert.equal(quotaFromResult({ code: 7, stdout: '', stderr: '' }, '', [], [7]), true, 'quota exit code');
+});
+
+// Integration: a CLI that exits 0 and prints quota words to STDOUT must have its output RETURNED,
+// not discarded as exhaustion + fallen back to native. (Regression for the false-positive bug.)
+test('run.mjs: exit-0 backend whose stdout contains quota words is returned, not handed off', () => {
+  const d = tmp('quota-fp-');
+  const fake = join(d, process.platform === 'win32' ? 'fakecodex.cmd' : 'fakecodex.sh');
+  if (process.platform === 'win32') {
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if "%1"=="--version" ( echo fakecodex 9.9 & exit /b 0 )\r\n' +
+      'echo REVIEW_OK quota 429 rate limit exceeded too many requests\r\n' +
+      'exit /b 0\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'case "${1:-}" in\n' +
+      '  --version) echo "fakecodex 9.9" ;;\n' +
+      '  *) echo "REVIEW_OK quota 429 rate limit exceeded too many requests" ;;\n' +
+      'esac\n');
+    chmodSync(fake, 0o755);
+  }
+  const r = writeRosterVariant(d, 'r.json', (c) => {
+    c.backends.agy.enabled = false;
+    c.defaults.quota_fallback = ['codex', 'native:sonnet'];
+  });
+  const { stdout } = runNode(BIN_RUN, {
+    args: ['--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
+    env: { MMT_ROSTER: r, MMT_BE_BIN: fake },
+  });
+  assert.match(stdout, /REVIEW_OK/, 'the backend answer is returned');
+  assert.doesNotMatch(stdout, /MMT_NATIVE_HANDOFF/, 'a successful answer is NOT misread as quota + handed off');
 });
 
 // ── clean() strips CR + winpty noise ─────────────────────────────────────────

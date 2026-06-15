@@ -14,15 +14,17 @@ backend, while **keeping judgment-heavy and systems-hard work** (RE, IL2CPP/prot
 disassembly, FFI/unsafe, injection, concurrency, protocol design) on Claude. Every routing
 decision is driven by config you can tune without touching code.
 
-**Stack:** Node ESM (`.mjs`), zero-build, zero runtime dependencies (Node stdlib only), Node >=18.
-Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
+**Stack:** Node ESM (`.mjs`), zero-build, Node >=18. **One native runtime dependency: `node-pty`**
+(gives the agy/Gemini lane a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX — so it works
+headlessly); everything else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json`
+`"type":"module"`.
 
 ---
 
 ## Status
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows.
-`npm test` (`node --test "test/*.test.mjs"`) passes **46/46** offline, plus live agy + codex
+`npm test` (`node --test "test/*.test.mjs"`) passes **81/81** offline, plus live agy + codex
 smoke tests under `MMT_LIVE=1`. Active backends: **agy** (Gemini) and **codex** (OpenAI Codex CLI).
 `opencode` is a config-only stub for a future addition.
 
@@ -36,24 +38,21 @@ fired — Claude Code doesn't dispatch `PreToolUse` to a `Workflow` matcher).
 
 ## Backend quirks you must know
 
-### agy needs a TTY
+### agy needs a TTY — provided by node-pty
 
-`agy` only prints output when attached to a real console. Run through a plain pipe it
-**exits 0 and prints nothing** — a silent no-op that looks like success. The plugin solves
-this by wrapping every agy call in **winpty** + giving agy an **open, idle stdin** (a Node
-pipe held open until the child exits, replacing the old bash FIFO):
+`agy` only prints output when attached to a TTY (it gates on `isatty(stdout)`). Run through a plain
+pipe it **exits 0 and prints nothing** — a silent no-op that looks like success. The plugin runs
+every agy call under a real **pseudo-terminal via [`node-pty`](https://github.com/microsoft/node-pty)**
+(ConPTY on Windows 10/11, forkpty on Linux/macOS), so `isatty` is true and agy emits — **with no
+visible console window, working even from a fully headless parent** (a Bash-tool call, a hook, a
+`/team` or `/reasoning` sub-agent). The prompt is passed as a real argv element (no shell —
+injection-safe), and `clean()` strips the terminal control bytes the pty emits. Handled in
+`src/lib/backends.mjs` (`runPty`).
 
-```
-winpty -Xallow-non-tty -Xplain <agy.exe> --print "<prompt>" --model "<name>" ...
-```
-
-Both are handled in `src/lib/backends.mjs` / `src/lib/platform.mjs`. Full findings in
-[PROBES.md](PROBES.md).
-
-**Important caveat:** winpty requires a real Windows console. agy's live invocation works from
-the actual Claude Code terminal session. In a headless/piped context (a Bash-tool call, a hook
-subprocess) there is no real console, so agy falls through the fallback chain to codex or native.
-This is an environmental constraint, not a plugin bug.
+**Earlier versions** wrapped agy in **winpty** + an idle-held stdin. winpty needs a real Windows
+console, which a headless parent can't provide (the `winpty.cc:924` assertion) — so agy was a silent
+no-op outside a real terminal and fell through to codex/native. node-pty (ConPTY) removes that
+limitation. Full findings in [PROBES.md](PROBES.md).
 
 ### codex is non-interactive — no TTY needed
 
@@ -66,15 +65,17 @@ spawned via `cmd.exe /d /s /c`. No winpty, no stdin-keepalive pipe needed.
 **Requirements:**
 
 - **Node.js >= 18** (the runtime for all plugin scripts).
+- **`npm install`** — pulls the one native dependency, **`node-pty`** (prebuilt binaries for common
+  Node/OS combos; no toolchain needed in the normal case). This is what lets the agy lane run under a
+  real pseudo-terminal.
 - **agy** — must be installed and pre-authed. Binary auto-resolved from `$MMT_AGY_BIN` → PATH →
   `$LOCALAPPDATA/agy/bin/agy.exe` (Windows) or `~/.local/bin/agy` / `/usr/local/bin/agy` (POSIX).
 - **codex** (optional) — `npm install -g @openai/codex` and log in. If absent or disabled,
   tasks fall through to the next hop in the fallback chain.
-- **winpty** (Windows, for agy) — must be on PATH.
 
-**Cross-platform note:** the plugin is structurally cross-platform via `src/lib/platform.mjs`
-(PTY via winpty on win32, `script` shim on POSIX; XDG-aware state dir). Developed and tested on
-Windows; Linux/macOS POSIX paths are wired up but not yet exercised on a real POSIX box.
+**Cross-platform note:** agy's TTY is provided by `node-pty` (ConPTY on win32, forkpty on POSIX);
+winpty is no longer required. Developed and tested on Windows; Linux/macOS paths are wired up but not
+yet exercised on a real POSIX box.
 
 ---
 
@@ -146,6 +147,29 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
     genuinely hard subtasks.
   - Task text is never shell-interpolated — it's written to a `plan.json` (data) and fed to
     `run.mjs` on stdin, so it's injection-safe.
+- **`/multi-model-team:reasoning [panel-spec] <question>`** — **multi-model Fusion pipeline.**
+  Fan the same question out to a **configurable panel of models** in parallel (default panel is set
+  in roster `reasoning.panel` — edit it to change which models participate; default: Opus+Sonnet+Gemini),
+  have a **judge** compare their answers into a structured analysis (consensus / contradictions / unique
+  insights / blind spots), then **synthesize** one unified answer that is better than any single
+  model's.
+  - **Panel spec** (optional leading arg): `2:gemini,opus,codex` — token aliases map to
+    `{backend, tier}` pairs; a count prefix (e.g. `3:gemini`) adds N copies for self-consistency.
+    Unknown tokens are ignored with a note. Default panel: Opus + Sonnet + Gemini.
+  - **Parallel dispatch:** every panelist runs independently and simultaneously — native panelists
+    as real sub-agents pinned to their model, CLI panelists via a faithful `run.mjs` relay
+    (`rule:"reason"`); a CLI unavailable → visible native fallback (never a silent substitution).
+  - **Judge:** structured analysis over all panel answers: `consensus` (high-confidence points most
+    agreed on), `contradictions`, `unique_insights` (from a single panelist), `blind_spots`
+    (angles none addressed).
+  - **Synthesis:** one unified answer folding in consensus, unique insights, and blind spot
+    remediation, with the panel/judge appendix shown.
+  - **Ultracode:** if the Workflow tool is available, `/reasoning` runs the entire Fusion pipeline
+    as `workflows/reasoning.mjs` (deterministic, dependency-safe, `Panel → Judge → Synthesize`).
+    Otherwise parallel `Task` agents fan out the panel, then the lead judges and synthesizes.
+  - Panel roles and defaults live in the roster `reasoning` section (see Tuning).
+  - Question text is injection-safe — it rides on a single-quoted heredoc or a JSON `args` value,
+    never the command line.
 - **`/multi-model-team:route-test <task>`** — dry-run the router. Prints the decision
   (chars, detected types, matched rule, `{backend, model, tier}`). No backend call. Tuning tool.
 
@@ -236,8 +260,8 @@ keys as inline docs:
 
 - **`backends`** — each CLI a route can target. Flip `enabled` to turn a backend on/off; `kind`
   picks the invoker in `src/lib/backends.mjs`. Two live backends:
-  - **`agy`** (`kind:"gemini"`) — Gemini CLI; requires winpty + open stdin (see above).
-  - **`codex`** (`kind:"codex"`) — prompt delivered via stdin; no winpty needed.
+  - **`agy`** (`kind:"gemini"`) — Gemini CLI; runs under a node-pty pseudo-terminal (see above).
+  - **`codex`** (`kind:"codex"`) — prompt delivered via stdin; no pty needed.
   - **`opencode`** is a disabled stub for a future addition.
 - **`agents`** — the delegation subagents. Each has `enabled`, `backend`, `tier`, `dispatch`
   (`route` or `forced`), and a `role`. **After editing, run
@@ -246,6 +270,11 @@ keys as inline docs:
 - **`routes`** — first-match-wins routing rules. Edit to change *where a type routes*.
 - **`team`** — the `/team` pipeline roles + defaults. **native, agy and codex are equal** — any
   can be assigned any subtask and any can verify.
+- **`reasoning`** — the `/reasoning` Fusion pipeline defaults. **`panel` is user-configurable** —
+  edit it to change which models participate by default (e.g. `["opus","sonnet","gemini","codex"]`
+  for a 4-model panel, or `["gemini","codex"]` for a CLI-only panel). Also configures `judge`,
+  `synthesizer`, `cap`, `tier_models`, `relay_model`. See `docs/REASONING.md` for the full token
+  vocabulary and override precedence. Per-invocation spec (e.g. `2:gemini,opus`) always wins.
 - **`defaults`** / **`proactive`** — preset + fallback chain, and the proactive-nudge config.
 - **`config/tags.txt`** (separate flat file) — keyword→type classification. Edit to change *what
   type* a task is detected as.
@@ -272,20 +301,24 @@ src/lib/state.mjs               HUD state read/write (replaces state.sh)
 src/lib/hook-common.mjs         shared hook runtime: one-fork-free node process per hook
 src/lib/team-spec.mjs           /team cap-spec parser (replaces team_spec.py)
 src/lib/team-plan.mjs           plan.json → per-subtask files (replaces team_plan.py)
+src/lib/reason-spec.mjs         /reasoning panel-spec parser (expandPanel / parsePanel / splitPanel)
 src/lib/gen-agents.mjs          regenerate agents/*.md from roster.json (replaces gen_agents.py)
 src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out for /team (replaces team.sh)
+src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
 hooks/heavy-read-guard.mjs      PreToolUse(Read) guard — oversized RE-dump reads
 hooks/proactive-route.mjs       UserPromptSubmit delegation nudge (opt-in)
 hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard — nudge/deny CLI-routable spawns (opt-in)
 hooks/hooks.json                hook registrations (all commands: node <hook>.mjs)
 statusline/statusline.mjs       fork-free HUD line (replaces statusline.sh)
 agents/                         delegate, av-research, bulk-summarizer, codex (GENERATED)
-commands/                       team, route-test
+commands/                       team, route-test, reasoning
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
+workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs                 offline test suite (npm test)
 docs/PLAN.md                    original implementation plan (historical)
+docs/REASONING.md               design contract for the /reasoning Fusion pipeline
 ```
 
 ---
@@ -293,7 +326,7 @@ docs/PLAN.md                    original implementation plan (historical)
 ## Testing
 
 ```bash
-npm test                        # offline: 46/46 routing + unit tests (no backend calls)
+npm test                        # offline: 81/81 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test             # also run live agy + codex smoke tests (network required)
 ```
 
@@ -301,8 +334,12 @@ MMT_LIVE=1 npm test             # also run live agy + codex smoke tests (network
 
 ## Known open items
 
-- **P2 — quota error grounding:** `quota_patterns` in `roster.json` are sensible defaults;
-  harden `quota_patterns` / `quota_exit_codes` on the first real agy credit-exhaustion error.
+- **P2 — quota error grounding:** `quota_patterns` in `roster.json` are sensible defaults. Quota
+  detection is **failure-gated** (`backends.quotaFromResult`) — a successful call (exit 0 +
+  non-empty output) is never read as exhaustion, so a backend answer that merely *quotes* a pattern
+  word (e.g. codex reading this repo's `quota_patterns` during a review) is no longer discarded and
+  bounced to fallback. Harden `quota_patterns` / `quota_exit_codes` on the first real
+  agy/codex credit-exhaustion error.
 - **Hook scope:** the `PreToolUse` guard intentionally matches only `Read` for now (start
   narrow, widen on evidence).
 - **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir are wired up in `platform.mjs`

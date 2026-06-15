@@ -19,6 +19,16 @@
     "relay_model": "sonnet"
   },
 
+  "reasoning": {
+    "_comment": "Roles + defaults for the /reasoning Fusion pipeline. 'panel' is YOUR configurable list of reasoning models — editing it changes which models participate in /reasoning by default (e.g. add a 4th model: ['opus','sonnet','gemini','codex']; or go CLI-only: ['gemini','codex']). Each token runs the SAME question in parallel; see docs/REASONING.md for the full token vocabulary (opus/sonnet/haiku/gemini/flash/codex and their aliases). 'judge' compares the panel into structured analysis; 'synthesizer' writes the unified answer (both 'native:<tier>' or a bare tier/backend token). 'cap' bounds total panelists. 'tier_models' maps a tier to a concrete native model; 'relay_model' is the model the thin CLI-relay agents run on. The panel (and judge/synthesizer) are user-configurable here; overridable further per-invocation via a panel spec like '2:gemini,opus,codex', or in-session 'judge with sonnet'. Precedence: built-in default < this section < per-invocation.",
+    "panel": ["opus", "sonnet", "gemini"],
+    "judge": "native:opus",
+    "synthesizer": "native:opus",
+    "cap": 6,
+    "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus", "haiku": "haiku" },
+    "relay_model": "sonnet"
+  },
+
   "backends": {
     "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in backends.sh ('gemini' (agy) and 'codex' are implemented; 'opencode' is a config stub with no invoker yet, so enabling it simply falls through until an invoker is added).",
 

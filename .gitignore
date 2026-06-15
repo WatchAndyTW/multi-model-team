@@ -15,6 +15,10 @@ __pycache__/
 .cache/
 *.tmp
 
+# Node dependencies — node-pty is a native module; its prebuilt binary is platform/arch/abi-specific,
+# so don't commit it. Consumers run `npm install` (package-lock.json IS committed for reproducibility).
+node_modules/
+
 # OS cruft
 Thumbs.db
 .DS_Store

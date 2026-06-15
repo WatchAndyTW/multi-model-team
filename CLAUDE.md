@@ -5,10 +5,11 @@ pre-authed CLI backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI
 backend/model by task size and type, with credit-exhaustion fallback to native Claude and a
 glanceable statusline HUD.
 
-**Stack:** Node ESM (`.mjs`), zero-build, zero runtime dependencies (Node stdlib only), Node >=18.
-Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
+**Stack:** Node ESM (`.mjs`), zero-build, Node >=18. **One native runtime dependency: `node-pty`**
+(the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
+else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **46/46** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **81/81** offline
 (plus live agy + codex smoke tests under `MMT_LIVE=1`). Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
@@ -25,23 +26,25 @@ matcher).
 
 ## ⚠️ Backend invocation quirks
 
-### agy (Gemini) — needs a TTY
+### agy (Gemini) — needs a TTY → runs under node-pty
 
 `agy` gates its output on `isatty(stdout)`. Run through a normal pipe it **exits 0 and prints
-nothing** — a silent no-op that looks like success. Every invocation MUST therefore:
+nothing** — a silent no-op that looks like success. The plugin therefore runs agy under a real
+**pseudo-terminal via `node-pty`** (`backends.mjs runPty`): ConPTY on Windows 10/11, forkpty on
+Linux/macOS. `isatty(stdout)` is true, so agy emits — **with no visible console window, working even
+from a fully headless parent** (a Bash-tool subshell, a hook, a `/team` or `/reasoning` sub-agent).
+The prompt rides as a real **argv element** (node-pty passes argv to the child, never via a shell —
+injection-safe). A pty is one merged stream (stdout+stderr); `clean()` strips the terminal control
+bytes (CSI/OSC) ConPTY emits. `node-pty` is **lazy-imported** so the rest of `backends.mjs`
+(codex/health/clean/quota) still loads if the native module is absent — only the agy lane needs it.
 
-1. be wrapped in **winpty**: `winpty -Xallow-non-tty -Xplain <agy.exe> --print "<prompt>" …`
-2. be given an **open, idle stdin** — a Node pipe held open until the child exits (replaces the
-   old bash FIFO: `stdio:['pipe',...]` and do NOT close stdin until the child closes).
+The health check (`agy --version`) is NOT TTY-gated and runs via a plain `runChild` (no pty needed).
 
-Both are handled in `src/lib/backends.mjs` (invoke) + `src/lib/platform.mjs` (`ptyWrap`).
-The health check (`agy --version`) is NOT TTY-gated and must run **without** winpty (winpty yields
-empty output for `--version`). Full detail in `PROBES.md`.
-
-**Important caveat:** winpty requires a real Windows console. agy's live invocation works from the
-actual Claude Code terminal. In a headless/piped context (a Bash-tool subshell, a hook subprocess)
-there is no real console — agy falls through the fallback chain to codex or native. This is an
-environmental constraint, not a plugin bug. The bash version had the same constraint.
+**History:** earlier versions wrapped agy in **winpty** and held an idle stdin open (the bash FIFO
+replacement). winpty needs a real Windows console, which a headless parent can't provide
+(`winpty.cc:924` `cols>0 && rows>0` assertion) — so agy was a silent no-op outside a real terminal
+and fell through to codex/native. node-pty (ConPTY) removes that constraint entirely; `ptyWrap`
+(winpty/script) in `platform.mjs` is retained but no longer on the agy path. Full detail in `PROBES.md`.
 
 Real model names (exact `agy models` display strings): `Gemini 3.1 Pro (Low)` (standard),
 `Gemini 3.5 Flash (Low)` (cheap). Binary auto-resolves via `platform.resolveBinary`: `$MMT_AGY_BIN`
@@ -92,7 +95,7 @@ visible instead of a silent empty result.
 ```
 .claude-plugin/plugin.json      manifest (auto-discovers commands/ agents/ hooks/hooks.json)
 settings.json                   reference statusLine (see README HUD note)
-config/roster.json              ALL config: defaults + backends + agents + routes + proactive + team
+config/roster.json              ALL config: defaults + backends + agents + routes + proactive + team + reasoning
 config/tags.txt                 task-type classifier — `<type> <ERE>` per line (stays a flat file)
 src/lib/platform.mjs            cross-platform OS layer: PTY wrap, binary resolve, state dir (NEW)
 src/lib/config.mjs              roster.json loader → plain JS objects (replaces config.py)
@@ -103,20 +106,24 @@ src/lib/state.mjs               HUD state read/write (replaces state.sh)
 src/lib/hook-common.mjs         shared hook runtime — one fork-free node process (NEW; reliability core)
 src/lib/team-spec.mjs           /team cap-spec parser (replaces team_spec.py)
 src/lib/team-plan.mjs           plan.json → per-subtask files (replaces team_plan.py)
+src/lib/reason-spec.mjs         /reasoning panel-spec parser: expandPanel / parsePanel / splitPanel
 src/lib/gen-agents.mjs          regenerate agents/*.md from roster.json (replaces gen_agents.py)
 src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
+src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
 hooks/heavy-read-guard.mjs      PreToolUse(Read) guard for oversized RE-dump reads
 hooks/proactive-route.mjs       UserPromptSubmit nudge: CLI-routable prompt → suggest delegating
 hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard: nudge/deny CLI-routable agent spawns
 hooks/hooks.json                hook registrations (all commands: `node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`)
 statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
 agents/{delegate,av-research,bulk-summarizer,codex}.md   GENERATED from roster.json (gen-agents.mjs)
-commands/{team,route-test}.md   /team = multi-agent fan-out; /route-test = dry-run router
+commands/{team,route-test,reasoning}.md   /team = multi-agent fan-out; /route-test = dry-run router; /reasoning = Fusion pipeline
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
+workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs                 offline test suite (npm test — node --test)
 docs/PLAN.md                    original implementation plan (historical)
+docs/REASONING.md               design contract for the /reasoning Fusion pipeline
 ```
 
 ---
@@ -207,6 +214,37 @@ Agent labels are backend-prefixed — `gemini:<label>`, `codex:verify:<label>`, 
 Native subtask model is **dynamic by complexity** (`sonnet` default, `opus` only when genuinely
 hard). Determinism-safe (no Date/random APIs) and tolerates `args` as object **or** JSON string.
 
+## /reasoning — multi-model parallel reasoning (Fusion)
+
+`/reasoning [panel-spec] <question>` fans the **same question** out to a **panel** of models in
+parallel, has a **judge** compare their answers into structured analysis, then produces one unified
+answer that is better than any single model's. Maps OpenRouter's Fusion pipeline onto this
+plugin's backends.
+
+**Pipeline:** Panel → Judge → Synthesize.
+
+1. **Panel** — every panelist (a `{backend, tier}` pair) answers the question independently and
+   simultaneously. Native panelists run as real sub-agents pinned to their model; CLI panelists
+   go through the faithful `run.mjs` relay (`rule:"reason"`). A CLI unavailable → visible native
+   fallback agent (never a silent Claude substitution; `ranOn` tracks the actual backend).
+2. **Judge** — one agent (default Opus) compares all panel answers into structured analysis:
+   `consensus` (high-confidence, most agreed), `contradictions`, `unique_insights` (one panelist
+   only), `blind_spots` (angles none addressed).
+3. **Synthesize** — one agent (default Opus) writes the single best unified answer: prefers
+   consensus, folds in unique insights, resolves contradictions, addresses blind spots.
+
+**Panel spec** (optional leading arg): comma-separated tokens like `2:gemini,opus,codex`. Token
+vocabulary and alias map: see `docs/REASONING.md`. Default panel: `["opus","sonnet","gemini"]`.
+
+**Two engines** — same as `/team`:
+- **Ultracode path:** `workflows/reasoning.mjs` runs the full pipeline deterministically
+  (`parallel()` for the Panel phase, schema-validated Judge, Synthesize). Preferred.
+- **Fallback path:** parallel `Task` sub-agents for the Panel (tagged `[mmt-team-worker]`), then
+  native judge + synthesize. Scripted alternative: `src/bin/reason.mjs` (no agents, stdin question).
+
+Config lives in `roster.json` `reasoning` section (panel, judge, synthesizer, cap, tier_models,
+relay_model); full token vocabulary and override precedence documented in `docs/REASONING.md`.
+
 ## Proactive delegation hooks (opt-in)
 
 Two nudges (was three — the `Workflow` guard is dropped; it empirically never fired), all gated by
@@ -266,9 +304,11 @@ fallback hop.
 
 ## Conventions & constraints
 
-- **Zero runtime deps.** All modules use Node stdlib only. No `jq`, no `python3`, no `grep` in
-  hot paths. `state.mjs` writes flat one-field-per-line JSON so `statusline.mjs` can parse it
-  without a real JSON parser (fork-free).
+- **One native dep (`node-pty`), Node stdlib otherwise.** The agy lane needs a real pseudo-terminal
+  (ConPTY/forkpty) so its `isatty` gate emits; that's `node-pty`, lazy-imported in `backends.mjs` so
+  only the agy path requires it. No other runtime deps: no `jq`, no `python3`, no `grep` in hot
+  paths. `state.mjs` writes flat one-field-per-line JSON so `statusline.mjs` can parse it without a
+  real JSON parser (fork-free).
 - **Untrusted task text is injection-unsafe in slash commands.** Claude Code textually pastes
   `$ARGUMENTS` into `!` bash blocks (RCE). `/team` and `/route-test` do NOT inline-exec — they
   instruct Claude to run the binary via the Bash tool, feeding the task on stdin. Keep it that way.
@@ -286,7 +326,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 46/46 routing + unit tests (no backend calls)
+npm test                         # offline: 81/81 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test              # + live agy + codex smoke tests (network required)
 ```
 
@@ -297,8 +337,12 @@ and run with `node --test`.
 
 ## Open items
 
-- **P2 — quota grounding:** `quota_patterns` in `roster.json` are unvalidated defaults;
-  harden `quota_patterns`/`quota_exit_codes` on the first real agy credit-exhaustion error.
+- **P2 — quota grounding:** `quota_patterns` in `roster.json` are unvalidated defaults. The
+  detector is now **failure-gated** (`backends.quotaFromResult`): a successful call (exit 0 +
+  non-empty output) is never treated as exhaustion, so a backend answer that merely *quotes* a
+  pattern word (e.g. codex reading this repo's `quota_patterns`) is no longer discarded. Real
+  exhaustion still relies on the heuristic patterns + `quota_exit_codes` — harden those on the
+  first real agy/codex credit-exhaustion error.
 - **Backends:** opencode is config-only (stub, `enabled:false`); codex is live. Health-gate
   ensures an unavailable CLI falls through to the next fallback hop.
 - **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir are wired up in `platform.mjs`

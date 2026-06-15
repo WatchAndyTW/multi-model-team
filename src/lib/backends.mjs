@@ -159,6 +159,38 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData }) {
   });
 }
 
+// runPty — run a child under a real pseudo-terminal via node-pty (ConPTY on win32, forkpty on posix),
+// so a child that gates on isatty(stdout) (agy) still emits — with no visible console, even from a
+// fully headless parent. node-pty is LAZY-imported so the rest of backends.mjs (codex/health/clean/
+// quota) still loads if the native module is missing; only the agy lane needs it. A pty is ONE merged
+// stream (stdout+stderr); clean() strips the terminal control bytes. Wide cols avoid hard-wrapping the
+// answer. Returns { stdout, stderr:'', code } — the same shape runChild resolves.
+async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50 } = {}) {
+  const mod = await import('node-pty');
+  const pty = mod.default || mod;
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, cwd: process.cwd(), env: process.env });
+    } catch (e) {
+      resolve({ stdout: '', stderr: String((e && e.message) || e), code: 127 });
+      return;
+    }
+    const chunks = [];
+    let settled = false;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ stdout: chunks.join(''), stderr: '', code: typeof code === 'number' ? code : 1 });
+    };
+    const timer = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } finish(124); }, hardTimeout);
+    if (typeof timer.unref === 'function') timer.unref();
+    proc.onData((d) => chunks.push(d));
+    proc.onExit(({ exitCode }) => finish(exitCode));
+  });
+}
+
 // --- gemini (agy) ------------------------------------------------------------
 async function invokeGemini(cfg, prompt, opts) {
   const bin = platform.resolveBinary('agy', {
@@ -172,35 +204,32 @@ async function invokeGemini(cfg, prompt, opts) {
   const model = opts.model || modelForTier(cfg, opts.tier);
   const addDir = opts.addDir || opts.add_dir || '';
 
-  // Parity with backends.sh _mmt_invoke_gemini argv order:
-  //   [bin, print_flag, prompt, model_flag, model, ...extra, add_dir_flag, add_dir]
-  // INTERFACES summarizes as [bin, print_flag, prompt, ...extra]; the model + extra go after the
-  // prompt either way. We keep the bash order (model pair, then extra) — agy parses flags freely.
-  let argv = [bin, printFlag, prompt];
-  if (model) argv.push(modelFlag, model);
-  argv.push(...asArray(field(cfg, 'extra')));
-  if (addDir) argv.push(addDirFlag, addDir);
+  // agy gates output on isatty(stdout). node-pty gives it a REAL pseudo-terminal cross-platform
+  // (ConPTY on win32, forkpty on posix) so isatty is true and agy emits — with no visible console,
+  // working even from a fully headless parent (Bash-tool / hook / sub-agent). This replaces the
+  // winpty+console-spawn approach, which could not allocate a console with non-zero dims from a
+  // console-less parent. The prompt rides as a real argv ELEMENT (node-pty passes argv to the child,
+  // never via a shell) — injection-safe. The pty merges stdout+stderr into one stream.
+  //   args order (parity with the bash invoker): [print_flag, prompt, model_flag, model, ...extra, add_dir_flag, add_dir]
+  const args = [printFlag, prompt];
+  if (model) args.push(modelFlag, model);
+  args.push(...asArray(field(cfg, 'extra')));
+  if (addDir) args.push(addDirFlag, addDir);
 
-  // winpty/PTY wrap when configured (and a wrapper exists). use_winpty true by default for agy.
-  const useWinpty = field(cfg, 'use_winpty') !== false;
-  const wrapped = platform.ptyWrap(argv, { needTty: useWinpty });
-  argv = wrapped.argv;
-
-  const res = await runChild(argv, {
-    hardTimeout: timeoutMs(field(cfg, 'hard_timeout')),
-    keepStdinOpen: true, // agy: hold stdin open+idle until exit (the FIFO replacement).
-  });
+  let res;
+  try {
+    res = await runPty(bin, args, { hardTimeout: timeoutMs(field(cfg, 'hard_timeout')) });
+  } catch (e) {
+    res = { stdout: '', stderr: String((e && e.message) || e), code: 127 };
+  }
 
   const cleaned = clean(res.stdout);
-  const quota = quotaExhausted(
-    `${res.stdout}\n${res.stderr}`,
-    asArray(field(cfg, 'quota_patterns')),
-    res.code,
-    asArray(field(cfg, 'quota_exit_codes')),
-  );
   // ok = exited 0 AND produced usable (non-empty) cleaned stdout. An empty result is the classic
   // agy "silent no-op" — treat as failure so run.sh falls through (parity with run.sh contract).
   const ok = res.code === 0 && cleaned.length > 0;
+  // quota is gated on FAILURE (see quotaFromResult): a successful answer is never exhaustion, even
+  // if its prose happens to contain "quota"/"429"/… (e.g. agy summarizing a doc about rate limits).
+  const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
   return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota };
 }
 
@@ -233,13 +262,11 @@ async function invokeCodex(cfg, prompt, opts) {
   });
 
   const cleaned = clean(res.stdout);
-  const quota = quotaExhausted(
-    `${res.stdout}\n${res.stderr}`,
-    asArray(field(cfg, 'quota_patterns')),
-    res.code,
-    asArray(field(cfg, 'quota_exit_codes')),
-  );
   const ok = res.code === 0 && cleaned.length > 0;
+  // Same FAILURE-gate as agy: codex reads files (read-only sandbox), so a successful review whose
+  // answer quotes this repo's roster.json quota_patterns ("quota", "429", "rate limit", …) must NOT
+  // be misread as exhaustion and discarded. Only scan when the call did not produce a usable result.
+  const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
   return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota };
 }
 
@@ -340,4 +367,16 @@ export function quotaExhausted(blob, patterns, exitCode, exitCodes) {
     if (hay.includes(String(p).toLowerCase())) return true;
   }
   return false;
+}
+
+// Decide quota/credit exhaustion from a COMPLETED child result. CRITICAL: a successful call (clean
+// exit + usable output) is NEVER exhaustion — exhaustion always surfaces as a FAILURE (non-zero
+// exit, empty output, or a stderr error). Scanning a successful answer's own stdout prose for
+// "quota"/"429"/"rate limit"/… false-positives whenever the model merely quotes or discusses those
+// terms — the exact bug where codex, reading this repo's roster.json quota_patterns to answer a
+// review, got its perfectly good PASS discarded as "quota exhausted". So only scan on failure.
+export function quotaFromResult(res, cleaned, patterns, exitCodes) {
+  const ok = res && res.code === 0 && String(cleaned ?? '').length > 0;
+  if (ok) return false;
+  return quotaExhausted(`${res ? res.stdout : ''}\n${res ? res.stderr : ''}`, patterns, res ? res.code : 1, exitCodes);
 }
