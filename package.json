@@ -1,0 +1,20 @@
+{
+  "name": "multi-model-team",
+  "version": "0.5.0",
+  "type": "module",
+  "private": true,
+  "description": "Delegates token-heavy, self-contained tasks to local CLI backends (agy/Gemini, codex) chosen by task size and type, with credit-exhaustion fallback to native Claude and a statusline HUD. Node ESM, zero-build, cross-platform (Windows/Linux/macOS).",
+  "author": { "name": "WatchAndyTW", "email": "watchandytw@gmail.com" },
+  "license": "MIT",
+  "bin": {
+    "mmt-route": "./src/bin/route.mjs",
+    "mmt-run": "./src/bin/run.mjs",
+    "mmt-team": "./src/bin/team.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "route-test": "node ./src/bin/route.mjs --explain"
+  },
+  "engines": { "node": ">=18" },
+  "keywords": ["delegation", "cli-backends", "pluggable", "routing", "multi-model", "cost", "statusline"]
+}

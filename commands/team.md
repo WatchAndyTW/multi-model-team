@@ -31,7 +31,7 @@ equal). Let the parser split it off **deterministically**. Feed the **whole raw 
 single-quoted heredoc (the injection-safe boundary — never put the input on the command line):
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/team_spec.py" --split <<'MMT_ARGS_EOF'
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/team-spec.mjs" --split <<'MMT_ARGS_EOF'
 <the entire raw input shown above>
 MMT_ARGS_EOF
 ```
@@ -47,7 +47,7 @@ The pipeline's roles are **config-driven**, not hardcoded. Read the merged team 
 `team` over built-in defaults) — this never touches the task text, so it's safe to run plainly:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/lib/config.py" "${CLAUDE_PLUGIN_ROOT}/config/roster.json" team-config
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" "${CLAUDE_PLUGIN_ROOT}/config/roster.json" team-config
 ```
 
 → `{ dispatch_backends, verifier, verify, max_fix_loops, caps, tier_models, relay_model }` — the
@@ -80,7 +80,7 @@ Split the task into subtasks. For **each** subtask decide four things:
   cost-adaptive.)
 
 Respect the **per-backend caps** (≤ the cap for each backend). If unsure of a subtask's backend,
-dry-run the router (`scripts/route.sh --explain` with the subtask on a single-quoted heredoc).
+dry-run the router (`src/bin/route.mjs --explain` with the subtask on a single-quoted heredoc).
 
 ## 3 · Write the plan (injection-safe)
 Use the **Write tool** to write a plan JSON file — an array of subtasks. Include `deps`/`verify`
@@ -119,7 +119,7 @@ alone. There are two worker kinds:
   on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line
   MMT_SUB_EOF, change the delimiter), then return its stdout VERBATIM with no preamble:
 
-  bash "<PLUGIN_ROOT>/scripts/run.sh" --decision '{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false}' <<'MMT_SUB_EOF'
+  node "<PLUGIN_ROOT>/src/bin/run.mjs" --decision '{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false}' <<'MMT_SUB_EOF'
   <subtask text — with any "Upstream result — <dep>:" blocks appended>
   MMT_SUB_EOF
 
@@ -141,8 +141,8 @@ alone. There are two worker kinds:
 spawn a **visible native solver agent** for that subtask instead — never let a `gemini:`/`codex:`
 result be quietly produced by Claude. Track which backend **actually** ran each subtask for step 7.
 
-> Scripted alternative (no agents): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/team.sh" --plan <wave.json>
-> --gemini-cap G` runs a wave's CLI subtasks as parallel `run.sh` subprocesses and lists the native
+> Scripted alternative (no agents): `node "${CLAUDE_PLUGIN_ROOT}/src/bin/team.mjs" --plan <wave.json>
+> --gemini-cap G` runs a wave's CLI subtasks as parallel `run.mjs` subprocesses and lists the native
 > ones. Use it for a non-interactive batch; the **Task-agent fan-out above is the default for `/team`**.
 
 ## 5 · Verify each result — on the configured verifier
@@ -153,7 +153,7 @@ the result — on a single-quoted heredoc so it stays inert data (swap `codex` b
 verifier):
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
+node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}' <<'MMT_VERIFY_EOF'
 You are a strict reviewer. Reply with a first line of exactly PASS or FAIL, one sentence why, then (only if FAIL) a one-line fix instruction.
 SUBTASK: <text>   ACCEPTANCE CRITERION: <verify>   RESULT: <result>
 MMT_VERIFY_EOF

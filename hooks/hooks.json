@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/heavy-read-guard.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/heavy-read-guard.mjs\"",
             "timeout": 10
           }
         ]
@@ -16,17 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/spawn-route-guard.sh\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Workflow",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/workflow-route-guard.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/spawn-route-guard.mjs\"",
             "timeout": 10
           }
         ]
@@ -37,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/proactive-route.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/proactive-route.mjs\"",
             "timeout": 10
           }
         ]

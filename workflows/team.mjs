@@ -77,13 +77,13 @@ if (!task || !String(task).trim()) {
   return { error: 'mmt-team: no task provided in args.task' }
 }
 if (!root) {
-  return { error: 'mmt-team: args.pluginRoot is required to locate scripts/run.sh' }
+  return { error: 'mmt-team: args.pluginRoot is required to locate src/bin/run.mjs' }
 }
 if (CAP_SUM === 0) {
   return { error: 'mmt-team: caps sum to 0 — no agents available to dispatch' }
 }
 
-const RUN = `${root}/scripts/run.sh`
+const RUN = `${root}/src/bin/run.mjs`
 
 const PLAN_SCHEMA = {
   type: 'object',

@@ -17,12 +17,12 @@ Show the routing decision. **Use the Bash tool** to invoke `route.sh`, passing t
 it is untrusted text and must not be parsed by the shell):
 
 ```
-bash "$CLAUDE_PLUGIN_ROOT/scripts/route.sh" --explain <<'MMT_TASK_EOF'
+node "$CLAUDE_PLUGIN_ROOT/src/bin/route.mjs" --explain <<'MMT_TASK_EOF'
 <paste the exact task text here>
 MMT_TASK_EOF
 ```
 
-(Pick a heredoc delimiter that does not appear in the task. `route.sh` reads the task from
+(Pick a heredoc delimiter that does not appear in the task. `route.mjs` reads the task from
 stdin when given no argument; `--explain` prints the breakdown.)
 
 The output shows the task's char count, detected types, the matched route rule, and the
