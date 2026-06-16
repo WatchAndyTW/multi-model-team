@@ -1,6 +1,6 @@
 {
   "name": "multi-model-team",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "type": "module",
   "private": true,
   "description": "Delegates token-heavy, self-contained tasks to local CLI backends (agy/Gemini, codex) chosen by task size and type, with credit-exhaustion fallback to native Claude and a statusline HUD. Node ESM, zero-build, cross-platform (Windows/Linux/macOS).",

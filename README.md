@@ -180,6 +180,11 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
     never the command line.
 - **`/multi-model-team:route-test <task>`** — dry-run the router. Prints the decision
   (chars, detected types, matched rule, `{backend, model, tier}`). No backend call. Tuning tool.
+- **`/multi-model-team:mmt-setup [--enforce] [--sync] [--status]`** — durably enable the proactive
+  hooks. Writes an **external roster** outside the plugin cache (so it survives updates) and wires
+  `MMT_ROSTER` into `~/.claude/settings.json`. `--enforce` hard-blocks CLI-routable spawns; `--sync`
+  refreshes the external roster from the plugin after an update while keeping your `[proactive]`
+  toggles; `--status` inspects. Restart Claude Code after it changes settings.
 
 ### Agents (Claude spawns these on its own for matching work)
 
@@ -312,12 +317,13 @@ src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out for /team (replaces team.sh)
 src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
+src/bin/setup.mjs               /mmt-setup engine: external MMT_ROSTER + settings wiring + --sync
 hooks/proactive-route.mjs       UserPromptSubmit delegation nudge (opt-in)
 hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard — nudge/deny CLI-routable spawns (opt-in)
 hooks/hooks.json                hook registrations (all commands: node <hook>.mjs)
 statusline/statusline.mjs       fork-free HUD line (replaces statusline.sh)
 agents/                         agy, codex (GENERATED)
-commands/                       team, route-test, reasoning
+commands/                       team, route-test, reasoning, mmt-setup
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs                 offline test suite (npm test)
