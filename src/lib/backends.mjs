@@ -15,8 +15,35 @@
 //
 // Zero runtime deps (Node stdlib only). Runs on win32 / linux / darwin.
 
-import { spawn } from 'node:child_process';
+import Module, { createRequire } from 'node:module';
+import { spawn, execSync } from 'node:child_process';
 import * as platform from './platform.mjs';
+
+// node-pty resolution: plugin-local install first, then a GLOBAL `npm install -g node-pty` via the
+// NODE_PATH shim (ensureGlobalNodeModules). createRequire is used instead of ESM import() because
+// NODE_PATH only affects CommonJS require() resolution — this is the same trick oh-my-claudecode uses
+// to resolve native deps (better-sqlite3 / @ast-grep/napi) from global modules without a local install.
+const _require = createRequire(import.meta.url);
+let _globalPathInitialized = false;
+function ensureGlobalNodeModules() {
+  if (_globalPathInitialized) return;
+  _globalPathInitialized = true;
+  try {
+    const root = execSync('npm root -g', { encoding: 'utf8', timeout: 5000 }).trim();
+    if (!root) return;
+    const sep = process.platform === 'win32' ? ';' : ':';
+    const cur = process.env.NODE_PATH || '';
+    if (!cur.split(sep).filter(Boolean).includes(root)) {
+      process.env.NODE_PATH = root + (cur ? sep + cur : '');
+      Module._initPaths();
+    }
+  } catch { /* npm unavailable — node-pty must resolve locally, else the agy lane degrades to fallback */ }
+}
+// Load node-pty: try local resolution, then fall back to the global-modules shim.
+function loadPty() {
+  try { return _require('node-pty'); }
+  catch { ensureGlobalNodeModules(); return _require('node-pty'); }
+}
 
 // agy default bin candidates per-OS (passed to platform.resolveBinary; ~ / $LOCALAPPDATA / $HOME
 // expansion happens there). PROBES.md: win32 path is %LOCALAPPDATA%/agy/bin/agy.exe.
@@ -166,8 +193,14 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData }) {
 // stream (stdout+stderr); clean() strips the terminal control bytes. Wide cols avoid hard-wrapping the
 // answer. Returns { stdout, stderr:'', code } — the same shape runChild resolves.
 async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50 } = {}) {
-  const mod = await import('node-pty');
-  const pty = mod.default || mod;
+  let pty;
+  try {
+    pty = loadPty();
+  } catch (e) {
+    // node-pty not resolvable locally OR globally — return a failure so run.mjs falls back to the
+    // next backend (codex/native), with a helpful install hint carried in the handoff reason.
+    return { stdout: '', stderr: `node-pty unavailable (${(e && e.message) || e}); install with: npm install -g node-pty`, code: 127 };
+  }
   return new Promise((resolve) => {
     let proc;
     try {

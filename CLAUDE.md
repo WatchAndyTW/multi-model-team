@@ -305,10 +305,14 @@ fallback hop.
 ## Conventions & constraints
 
 - **One native dep (`node-pty`), Node stdlib otherwise.** The agy lane needs a real pseudo-terminal
-  (ConPTY/forkpty) so its `isatty` gate emits; that's `node-pty`, lazy-imported in `backends.mjs` so
-  only the agy path requires it. No other runtime deps: no `jq`, no `python3`, no `grep` in hot
-  paths. `state.mjs` writes flat one-field-per-line JSON so `statusline.mjs` can parse it without a
-  real JSON parser (fork-free).
+  (ConPTY/forkpty) so its `isatty` gate emits; that's `node-pty`, loaded lazily in `backends.mjs`
+  (`loadPty`) so only the agy path requires it. Resolution is **local-first, then global**: a plain
+  `require` finds a plugin-local install, else `ensureGlobalNodeModules` prepends `npm root -g` to
+  `NODE_PATH` + `Module._initPaths()` so a `npm install -g node-pty` resolves (require, not ESM
+  import, because NODE_PATH only affects CJS resolution — the oh-my-claudecode native-dep trick). If
+  neither resolves, agy degrades to the codex/native fallback with an install hint. No other runtime
+  deps: no `jq`, no `python3`, no `grep` in hot paths. `state.mjs` writes flat one-field-per-line
+  JSON so `statusline.mjs` can parse it without a real JSON parser (fork-free).
 - **Untrusted task text is injection-unsafe in slash commands.** Claude Code textually pastes
   `$ARGUMENTS` into `!` bash blocks (RCE). `/team` and `/route-test` do NOT inline-exec — they
   instruct Claude to run the binary via the Bash tool, feeding the task on stdin. Keep it that way.

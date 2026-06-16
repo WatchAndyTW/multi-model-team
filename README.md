@@ -65,9 +65,15 @@ spawned via `cmd.exe /d /s /c`. No winpty, no stdin-keepalive pipe needed.
 **Requirements:**
 
 - **Node.js >= 18** (the runtime for all plugin scripts).
-- **`npm install`** — pulls the one native dependency, **`node-pty`** (prebuilt binaries for common
-  Node/OS combos; no toolchain needed in the normal case). This is what lets the agy lane run under a
-  real pseudo-terminal.
+- **`node-pty`** (the one native dependency — gives the agy lane its pseudo-terminal). Resolve it
+  **either** way; the agy invoker tries a plugin-local install first, then a **global** one via a
+  `NODE_PATH` shim (the same trick oh-my-claudecode uses):
+  - **`npm install -g node-pty`** — recommended **one-time** global install. It then resolves across
+    every plugin update with no per-update setup. ← do this once.
+  - or `npm install` inside the plugin folder (local; must be re-run after each update).
+  - Prebuilt binaries cover common Node/OS/arch combos (no toolchain needed in the normal case). If
+    node-pty can't be resolved at all, the agy lane degrades gracefully to the codex/native fallback
+    (with an `install with: npm install -g node-pty` hint in the handoff reason).
 - **agy** — must be installed and pre-authed. Binary auto-resolved from `$MMT_AGY_BIN` → PATH →
   `$LOCALAPPDATA/agy/bin/agy.exe` (Windows) or `~/.local/bin/agy` / `/usr/local/bin/agy` (POSIX).
 - **codex** (optional) — `npm install -g @openai/codex` and log in. If absent or disabled,
