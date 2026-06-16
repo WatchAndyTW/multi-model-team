@@ -33,7 +33,7 @@ const root = A.pluginRoot || ''
 // ---- reasoning config: roles + defaults are configurable, not hardcoded -----
 // Precedence low->high: built-in default < A.reasoningConfig (roster) < top-level A.* (this run).
 const RC = (A.reasoningConfig && typeof A.reasoningConfig === 'object') ? A.reasoningConfig : {}
-const RELAY_MODEL = A.relayModel || RC.relay_model || 'sonnet'        // model the thin relay agents run on
+const RELAY_MODEL = A.relayModel || RC.relay_model || 'haiku'        // model the thin relay agents run on
 const TIER_MODELS = { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', haiku: 'haiku', ...(RC.tier_models || {}) }
 const CAP = clampCap(A.cap ?? RC.cap ?? 6)
 

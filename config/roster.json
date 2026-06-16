@@ -16,7 +16,7 @@
     "max_fix_loops": 1,
     "caps": { "agy": 4, "codex": 2, "native": 2 },
     "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus" },
-    "relay_model": "sonnet"
+    "relay_model": "haiku"
   },
 
   "reasoning": {
@@ -26,7 +26,7 @@
     "synthesizer": "native:opus",
     "cap": 6,
     "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus", "haiku": "haiku" },
-    "relay_model": "sonnet"
+    "relay_model": "haiku"
   },
 
   "backends": {
@@ -38,7 +38,7 @@
       "cmd": "agy",
       "oneshot_flag": "--print",
       "model_flag": "--model",
-      "extra": ["--dangerously-skip-permissions", "--skip-trust", "--print-timeout", "5m"],
+      "extra": ["--dangerously-skip-permissions", "--print-timeout", "5m"],
       "models": { "cheap": "Gemini 3.5 Flash (Low)", "standard": "Gemini 3.1 Pro (Low)" },
       "health": "--version",
       "list_models": "models",

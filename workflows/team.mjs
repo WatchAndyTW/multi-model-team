@@ -36,7 +36,7 @@ const root = A.pluginRoot || ''
 // overrides them, and per-invocation args (in-session override) override the roster. Precedence:
 //   built-in default  <  args.teamConfig (roster)  <  top-level A.* (this invocation).
 const TC = (A.teamConfig && typeof A.teamConfig === 'object') ? A.teamConfig : {}
-const RELAY_MODEL = A.relayModel || TC.relay_model || 'sonnet'          // model the thin relay agents run on
+const RELAY_MODEL = A.relayModel || TC.relay_model || 'haiku'          // model the thin relay agents run on
 const TIER_MODELS = { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', ...(TC.tier_models || {}) }
 
 // Backends are EQUAL, interchangeable tools. Any of them (incl. native Claude) can be assigned to
