@@ -44,6 +44,16 @@ function loadPty() {
   try { return _require('node-pty'); }
   catch { ensureGlobalNodeModules(); return _require('node-pty'); }
 }
+// Whether node-pty is resolvable (local or global). Memoized. Drives the POSIX fallback: on Linux/
+// macOS without node-pty we can still give agy a tty via the dep-free system `script` utility, so
+// node-pty is OPTIONAL there. On Windows node-pty is required (winpty can't allocate a console from a
+// headless parent — see the agy history in CLAUDE.md), with no `script` equivalent.
+let _ptyAvailable = null;
+function ptyAvailable() {
+  if (_ptyAvailable !== null) return _ptyAvailable;
+  try { loadPty(); _ptyAvailable = true; } catch { _ptyAvailable = false; }
+  return _ptyAvailable;
+}
 
 // agy default bin candidates per-OS (passed to platform.resolveBinary; ~ / $LOCALAPPDATA / $HOME
 // expansion happens there). PROBES.md: win32 path is %LOCALAPPDATA%/agy/bin/agy.exe.
@@ -249,11 +259,22 @@ async function invokeGemini(cfg, prompt, opts) {
   args.push(...asArray(field(cfg, 'extra')));
   if (addDir) args.push(addDirFlag, addDir);
 
+  const hardTimeout = timeoutMs(field(cfg, 'hard_timeout'));
   let res;
-  try {
-    res = await runPty(bin, args, { hardTimeout: timeoutMs(field(cfg, 'hard_timeout')) });
-  } catch (e) {
-    res = { stdout: '', stderr: String((e && e.message) || e), code: 127 };
+  if (platform.isWindows() || ptyAvailable()) {
+    // node-pty path: REQUIRED on Windows (ConPTY — winpty can't allocate a console from a headless
+    // parent); PREFERRED on POSIX when present (forkpty, uniform mechanism).
+    try {
+      res = await runPty(bin, args, { hardTimeout });
+    } catch (e) {
+      res = { stdout: '', stderr: String((e && e.message) || e), code: 127 };
+    }
+  } else {
+    // POSIX WITHOUT node-pty: fall back to the dep-free system `script` pty wrapper (platform.ptyWrap
+    // -> `script -qec '…'` on linux / `script -q /dev/null …` on darwin). agy runs under script's pty
+    // so isatty(stdout) is true — no native module needed on Linux/macOS.
+    const wrapped = platform.ptyWrap([bin, ...args], { needTty: field(cfg, 'use_winpty') !== false });
+    res = await runChild(wrapped.argv, { hardTimeout, keepStdinOpen: true });
   }
 
   const cleaned = clean(res.stdout);

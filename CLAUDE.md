@@ -306,7 +306,10 @@ fallback hop.
 
 - **One native dep (`node-pty`), Node stdlib otherwise.** The agy lane needs a real pseudo-terminal
   (ConPTY/forkpty) so its `isatty` gate emits; that's `node-pty`, loaded lazily in `backends.mjs`
-  (`loadPty`) so only the agy path requires it. Resolution is **local-first, then global**: a plain
+  (`loadPty`) so only the agy path requires it. node-pty is **required on Windows** (ConPTY — winpty
+  can't allocate a console headlessly) but **optional on POSIX**: when it's absent there, the agy lane
+  falls back to the dep-free system **`script`** pty wrapper (`platform.ptyWrap`), so Linux/macOS need
+  no native module. Resolution is **local-first, then global**: a plain
   `require` finds a plugin-local install, else `ensureGlobalNodeModules` prepends `npm root -g` to
   `NODE_PATH` + `Module._initPaths()` so a `npm install -g node-pty` resolves (require, not ESM
   import, because NODE_PATH only affects CJS resolution — the oh-my-claudecode native-dep trick). If

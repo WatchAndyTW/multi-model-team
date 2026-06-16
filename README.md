@@ -71,9 +71,11 @@ spawned via `cmd.exe /d /s /c`. No winpty, no stdin-keepalive pipe needed.
   - **`npm install -g node-pty`** — recommended **one-time** global install. It then resolves across
     every plugin update with no per-update setup. ← do this once.
   - or `npm install` inside the plugin folder (local; must be re-run after each update).
-  - Prebuilt binaries cover common Node/OS/arch combos (no toolchain needed in the normal case). If
-    node-pty can't be resolved at all, the agy lane degrades gracefully to the codex/native fallback
-    (with an `install with: npm install -g node-pty` hint in the handoff reason).
+  - Prebuilt binaries cover common Node/OS/arch combos (no toolchain needed in the normal case).
+  - **Required on Windows** (ConPTY; no `script` equivalent). **Optional on Linux/macOS** — if node-pty
+    is absent there, the agy lane falls back to the system **`script`** utility (present on virtually
+    every box), so POSIX needs no native dep. If neither node-pty nor `script` is available, agy
+    degrades gracefully to the codex/native fallback (with an install hint in the handoff reason).
 - **agy** — must be installed and pre-authed. Binary auto-resolved from `$MMT_AGY_BIN` → PATH →
   `$LOCALAPPDATA/agy/bin/agy.exe` (Windows) or `~/.local/bin/agy` / `/usr/local/bin/agy` (POSIX).
 - **codex** (optional) — `npm install -g @openai/codex` and log in. If absent or disabled,
