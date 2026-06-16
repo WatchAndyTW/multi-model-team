@@ -183,12 +183,9 @@ Token totals are **char estimates** (prefixed `~`) — agy emits no usage line.
 
 ### Agents (Claude spawns these on its own for matching work)
 
-- **`delegate`** — standard, verifiable coding + Gemini's edges where the result is compact
-  or easy to verify. Not for RE/systems-hard.
-- **`av-research`** — multimodal (video/audio/image) + grounded web-research / doc
-  summarization. Highest-confidence offload (Claude can't do A/V at all).
-- **`bulk-summarizer`** — pinned to agy's cheap tier; summarize/extract from very large text
-  where a short grounded answer suffices.
+- **`agy`** — standard, verifiable coding + Gemini's edges where the result is compact or easy
+  to verify (UI/CSS/scaffolding/scripts/SQL/regex/configs), plus web-research/doc summarization
+  and bulk text ingestion. Not for RE/systems-hard.
 - **`codex`** — delegate **code review, test-writing, and verification** to the OpenAI Codex
   CLI (`dispatch: forced`): review a diff/file for correctness, bugs, and edge cases; write or
   extend a test suite; or verify an implementation meets its spec. Not for RE/injection/systems-hard.
@@ -204,7 +201,7 @@ you run `/team`. Two opt-in, config-gated hooks make it reach for a backend on i
 
 1. **Prompt nudge — `UserPromptSubmit`** (`hooks/proactive-route.mjs`). On every prompt you
    submit it routes in-process; when the prompt would route to a CLI backend it injects a one-shot
-   reminder nudging Claude to delegate it (the `delegate`/`codex` agent / `/team`) instead of
+   reminder nudging Claude to delegate it (the `agy`/`codex` agent / `/team`) instead of
    solving it inline.
 2. **Spawn guard — `PreToolUse` on `Task`/`Agent`** (`hooks/spawn-route-guard.mjs`). The
    "outside `/team`" enforcer: whenever Claude spawns an agent whose task routes to **agy or
@@ -315,12 +312,11 @@ src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out for /team (replaces team.sh)
 src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
-hooks/heavy-read-guard.mjs      PreToolUse(Read) guard — oversized RE-dump reads
 hooks/proactive-route.mjs       UserPromptSubmit delegation nudge (opt-in)
 hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard — nudge/deny CLI-routable spawns (opt-in)
 hooks/hooks.json                hook registrations (all commands: node <hook>.mjs)
 statusline/statusline.mjs       fork-free HUD line (replaces statusline.sh)
-agents/                         delegate, av-research, bulk-summarizer, codex (GENERATED)
+agents/                         agy, codex (GENERATED)
 commands/                       team, route-test, reasoning
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
@@ -364,5 +360,5 @@ MMT_LIVE=1 npm test             # also run live agy + codex smoke tests (network
 | `MMT_STATE_DIR` / `MMT_STATE_FILE` | HUD state location |
 | `MMT_STDIN_KEEPALIVE_SECS` | how long the open-stdin pipe to agy is held (default 600) |
 | `MMT_PROACTIVE_DISABLE` | `=1` hard-disables both proactive hooks |
-| `MMT_HOOK_DISABLE` / `MMT_HOOK_MAX_BYTES` / `MMT_HOOK_EXTS` | heavy-read hook tuning |
+| `MMT_HOOK_DISABLE` | `=1` hard-disables the plugin hooks |
 | `MMT_HOOK_DEBUG` | `=1` appends firing markers to stateDir/hooks.log |

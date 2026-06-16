@@ -91,18 +91,18 @@ test('plan -> manifest: unknown backend defaults to NATIVE; label sanitized; tie
 test('gen-agents: enabled written, disabled removed, relay body present', () => {
   const d = tmp('gen-');
   const agentsDir = join(d, 'agents');
-  writeRosterVariant(d, 'r.json', (c) => { c.agents['bulk-summarizer'].enabled = false; });
+  writeRosterVariant(d, 'r.json', (c) => { c.agents['codex'].enabled = false; });
   const roster = loadRoster(join(d, 'r.json'));
 
   // Pre-seed a stale file for the disabled agent — it should be removed.
   // (mkdir handled by generateAgents; seed after via fs since dir is created on call.)
   generateAgents(roster, agentsDir); // first pass creates dir + enabled agents
-  writeFileSync(join(agentsDir, 'bulk-summarizer.md'), 'stale', 'utf8');
+  writeFileSync(join(agentsDir, 'codex.md'), 'stale', 'utf8');
   generateAgents(roster, agentsDir); // second pass should remove the stale disabled .md
 
-  assert.equal(existsSync(join(agentsDir, 'delegate.md')), true, 'enabled agent written');
-  assert.equal(existsSync(join(agentsDir, 'bulk-summarizer.md')), false, 'disabled agent removed');
-  const body = readFileSync(join(agentsDir, 'delegate.md'), 'utf8');
+  assert.equal(existsSync(join(agentsDir, 'agy.md')), true, 'enabled agent written');
+  assert.equal(existsSync(join(agentsDir, 'codex.md')), false, 'disabled agent removed');
+  const body = readFileSync(join(agentsDir, 'agy.md'), 'utf8');
   assert.match(body, /run\.mjs/, 'relay body references the run.mjs executor');
 });
 

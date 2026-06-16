@@ -1,38 +1,12 @@
-// hooks.test.mjs — port of the hook unit blocks (heavy-read, proactive, spawn-route guard).
+// hooks.test.mjs — port of the hook unit blocks (proactive, spawn-route guard).
 // Each hook is one node process; we drive it via stdin payloads with a chosen roster.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import {
-  HOOK_HEAVY, HOOK_PROACTIVE, HOOK_SPAWN, ROSTER_PATH,
+  HOOK_PROACTIVE, HOOK_SPAWN, ROSTER_PATH,
   tmp, writeRosterVariant, runNode,
 } from './helpers.mjs';
-
-// ── heavy-read guard (allow / deny) ──────────────────────────────────────────
-test('heavy-read guard: allow small dump / big non-guarded ext, deny big dump', () => {
-  const d = tmp('hr-');
-  const small = join(d, 't_small.dump');
-  const big = join(d, 't_big.dump');
-  const bigTxt = join(d, 't_big.txt');
-  writeFileSync(small, 'x'.repeat(1000));
-  writeFileSync(big, 'x'.repeat(80000));
-  writeFileSync(bigTxt, 'x'.repeat(80000));
-  const payload = (fp) => JSON.stringify({ tool_name: 'Read', tool_input: { file_path: fp } });
-
-  assert.equal(runNode(HOOK_HEAVY, { input: payload(small) }).stdout, '', 'small dump -> allow (silent)');
-  assert.equal(runNode(HOOK_HEAVY, { input: payload(bigTxt) }).stdout, '', 'big .txt -> allow (silent)');
-  assert.match(runNode(HOOK_HEAVY, { input: payload(big) }).stdout, /"permissionDecision":"deny"/, 'big dump -> deny');
-});
-
-test('heavy-read guard: MMT_HOOK_DISABLE=1 -> silent', () => {
-  const d = tmp('hr-dis-');
-  const big = join(d, 't_big.dump');
-  writeFileSync(big, 'x'.repeat(80000));
-  const payload = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: big } });
-  assert.equal(runNode(HOOK_HEAVY, { input: payload, env: { MMT_HOOK_DISABLE: '1' } }).stdout, '');
-});
 
 // ── proactive route (UserPromptSubmit) ───────────────────────────────────────
 test('proactive hook: off->silent, on+agy->nudge, opus/slash/cap/env->silent', () => {
@@ -45,7 +19,7 @@ test('proactive hook: off->silent, on+agy->nudge, opus/slash/cap/env->silent', (
   assert.equal(run(sql, ROSTER_PATH), '', 'disabled -> silent');
   const nudge = run(sql, on);
   assert.match(nudge, /routes to agy/, 'enabled+agy -> nudge');
-  assert.match(nudge, /multi-model-team:delegate/, 'nudge names delegate agent');
+  assert.match(nudge, /multi-model-team:agy/, 'nudge names agy agent');
   assert.equal(run(JSON.stringify({ prompt: 'Reverse engineer the IL2CPP dump and extract protobuf' }), on), '', 'opus task -> silent');
   assert.equal(run(JSON.stringify({ prompt: '/team build a thing' }), on), '', 'slash command -> silent');
   assert.equal(run(sql, cap), '', 'max_chars cap -> silent');
@@ -67,7 +41,7 @@ test('spawn guard: agy nudge / enforce-deny / codex / exemptions', () => {
   const sql = mkspawn('general-purpose', 'write sql', 'Write a SQL query to list all users sorted by signup date');
   const codex = mkspawn('general-purpose', 'review', 'Review this diff for correctness bugs and regressions, then write a regression test suite');
   const nat = mkspawn('general-purpose', 're', 'Reverse engineer the IL2CPP global-metadata and reconstruct protobuf schemas via disassembly');
-  const our = mkspawn('multi-model-team:delegate', 'x', 'Write a SQL query to list all users');
+  const our = mkspawn('multi-model-team:agy', 'x', 'Write a SQL query to list all users');
   const runsh = mkspawn('general-purpose', 'x', 'bash run.sh --decision to dispatch this subtask');
   const worker = mkspawn('general-purpose', 'x', '[mmt-team-worker] Write a SQL query to list all users');
 
@@ -75,7 +49,7 @@ test('spawn guard: agy nudge / enforce-deny / codex / exemptions', () => {
   const nudge = sh(sql, on);
   assert.match(nudge, /"permissionDecision":"allow"/, 'agy task -> allow nudge');
   assert.match(nudge, /routes to agy/, 'nudge names agy');
-  assert.match(nudge, /multi-model-team:delegate/, 'nudge names delegate');
+  assert.match(nudge, /multi-model-team:agy/, 'nudge names agy');
   assert.match(sh(sql, enforce), /"permissionDecision":"deny"/, 'enforce -> deny');
   const cnudge = sh(codex, on);
   assert.match(cnudge, /routes to codex/, 'codex task -> nudge codex');

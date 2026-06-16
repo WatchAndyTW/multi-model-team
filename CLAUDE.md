@@ -112,12 +112,11 @@ src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
 src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
-hooks/heavy-read-guard.mjs      PreToolUse(Read) guard for oversized RE-dump reads
 hooks/proactive-route.mjs       UserPromptSubmit nudge: CLI-routable prompt → suggest delegating
 hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard: nudge/deny CLI-routable agent spawns
 hooks/hooks.json                hook registrations (all commands: `node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`)
 statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
-agents/{delegate,av-research,bulk-summarizer,codex}.md   GENERATED from roster.json (gen-agents.mjs)
+agents/{agy,codex}.md   GENERATED from roster.json (gen-agents.mjs)
 commands/{team,route-test,reasoning}.md   /team = multi-agent fan-out; /route-test = dry-run router; /reasoning = Fusion pipeline
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
@@ -253,7 +252,7 @@ Two nudges (was three — the `Workflow` guard is dropped; it empirically never 
 **(1) Prompt nudge — `hooks/proactive-route.mjs` (UserPromptSubmit).** Runs each submitted prompt
 through the router **in-process** (no fork); if it routes to a CLI backend, injects a one-shot
 reminder (`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
-`multi-model-team:delegate` agent / `/team` instead of solving inline. Never fires for slash
+`multi-model-team:agy` agent / `/team` instead of solving inline. Never fires for slash
 commands or prompts that route to native (judgment/RE/systems).
 
 **(2) Spawn guard — `hooks/spawn-route-guard.mjs` (PreToolUse, matcher `Task|Agent`).** The

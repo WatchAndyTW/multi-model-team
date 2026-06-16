@@ -85,7 +85,7 @@ async function main() {
   if (!ruleAllowed(p.rules, d.rule)) return;
 
   const beDisp = d.backend === 'agy' ? 'agy (Gemini)' : d.backend === 'codex' ? 'codex (Codex)' : d.backend;
-  const beAgent = d.backend === 'codex' ? 'multi-model-team:codex' : 'multi-model-team:delegate';
+  const beAgent = d.backend === 'codex' ? 'multi-model-team:codex' : 'multi-model-team:agy';
   const rule = d.rule || '?';
   const tier = d.tier || '?';
   const runMjs = path.join(root, 'src', 'bin', 'run.mjs');

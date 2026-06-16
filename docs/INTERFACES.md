@@ -160,9 +160,9 @@ no substring gate. This is what fixes the intermittent-firing bug (collapses the
 to a single short-lived node proc, well under any timeout). Kill switches preserved:
 `MMT_PROACTIVE_DISABLE=1`, `MMT_HOOK_DISABLE=1`. Fail-OPEN on any uncertainty.
 
-## `hooks/*.mjs` — `heavy-read-guard` · `proactive-route` · `spawn-route-guard`
+## `hooks/*.mjs` — `proactive-route` · `spawn-route-guard`
 
-Reimplement the three live bash hooks on `hook-common`, same semantics (incl. OMC-aware spawn guard:
+Reimplement the live bash hooks on `hook-common`, same semantics (incl. OMC-aware spawn guard:
 nudge-never-deny for OMC team workers; exempt `multi-model-team:*` + `[mmt-team-worker]` + already-
 routed tasks). The `Workflow` guard is **dropped** (empirically never fires — no `wf-guard.log`); its
 nudge moves into `workflows/team.mjs`. `hooks/hooks.json` commands change to
