@@ -57,7 +57,7 @@ async function main() {
   const tier = d.tier || '?';
   const ctx =
     `multi-model-team: this request routes to agy (Gemini) [rule=${rule}, tier=${tier}]. ` +
-    'If it is a standalone, verifiable task, prefer delegating it — spawn the `multi-model-team:delegate` ' +
+    'If it is a standalone, verifiable task, prefer delegating it — spawn the `multi-model-team:agy` ' +
     'agent (or run `/team`) so it runs on agy and saves Claude tokens — instead of solving it inline. ' +
     'This is a configurable nudge, not a rule: ignore it if the task needs your in-context judgment, ' +
     'codebase awareness, or is part of a larger change you are already making.';

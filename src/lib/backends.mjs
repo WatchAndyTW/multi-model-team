@@ -122,7 +122,7 @@ function winCmdWrap(argv) {
 // the stdin lifecycle. When keepStdinOpen is true the stdin pipe is created but NEVER ended until
 // the child exits — this is the agy "open, idle stdin" requirement (replaces the bash held-open
 // FIFO). When false, stdin is closed immediately (codex: equivalent to </dev/null).
-function runChild(argv, { hardTimeout, keepStdinOpen, stdinData }) {
+function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env }) {
   return new Promise((resolve) => {
     const [cmd, ...args] = winCmdWrap(argv);
     let child;
@@ -130,6 +130,7 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData }) {
       child = spawn(cmd, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        env: env ? { ...process.env, ...env } : process.env,
       });
     } catch (err) {
       resolve({ stdout: '', stderr: String(err && err.message ? err.message : err), code: 127, spawnError: true });
@@ -202,7 +203,7 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData }) {
 // quota) still loads if the native module is missing; only the agy lane needs it. A pty is ONE merged
 // stream (stdout+stderr); clean() strips the terminal control bytes. Wide cols avoid hard-wrapping the
 // answer. Returns { stdout, stderr:'', code } — the same shape runChild resolves.
-async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50 } = {}) {
+async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50, env } = {}) {
   let pty;
   try {
     pty = loadPty();
@@ -214,7 +215,7 @@ async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, row
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, cwd: process.cwd(), env: process.env });
+      proc = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, cwd: process.cwd(), env: env ? { ...process.env, ...env } : process.env });
     } catch (e) {
       resolve({ stdout: '', stderr: String((e && e.message) || e), code: 127 });
       return;
@@ -259,13 +260,20 @@ async function invokeGemini(cfg, prompt, opts) {
   args.push(...asArray(field(cfg, 'extra')));
   if (addDir) args.push(addDirFlag, addDir);
 
+  // agy (Gemini CLI) refuses to run in an untrusted directory unless the workspace is trusted. In a
+  // headless/print run there is no interactive trust prompt, so without this it exits non-zero with
+  // no output. The CLI has NO `--skip-trust` flag (that errors "flag not defined"); the supported
+  // knob is the GEMINI_CLI_TRUST_WORKSPACE env var. Default it to "true" but let an explicit caller
+  // env override stand.
+  const trustEnv = { GEMINI_CLI_TRUST_WORKSPACE: process.env.GEMINI_CLI_TRUST_WORKSPACE || 'true' };
+
   const hardTimeout = timeoutMs(field(cfg, 'hard_timeout'));
   let res;
   if (platform.isWindows() || ptyAvailable()) {
     // node-pty path: REQUIRED on Windows (ConPTY — winpty can't allocate a console from a headless
     // parent); PREFERRED on POSIX when present (forkpty, uniform mechanism).
     try {
-      res = await runPty(bin, args, { hardTimeout });
+      res = await runPty(bin, args, { hardTimeout, env: trustEnv });
     } catch (e) {
       res = { stdout: '', stderr: String((e && e.message) || e), code: 127 };
     }
@@ -274,7 +282,7 @@ async function invokeGemini(cfg, prompt, opts) {
     // -> `script -qec '…'` on linux / `script -q /dev/null …` on darwin). agy runs under script's pty
     // so isatty(stdout) is true — no native module needed on Linux/macOS.
     const wrapped = platform.ptyWrap([bin, ...args], { needTty: field(cfg, 'use_winpty') !== false });
-    res = await runChild(wrapped.argv, { hardTimeout, keepStdinOpen: true });
+    res = await runChild(wrapped.argv, { hardTimeout, keepStdinOpen: true, env: trustEnv });
   }
 
   const cleaned = clean(res.stdout);

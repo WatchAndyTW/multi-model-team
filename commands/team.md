@@ -120,7 +120,10 @@ alone. There are two worker kinds:
 - **CLI backend (agy / codex) → a FAITHFUL RELAY agent.** It does NOT solve the task; it runs our one
   dispatch command and returns the CLI's output verbatim (this is the no-dress-up contract — a
   `gemini:`/`codex:` result must come from that CLI, not from Claude). Spawn a Bash-capable agent
-  (e.g. `subagent_type: "general-purpose"`) with this prompt — substitute the real plugin root for
+  (`subagent_type: "general-purpose"`, and **set `model` to the `relay_model` from step 1.5 — `haiku`
+  by default**). A relay does ZERO reasoning (one Bash call, return stdout verbatim), so it must be
+  pinned to the cheap relay model — do NOT let it inherit the orchestrator's model (e.g. Opus), or
+  you pay Opus rates to shell out to a CLI. Use this prompt — substitute the real plugin root for
   `<PLUGIN_ROOT>`, the subtask's `<BE>` (agy|codex) and `<TIER>`, the subtask text, and any upstream
   dep results:
 

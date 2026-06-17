@@ -20,7 +20,7 @@ export const ROSTER = loadRoster(ROSTER_PATH);
 
 export const BIN_ROUTE = join(ROOT, 'src', 'bin', 'route.mjs');
 export const BIN_RUN = join(ROOT, 'src', 'bin', 'run.mjs');
-export const HOOK_HEAVY = join(ROOT, 'hooks', 'heavy-read-guard.mjs');
+export const BIN_SETUP = join(ROOT, 'src', 'bin', 'setup.mjs');
 export const HOOK_PROACTIVE = join(ROOT, 'hooks', 'proactive-route.mjs');
 export const HOOK_SPAWN = join(ROOT, 'hooks', 'spawn-route-guard.mjs');
 export const HOOK_FANOUT = join(ROOT, 'hooks', 'command-fanout-guard.mjs');
