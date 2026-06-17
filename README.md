@@ -41,7 +41,12 @@ three and fuses the answers.
 ```bash
 npm install -g node-pty       # the one native dep — gives agy a pseudo-terminal (see note below)
 npm install -g @openai/codex  # then: codex login
-# agy (Gemini CLI): install + authenticate per its own docs
+
+# Windows Powershell
+irm https://antigravity.google/cli/install.ps1 | iex         # then: agy login
+
+# macOS / Linux
+curl -fsSL https://antigravity.google/cli/install.sh | bash  # then: agy login
 ```
 
 **2 · Add the plugin.** This repo *is* the plugin — point Claude Code at it as a local plugin (local
@@ -56,10 +61,10 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 ```
 /reasoning  2:gemini,opus,codex   What's the best caching strategy for a read-heavy API?
 /team       3:gemini,1:codex      Build a REST CRUD service with tests
-/route-test                        Write a SQL query to list users by signup date   ← dry-run, no call
+/route-test                       Write a SQL query to list users by signup date   ← dry-run, no call
 ```
 
-…or just work normally and let Claude reach for the `delegate` / `codex` agents on its own.
+…or just work normally and let Claude reach for the `agy` / `codex` agents on its own.
 
 ---
 
@@ -68,7 +73,7 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 | Command | What it does |
 |---|---|
 | **`/reasoning [panel] <question>`** | **Fusion pipeline.** Fan one question across a panel of models in parallel → a judge compares them (consensus / contradictions / unique insights / blind spots) → synthesize one unified answer better than any single model's. |
-| **`/team [N:gemini,M:claude] <task>`** | **Team pipeline.** Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. |
+| **`/team [N:gemini,M:claude,X:codex] <task>`** | **Team pipeline.** Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. |
 | **`/route-test <task>`** | Dry-run the router: prints `{backend, model, tier}`, detected types, matched rule. No backend call — a tuning tool. |
 
 Both `/team` and `/reasoning` have **two engines**: an **Ultracode** deterministic Workflow path
@@ -79,9 +84,7 @@ work runs across parallel agents — never one inline session.
 
 | Agent | Use for | Backend |
 |---|---|---|
-| **`delegate`** | Standard, verifiable coding + Gemini's edges (compact/checkable results) | agy |
-| **`av-research`** | Video / audio / image + grounded web research & doc summary | agy |
-| **`bulk-summarizer`** | Summarize/extract from very large text (short grounded answer) | agy (cheap) |
+| **`agy`** | Standard, verifiable coding + Gemini's edges (compact/checkable results) | agy |
 | **`codex`** | Code review, test-writing, verification | codex |
 
 There is intentionally **no RE/injection agent** — that work stays **native by default**. An explicit
@@ -224,9 +227,9 @@ prefers a PATHEXT match (`codex.cmd`) over the extensionless shim. No pty needed
 - **Node.js ≥ 18** — runtime for all plugin scripts.
 - **`node-pty`** — the one native dep (agy's pseudo-terminal). Prebuilt binaries cover common
   Node/OS/arch combos. Required on Windows; optional on POSIX (see note above).
-- **agy** (Gemini CLI) — installed and pre-authed. Auto-resolved from `$MMT_AGY_BIN` → PATH →
+- **agy** (Antigravity CLI, optional) — installed and pre-authed. Auto-resolved from `$MMT_AGY_BIN` → PATH →
   `$LOCALAPPDATA/agy/bin/agy.exe` (Windows) or `~/.local/bin/agy` / `/usr/local/bin/agy` (POSIX).
-- **codex** (optional) — `npm install -g @openai/codex` + login. If absent, tasks fall through the chain.
+- **codex** (Codex CLI, optional) — `npm install -g @openai/codex` + login. If absent, tasks fall through the chain.
 
 Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows. Linux/macOS paths are
 wired up but not yet exercised on a real POSIX box.
@@ -260,7 +263,7 @@ hooks/spawn-route-guard.mjs  PreToolUse(Task|Agent) guard — CLI-routable spawn
 hooks/command-fanout-guard.mjs  UserPromptSubmit guard — forces /reasoning & /team into the engine
 hooks/hooks.json             hook registrations
 statusline/statusline.mjs    fork-free HUD line
-agents/                      delegate, av-research, bulk-summarizer, codex (GENERATED)
+agents/                      agy, codex (GENERATED)
 commands/                    reasoning, team, route-test
 workflows/team.mjs           Ultracode team workflow
 workflows/reasoning.mjs      Ultracode Fusion workflow: Panel → Judge → Synthesize
