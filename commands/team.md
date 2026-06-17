@@ -10,6 +10,14 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 
 **Raw input:** $ARGUMENTS
 
+> **MANDATORY engine path.** `/team` is not a prompt-only request. Before answering, parse any cap
+> spec, load the team config with the Bash command in step 1.5, then run the deterministic team
+> engine: use the Workflow tool path if available, otherwise use the scripted `team.mjs` path or
+> explicit faithful-relay `Task` subtasks. Do **not** solve with Claude's native analysis or with
+> plain native `Task` agents in place of CLI subtasks. Every `gemini`/`codex` subtask must actually
+> run through `node src/bin/run.mjs --decision '{...,"native":false}'`; a `gemini:`/`codex:` result
+> must come from that CLI, never from Claude dressing up an answer under that label.
+
 Orchestrate the input above as a multi-model team — a staged **plan → exec → verify → fix**
 pipeline built for **our model dispatching**: the "provider per role" is **native Claude** for
 planning/synthesis, **agy (Gemini)** for commodity subtask dispatch, and **codex** for verifying
@@ -47,7 +55,7 @@ The pipeline's roles are **config-driven**, not hardcoded. Read the merged team 
 `team` over built-in defaults) — this never touches the task text, so it's safe to run plainly:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" "${CLAUDE_PLUGIN_ROOT}/config/roster.json" team-config
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" team-config
 ```
 
 → `{ dispatch_backends, verifier, verify, max_fix_loops, caps, tier_models, relay_model }` — the

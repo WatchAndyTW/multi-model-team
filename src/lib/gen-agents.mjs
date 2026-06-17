@@ -204,6 +204,7 @@ export function generateAgents(roster, agentsDir) {
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { loadRoster } from './config.mjs';
+import { resolveRosterPath } from './platform.mjs';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -214,7 +215,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log('Usage: node src/lib/gen-agents.mjs [agentsDir]\n  Regenerates agents/*.md from config/roster.json (MMT_ROSTER overrides).\n  agentsDir defaults to <repo>/agents.');
     process.exit(0);
   }
-  const rosterPath = process.env.MMT_ROSTER || join(root, 'config', 'roster.json');
+  const rosterPath = resolveRosterPath(root);
   const agentsDir = (arg && !arg.startsWith('-')) ? arg : join(root, 'agents');
   const { wrote, removed, skipped } = generateAgents(loadRoster(rosterPath), agentsDir);
   console.log(

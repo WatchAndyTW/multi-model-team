@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { dirname, resolve, join } from 'path';
 import { readFileSync } from 'fs';
 import { decide } from '../lib/router.mjs';
+import { resolveRosterPath } from '../lib/platform.mjs';
 
 // Resolve project root from this file's location (src/bin/route.mjs -> root).
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +20,9 @@ const args = process.argv.slice(2);
 let preset = '';
 let explain = false;
 let tagsPath = process.env.MMT_TAGS || join(MMT_ROOT, 'config', 'tags.txt');
-let rosterPath = process.env.MMT_ROSTER || join(MMT_ROOT, 'config', 'roster.json');
+// Default via shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json (if present) > plugin default.
+// An explicit --roster flag (below) still overrides this.
+let rosterPath = resolveRosterPath(MMT_ROOT);
 let taskParts = [];
 
 for (let i = 0; i < args.length; i++) {

@@ -6,6 +6,8 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { resolveRosterPath } from './platform.mjs';
 
 // ─── team defaults (mirrors TEAM_DEFAULTS in config.py) ──────────────────────
 const TEAM_DEFAULTS = {
@@ -235,12 +237,26 @@ function _int(value, defaultVal = 0) {
 
 // ─── CLI entry ────────────────────────────────────────────────────────────────
 
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [,, rosterPath, mode] = process.argv;
+  // Two arg forms:
+  //   node config.mjs <mode>              -> roster via shared resolver ($MMT_ROSTER >
+  //                                          ~/.claude/mmt-roster.json > plugin default)
+  //   node config.mjs <rosterPath> <mode> -> explicit roster path (back-compat; tests use this)
+  const KNOWN_MODES = new Set(['team-config', 'reasoning-config']);
+  const rest = process.argv.slice(2);
+  let rosterPath;
+  let mode;
+  if (rest.length === 1 && KNOWN_MODES.has(rest[0])) {
+    mode = rest[0];
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    rosterPath = resolveRosterPath(root);
+  } else {
+    [rosterPath, mode] = rest;
+  }
   if (!rosterPath || !mode) {
-    process.stderr.write('Usage: node config.mjs <rosterPath> <mode>\n');
+    process.stderr.write('Usage: node config.mjs [<rosterPath>] <mode>\n');
     process.exit(2);
   }
   let roster;

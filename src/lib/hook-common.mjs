@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { proactive as rosterProactive } from './config.mjs';
 import { decide } from './router.mjs';
-import { stateDir } from './platform.mjs';
+import { stateDir, resolveRosterPath } from './platform.mjs';
 
 // Bound on the stdin payload we will buffer (defensive — a hook payload is tiny; refuse a runaway).
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024; // ~2 MB
@@ -183,7 +183,8 @@ export function proactiveDisabled() {
  * @returns {string}
  */
 export function rosterPath(pluginRoot) {
-  return process.env.MMT_ROSTER || path.join(pluginRoot, 'config', 'roster.json');
+  // Delegate to the shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json (if present) > plugin default.
+  return resolveRosterPath(pluginRoot);
 }
 
 /**

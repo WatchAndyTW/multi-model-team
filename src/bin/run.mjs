@@ -17,6 +17,7 @@ import { loadRoster, defaults, backend } from '../lib/config.mjs';
 import { decide } from '../lib/router.mjs';
 import { invoke, health, clean } from '../lib/backends.mjs';
 import * as state from '../lib/state.mjs';
+import { resolveRosterPath } from '../lib/platform.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MMT_ROOT = path.resolve(__dirname, '..', '..');
@@ -26,7 +27,7 @@ const COMPACT_PROMPT = (task) => `${COMPACT_CONTRACT}\n\n${task}`;
 
 // ---- arg parsing -----------------------------------------------------------
 function parseArgs(argv) {
-  const o = { preset: '', tags: '', roster: '', decision: '', sandbox: false, addDir: '', task: '' };
+  const o = { preset: '', tags: '', roster: '', decision: '', decisionB64: '', taskB64: '', sandbox: false, addDir: '', task: '' };
   let i = 0;
   const positional = [];
   while (i < argv.length) {
@@ -36,13 +37,20 @@ function parseArgs(argv) {
     const inlineVal = a.startsWith('--') && eq > -1 ? a.slice(eq + 1) : null;
     const next = () => (inlineVal !== null ? inlineVal : argv[++i]);
     switch (flag) {
-      case '--preset':   o.preset = next() ?? ''; break;
-      case '--tags':     o.tags = next() ?? ''; break;
-      case '--roster':   o.roster = next() ?? ''; break;
-      case '--decision': o.decision = next() ?? ''; break;
-      case '--add-dir':  o.addDir = next() ?? ''; break;
-      case '--sandbox':  o.sandbox = true; break;
-      case '--':         positional.push(...argv.slice(i + 1)); i = argv.length; break;
+      case '--preset':       o.preset = next() ?? ''; break;
+      case '--tags':         o.tags = next() ?? ''; break;
+      case '--roster':       o.roster = next() ?? ''; break;
+      case '--decision':     o.decision = next() ?? ''; break;
+      // base64url transports (shell-agnostic): the Workflow relay can't safely put a heredoc or a
+      // single-quoted JSON arg on a command line that may run in PowerShell — both mangle. b64url is
+      // [A-Za-z0-9_-] only, so the token survives verbatim in BOTH PowerShell and bash (and avoids
+      // the MSYS argv path-conversion that a literal '/' in standard base64 triggers). Decoded here in
+      // Node, never by a shell — so the untrusted payload never appears as parseable shell text.
+      case '--decision-b64': o.decisionB64 = next() ?? ''; break;
+      case '--task-b64':     o.taskB64 = next() ?? ''; break;
+      case '--add-dir':      o.addDir = next() ?? ''; break;
+      case '--sandbox':      o.sandbox = true; break;
+      case '--':             positional.push(...argv.slice(i + 1)); i = argv.length; break;
       default:
         if (a.startsWith('-')) { process.stderr.write(`run.mjs: unknown flag: ${a}\n`); process.exit(2); }
         positional.push(...argv.slice(i)); i = argv.length; break;
@@ -51,6 +59,21 @@ function parseArgs(argv) {
   }
   if (positional.length) o.task = positional.join(' ');
   return o;
+}
+
+// Decode a base64url arg to UTF-8 (Node Buffer is guaranteed here, unlike the Workflow sandbox).
+// Validates the alphabet ([A-Za-z0-9_-], optional, no '+'/'/'/'='), restores standard base64 +
+// padding, then decodes. Invalid input exits 2 (a corrupt transport must fail loudly, not silently
+// dispatch garbage to a backend).
+function decodeB64UrlArg(v, flag) {
+  const s = String(v ?? '').trim();
+  if (!/^[A-Za-z0-9_-]*$/.test(s) || s.length % 4 === 1) {
+    process.stderr.write(`run.mjs: invalid ${flag}\n`);
+    process.exit(2);
+  }
+  const std = s.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = std + '='.repeat((4 - (std.length % 4)) % 4);
+  return Buffer.from(padded, 'base64').toString('utf8');
 }
 
 async function readStdin() {
@@ -92,11 +115,12 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
   let task = opts.task;
+  if (!task && opts.taskB64) task = decodeB64UrlArg(opts.taskB64, '--task-b64');
   if (!task) task = (await readStdin()).trim();
   if (!task) { process.stderr.write('run.mjs: no task text\n'); process.exit(2); }
 
-  const rosterPath =
-    opts.roster || process.env.MMT_ROSTER || path.join(MMT_ROOT, 'config', 'roster.json');
+  // --roster flag wins; else shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json > plugin default.
+  const rosterPath = opts.roster || resolveRosterPath(MMT_ROOT);
   const tagsPath = opts.tags || path.join(MMT_ROOT, 'config', 'tags.txt');
 
   let roster;
@@ -111,9 +135,11 @@ async function main() {
   // ---- 1. Decision -----------------------------------------------------------
   // Safe native defaults survive any decision failure (fail closed — never fall open to agy).
   let decision = { backend: 'native', model: 'native:sonnet', tier: 'sonnet', rule: 'catch-all-safe', native: true };
-  if (opts.decision) {
+  // --decision-b64 (shell-agnostic) wins over --decision; either supplies the forced decision JSON.
+  const forcedDecision = opts.decisionB64 ? decodeB64UrlArg(opts.decisionB64, '--decision-b64') : opts.decision;
+  if (forcedDecision) {
     try {
-      const d = JSON.parse(opts.decision);
+      const d = JSON.parse(forcedDecision);
       decision = {
         backend: d.backend || 'native',
         model: d.model || 'native:sonnet',

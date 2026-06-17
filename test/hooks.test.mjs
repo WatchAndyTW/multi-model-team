@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  HOOK_HEAVY, HOOK_PROACTIVE, HOOK_SPAWN, ROSTER_PATH,
+  HOOK_HEAVY, HOOK_PROACTIVE, HOOK_SPAWN, HOOK_FANOUT, ROSTER_PATH,
   tmp, writeRosterVariant, runNode,
 } from './helpers.mjs';
 
@@ -86,6 +86,44 @@ test('spawn guard: agy nudge / enforce-deny / codex / exemptions', () => {
   assert.equal(sh(worker, on), '', 'team-worker tag -> silent');
   assert.equal(sh(sql, guardoff), '', 'guard_spawns=false -> silent');
   assert.equal(sh(sql, on, { MMT_PROACTIVE_DISABLE: '1' }), '', 'env DISABLE -> silent');
+});
+
+// ── command fan-out guard (UserPromptSubmit: /reasoning, /team) ──────────────
+test('command fan-out guard: fires on /reasoning & /team (bare + namespaced), silent otherwise', () => {
+  const run = (prompt, env = {}) =>
+    runNode(HOOK_FANOUT, { input: JSON.stringify({ prompt }), env }).stdout;
+
+  // /reasoning -> reasoning directive injected.
+  const r = run('/reasoning what is the best caching strategy?');
+  assert.match(r, /"hookEventName":"UserPromptSubmit"/, '/reasoning -> UserPromptSubmit context');
+  assert.match(r, /\/reasoning MANDATORY ENGINE PATH/, '/reasoning -> reasoning directive');
+  assert.match(r, /run\.mjs --decision/, 'directive requires the run.mjs relay');
+  assert.match(r, /native.{0,3}:.{0,3}false/, 'directive requires native:false on the relay decision');
+  assert.match(r, /No dress-up contract/, 'directive states the no-dress-up contract');
+
+  // namespaced /multi-model-team:reasoning -> same.
+  assert.match(run('/multi-model-team:reasoning compare X and Y'), /\/reasoning MANDATORY ENGINE PATH/, 'namespaced reasoning -> directive');
+
+  // /team -> team directive.
+  const t = run('/team codex:3 build the thing');
+  assert.match(t, /\/team MANDATORY ENGINE PATH/, '/team -> team directive');
+  assert.match(run('/multi-model-team:team 2:gemini do it'), /\/team MANDATORY ENGINE PATH/, 'namespaced team -> directive');
+
+  // The prompt text is NEVER echoed back (injection hygiene).
+  assert.doesNotMatch(r, /caching strategy/, 'prompt text not echoed into directive');
+
+  // Non-matching prompts -> silent.
+  assert.equal(run('just a normal question about caching'), '', 'plain prompt -> silent');
+  assert.equal(run('/teammate roster please'), '', '/teammate (longer word) -> silent');
+  assert.equal(run('/oh-my-claudecode:team do a thing'), '', "another plugin's /team -> silent");
+  assert.equal(run('/reasoningx foo'), '', '/reasoningx (longer word) -> silent');
+
+  // Kill switches -> silent.
+  assert.equal(run('/reasoning x', { MMT_HOOK_DISABLE: '1' }), '', 'MMT_HOOK_DISABLE -> silent');
+  assert.equal(run('/reasoning x', { MMT_COMMAND_GUARD_DISABLE: '1' }), '', 'MMT_COMMAND_GUARD_DISABLE -> silent');
+
+  // NOT gated on proactive.enabled: fires even with the default roster (proactive off).
+  assert.match(run('/reasoning x', { MMT_ROSTER: ROSTER_PATH }), /MANDATORY ENGINE PATH/, 'fires regardless of proactive.enabled');
 });
 
 test('spawn guard: OMC team worker is nudged-never-denied (even under enforce)', () => {

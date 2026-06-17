@@ -34,6 +34,30 @@ export function stateDir() {
   return path.join(homeDir(), '.cache', 'mmt');
 }
 
+// Resolve the roster.json the whole plugin should read, with a USER-LEVEL OVERRIDE.
+// Precedence (highest first):
+//   1. $MMT_ROSTER            — explicit env override (tests, power users); used verbatim.
+//   2. ~/.claude/mmt-roster.json  — the user's personal roster, if it exists. This is the
+//      "setup is correct" path: a user drops their tuned config here and every entry point picks
+//      it up automatically, instead of editing the (cache-managed, upgrade-clobbered) plugin copy.
+//   3. <pluginRoot>/config/roster.json  — the shipped default, used when neither above is present.
+// `pluginRoot` is required for the fallback; pass the directory that contains config/roster.json
+// (each caller already knows its own root). The user file is honored ONLY when it actually exists,
+// so an absent ~/.claude/mmt-roster.json transparently falls through to the shipped default.
+const USER_ROSTER_REL = ['.claude', 'mmt-roster.json'];
+
+export function userRosterPath() {
+  return path.join(homeDir(), ...USER_ROSTER_REL);
+}
+
+export function resolveRosterPath(pluginRoot) {
+  const env = process.env.MMT_ROSTER;
+  if (env && env.trim()) return env;
+  const user = userRosterPath();
+  if (isUsableFile(user)) return user;
+  return path.join(pluginRoot, 'config', 'roster.json');
+}
+
 // Expand a leading ~ and embedded $LOCALAPPDATA / $HOME tokens in a candidate path.
 function expandCandidate(c) {
   if (!c) return c;

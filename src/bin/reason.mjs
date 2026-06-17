@@ -24,6 +24,7 @@
 import { spawn }                    from 'node:child_process';
 import { dirname, resolve }         from 'node:path';
 import { fileURLToPath }            from 'node:url';
+import { resolveRosterPath }        from '../lib/platform.mjs';
 
 // ─── locate self ─────────────────────────────────────────────────────────────
 
@@ -140,9 +141,8 @@ async function resolvePanel() {
 // Load the roster reasoning config (default panel + cap) for the convenience paths.
 async function loadReasoningConfig() {
   const cfgMod = await import('../lib/config.mjs');
-  const rosterPath =
-    process.env.MMT_ROSTER ||
-    resolve(__dirname, '..', '..', 'config', 'roster.json');
+  // Shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json (if present) > plugin default.
+  const rosterPath = resolveRosterPath(resolve(__dirname, '..', '..'));
   const roster = cfgMod.loadRoster(rosterPath);
   return cfgMod.reasoningConfig(roster);
 }

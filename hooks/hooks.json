@@ -29,6 +29,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/proactive-route.mjs\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-fanout-guard.mjs\"",
+            "timeout": 10
           }
         ]
       }

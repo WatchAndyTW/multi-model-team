@@ -10,6 +10,14 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 
 **Raw input:** $ARGUMENTS
 
+> **MANDATORY engine path.** `/reasoning` is not a prompt-only request. Before answering, first
+> load the reasoning config with the Bash command in step 1, then run the deterministic Fusion
+> engine: use the Workflow tool path if available, otherwise use the scripted `reason.mjs` path or
+> explicit faithful-relay `Task` panelists. Do **not** answer with Claude's native analysis or with
+> plain native `Task` agents in place of CLI panelists. Every `gemini`/`codex` panelist must actually
+> run through `node src/bin/run.mjs --decision '{...,"native":false}'`; a `gemini:`/`codex:` result
+> must come from that CLI, never from Claude dressing up an answer under that label.
+
 Fan the question out to every panelist **in parallel**, judge the results into structured
 analysis, then synthesize a single unified answer that folds in the best of each model.
 
@@ -29,7 +37,7 @@ over built-in defaults) **first** — this gives you the user's configured panel
 cap, and tier_models. This never touches the question text, so it is safe to run plainly:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" "${CLAUDE_PLUGIN_ROOT}/config/roster.json" reasoning-config
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" reasoning-config
 ```
 
 → `{ panel, judge, synthesizer, cap, tier_models, relay_model }` — the **user's configured defaults**.

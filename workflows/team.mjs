@@ -18,8 +18,8 @@ export const meta = {
 // Determinism: this script runs under the Workflow runtime, which forbids
 // Date/random APIs (they break resume). Nothing here uses them. Vary-by-index is
 // used wherever uniqueness is needed.
-// Injection-safety: agy subtasks ride to run.sh on a single-quoted heredoc, so the
-// (untrusted) subtask text is inert data and never parsed by a shell.
+// Injection-safety: agy subtasks ride to run.mjs as base64url args (--task-b64/--decision-b64),
+// so the (untrusted) subtask text is inert data, decoded only in Node and never parsed by a shell.
 // =============================================================================
 
 // ---- inputs (from Workflow args) -------------------------------------------
@@ -72,6 +72,49 @@ const VERIFIER = A.verifier || (A.codexVerify === false ? 'native' : (TC.verifie
 
 // Human/CLI name for the progress tree: agy is the Gemini CLI; every other backend shows as-is.
 function backendLabel(b) { return b === 'agy' ? 'gemini' : String(b || '') }
+
+// ---- shell-agnostic base64url encoder (the relay-scripting fix) -------------
+// The relay sub-agent may run its one command in EITHER PowerShell or bash. A POSIX heredoc and a
+// single-quoted '{...}' JSON arg both break under PowerShell (heredoc = parse error; the quotes get
+// stripped/mangled), so the CLI silently never dispatched. We instead carry the payload + decision
+// as base64url args ([A-Za-z0-9_-] only) — inert in EVERY shell, no quoting of untrusted text, and
+// '/'-free so MSYS/Git Bash argv path-conversion can't corrupt them. run.mjs decodes with Buffer.
+// Buffer is NOT guaranteed in the Workflow sandbox, so this encoder is pure JS (standard built-ins
+// only; no Buffer, no Date/random) — deterministic, resume-safe.
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+function utf8Bytes(s) {
+  s = String(s ?? '')
+  const out = []
+  for (let i = 0; i < s.length; i++) {
+    let cp = s.charCodeAt(i)
+    if (cp >= 0xd800 && cp <= 0xdbff) {
+      const lo = i + 1 < s.length ? s.charCodeAt(i + 1) : 0
+      if (lo >= 0xdc00 && lo <= 0xdfff) { cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00); i++ }
+      else cp = 0xfffd
+    } else if (cp >= 0xdc00 && cp <= 0xdfff) { cp = 0xfffd }
+    if (cp < 0x80) out.push(cp)
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 63))
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63))
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63))
+  }
+  return out
+}
+function b64url(s) {
+  const bytes = utf8Bytes(s)
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i]; const b = bytes[i + 1]; const c = bytes[i + 2]
+    out += B64_ALPHABET[a >> 2]
+    out += B64_ALPHABET[((a & 3) << 4) | ((b ?? 0) >> 4)]
+    out += i + 1 < bytes.length ? B64_ALPHABET[((b & 15) << 2) | ((c ?? 0) >> 6)] : '='
+    out += i + 2 < bytes.length ? B64_ALPHABET[c & 63] : '='
+  }
+  return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+// Windows CreateProcess caps a command line near 32767 chars; base64 inflates ~33%. Guard the
+// encoded command length and fall back to a VISIBLE native agent for an oversized payload rather
+// than spawn a relay whose command line would be truncated (which would silently misdispatch).
+const MAX_RELAY_ARG_CHARS = 28000
 
 if (!task || !String(task).trim()) {
   return { error: 'mmt-team: no task provided in args.task' }
@@ -236,14 +279,27 @@ function tierModel(tier) {
 // parameters, never hardcoded). Label is prefixed with the CLI name; the pipe is cheap (RELAY_MODEL).
 function dispatchRelay(backend, text, tier, rule, label, ph) {
   const be = backendLabel(backend)
+  // Build the ONE relay command as shell-agnostic base64url args (no heredoc, no quoted JSON, no
+  // untrusted text on the command line). Works verbatim whether the relay sub-agent runs it in
+  // PowerShell or bash. run.mjs decodes --task-b64 / --decision-b64 in Node.
+  const decisionB64 = b64url(JSON.stringify({ backend, model: '', tier, rule, native: false }))
+  const taskB64 = b64url(text)
+  const command = `node ${JSON.stringify(RUN)} --decision-b64=${decisionB64} --task-b64=${taskB64}`
+
+  // Oversize guard: a payload too big to fit the command line can't be relayed without truncation.
+  // Signal the caller to do a VISIBLE native fallback (same contract as a CLI-unavailable result),
+  // never spawn a relay that would silently misdispatch.
+  if (command.length > MAX_RELAY_ARG_CHARS) {
+    log(`relay payload for "${label}" too large to dispatch on ${be} (${command.length} > ${MAX_RELAY_ARG_CHARS} chars) — visible native fallback`)
+    return Promise.resolve({ stdout: '', backend_ran: false })
+  }
+
   return agent(
 `You are a PURE RELAY PIPE for the ${be} backend — NOT a problem solver. Run ONE command, report its output, stop. Do NOT read files, browse, reason about, or answer the payload yourself; you have no opinion on its content and must never put your own answer in the output.
 
-Run EXACTLY this with the Bash tool and nothing else (the payload rides in on a single-quoted heredoc — inert data, never parsed by the shell; if it contains the line MMT_SUB_EOF, change the delimiter):
+Run EXACTLY this with the Bash tool and nothing else. It is a single self-contained line — the payload and the routing decision are carried as base64url arguments (inert data, safe in any shell, never parsed). Do NOT modify, decode, or "fix" the arguments:
 
-node ${JSON.stringify(RUN)} --decision '{"backend":"${backend}","model":"","tier":"${tier}","rule":"${rule}","native":false}' <<'MMT_SUB_EOF'
-${text}
-MMT_SUB_EOF
+${command}
 
 Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL, schema: RELAY_SCHEMA }
@@ -327,8 +383,8 @@ async function verifyResult(s, result) {
 
   if (VERIFIER !== 'native') {
     // Drive the verifier CLI through the faithful pipe, then parse ITS verdict deterministically. The
-    // review brief rides to run.sh on a single-quoted heredoc — the (untrusted) subtask + result text
-    // is inert data, never parsed by a shell. rule "team-verify" forces the verifier backend.
+    // review brief rides to run.mjs as a base64url arg — the (untrusted) subtask + result text is
+    // inert data, decoded only in Node, never parsed by a shell. rule "team-verify" forces the verifier.
     const vb = backendLabel(VERIFIER)
     const brief =
 `You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
