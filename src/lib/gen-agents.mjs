@@ -68,11 +68,12 @@ function _dispatchBlock(name, spec) {
       rule: `${name}-forced`,
       native: false,
     });
-    return (
-      `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" \\\n` +
-      `     --decision '${decision}' \\\n` +
-      `     "<the full task text>"`
-    );
+    // base64url the decision JSON: the single-line `--decision-b64=<token>` form has no quotes and
+    // no line-continuation, so it survives verbatim in BOTH PowerShell and bash (single-quoted JSON
+    // + `\` continuation mangles under PowerShell — the Windows default — and silently falls through
+    // to native). run.mjs decodes it in-Node, never via a shell.
+    const b64 = Buffer.from(decision).toString('base64url');
+    return `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision-b64=${b64} "<the full task text>"`;
   }
   return `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" "<the full task text>"`;
 }

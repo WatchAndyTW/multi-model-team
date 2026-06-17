@@ -15,7 +15,7 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 > engine: use the Workflow tool path if available, otherwise use the scripted `reason.mjs` path or
 > explicit faithful-relay `Task` panelists. Do **not** answer with Claude's native analysis or with
 > plain native `Task` agents in place of CLI panelists. Every `gemini`/`codex` panelist must actually
-> run through `node src/bin/run.mjs --decision '{...,"native":false}'`; a `gemini:`/`codex:` result
+> run through `node src/bin/run.mjs --decision-b64=<…> --task-b64=<…>` (forced `"native":false`, shell-agnostic base64url); a `gemini:`/`codex:` result
 > must come from that CLI, never from Claude dressing up an answer under that label.
 
 Fan the question out to every panelist **in parallel**, judge the results into structured
@@ -129,18 +129,23 @@ QUESTION:
 relay does ZERO reasoning (one Bash call, return stdout verbatim), so pin it to the cheap relay
 model — do NOT let it inherit the orchestrator's model (e.g. Opus). It does NOT solve the question;
 it runs the one dispatch command and returns stdout verbatim. Substitute the real plugin root for
-`<PLUGIN_ROOT>`, the backend `<BE>` (agy|codex), and `<TIER>`:
+`<PLUGIN_ROOT>`, the backend `<BE>` (agy|codex), and `<TIER>`, plus the two **base64url tokens** you
+(the orchestrator) compute below — never the raw question:
+
+**YOU encode the tokens before spawning the relay** (shell-agnostic — the relay's shell may be
+PowerShell, where a `<<'EOF'` heredoc is a parse error and single-quoted `'{...}'` JSON gets mangled;
+base64url `[A-Za-z0-9_-]` survives verbatim in any shell and keeps the untrusted question off the
+parsed command line):
+- `<DECISION_B64>` = base64url of `{"backend":"<BE>","model":"","tier":"<TIER>","rule":"reason","native":false}`
+- `<QUESTION_B64>` = base64url of the question text
 
 ```
 [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve,
 analyze, or answer the question yourself. Run EXACTLY this one command with the Bash tool
-(the question rides in on a single-quoted heredoc — inert data, never parsed by the shell;
-if it contains the line MMT_SUB_EOF, change the delimiter), then return its stdout VERBATIM
-with no preamble:
+(both payloads ride as inert base64url tokens — decoded only inside run.mjs by Node, never
+parsed by the shell), then return its stdout VERBATIM with no preamble:
 
-node "<PLUGIN_ROOT>/src/bin/run.mjs" --decision '{"backend":"<BE>","model":"","tier":"<TIER>","rule":"reason","native":false}' <<'MMT_SUB_EOF'
-<question text>
-MMT_SUB_EOF
+node "<PLUGIN_ROOT>/src/bin/run.mjs" --decision-b64=<DECISION_B64> --task-b64=<QUESTION_B64>
 
 If stdout begins with "MMT_NATIVE_HANDOFF" (the <BE> CLI was unavailable), return EXACTLY that
 sentinel line and nothing else — do not answer the question yourself.

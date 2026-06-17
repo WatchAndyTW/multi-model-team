@@ -145,6 +145,17 @@ function runSubtask({ be, idx, label, tier, taskPath }) {
     child.stdout.on('data', d => outChunks.push(d));
     child.stderr.on('data', d => errChunks.push(d));
 
+    child.on('error', (err) => {
+      resolveP({
+        label,
+        be,
+        tier,
+        stdout: '',
+        stderr: `spawn failed: ${err.message}`,
+        code: 1,
+      });
+    });
+
     child.on('close', (code) => {
       resolveP({
         label,

@@ -106,14 +106,21 @@ test('gen-agents: enabled written, disabled removed, relay body present', () => 
   assert.match(body, /run\.mjs/, 'relay body references the run.mjs executor');
 });
 
-test('gen-agents: forced dispatch pins backend via --decision; route dispatch does not', () => {
+test('gen-agents: forced dispatch pins backend via --decision-b64; route dispatch does not', () => {
   const d = tmp('gen-forced-');
   const agentsDir = join(d, 'agents');
   generateAgents(ROSTER, agentsDir);
-  // codex agent is dispatch:forced in the roster -> body must carry a forced --decision.
+  // codex agent is dispatch:forced in the roster -> body must carry a forced --decision-b64.
+  // The decision JSON is base64url-encoded (shell-agnostic: no single-quoted JSON / `\` line-
+  // continuation that mangles under PowerShell) — decode it and assert the forced flags survive.
   if (existsSync(join(agentsDir, 'codex.md'))) {
     const codexBody = readFileSync(join(agentsDir, 'codex.md'), 'utf8');
-    assert.match(codexBody, /--decision/, 'forced agent body pins a --decision');
-    assert.match(codexBody, /"native":false/, 'forced agent forces backend (native:false)');
+    const m = codexBody.match(/--decision-b64=([A-Za-z0-9_-]+)/);
+    assert.ok(m, 'forced agent body pins a --decision-b64 token');
+    const decision = JSON.parse(Buffer.from(m[1], 'base64url').toString('utf8'));
+    assert.equal(decision.native, false, 'forced agent forces backend (native:false)');
+    assert.equal(decision.backend, 'codex', 'forced agent pins the codex backend');
+    // No single-quoted inline JSON / backslash line-continuation (the PowerShell-hostile form).
+    assert.doesNotMatch(codexBody, /--decision '/, 'no single-quoted inline --decision JSON');
   }
 });

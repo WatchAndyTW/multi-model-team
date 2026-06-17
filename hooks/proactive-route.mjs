@@ -48,17 +48,19 @@ async function main() {
 
   // Route in-process (no route.sh fork). Feed the prompt as data only — never echoed back.
   const d = decideTask(prompt, { roster, tagsPath: tagsPath(root) });
-  if (!d || d.backend !== 'agy') return; // only nudge for agy-routable work
+  if (!d || (d.backend !== 'agy' && d.backend !== 'codex')) return; // only nudge for CLI-routable work
 
-  // Optional rule allowlist (CSV). Empty = any agy rule.
+  // Optional rule allowlist (CSV). Empty = any CLI rule.
   if (!ruleAllowed(p.rules, d.rule)) return;
 
   const rule = d.rule || '?';
   const tier = d.tier || '?';
+  const backend = d.backend;
+  const agent = backend === 'codex' ? 'multi-model-team:codex' : 'multi-model-team:agy';
   const ctx =
-    `multi-model-team: this request routes to agy (Gemini) [rule=${rule}, tier=${tier}]. ` +
-    'If it is a standalone, verifiable task, prefer delegating it — spawn the `multi-model-team:agy` ' +
-    'agent (or run `/team`) so it runs on agy and saves Claude tokens — instead of solving it inline. ' +
+    `multi-model-team: this request routes to ${backend} [rule=${rule}, tier=${tier}]. ` +
+    `If it is a standalone, verifiable task, prefer delegating it — spawn the \`${agent}\` ` +
+    `agent (or run \`/team\`) so it runs on ${backend} and saves Claude tokens — instead of solving it inline. ` +
     'This is a configurable nudge, not a rule: ignore it if the task needs your in-context judgment, ' +
     'codebase awareness, or is part of a larger change you are already making.';
 

@@ -234,11 +234,12 @@ async function main() {
     const cleanOut = clean(res.stdout || '');
     const outChars = charCount(cleanOut);
 
-    // quota/credit exhaustion -> next hop.
+    // quota/credit exhaustion -> next hop. A FAILED hop passes fallback:0 (it is not itself a
+    // fallback); the single fallback tally is counted once on the success hop via fallbackCount.
     if (res.quota) {
       lastErr = `quota/credit limit on '${be}'`;
       process.stderr.write(`run.mjs: backend '${be}' hit a quota/credit limit — falling back\n`);
-      state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 1 });
+      state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
       fallbackCount++; continue;
     }
 
@@ -248,7 +249,7 @@ async function main() {
       process.stderr.write(
         `run.mjs: backend '${be}' returned no usable output (exit ${res.code})${lastErr ? ` — stderr: ${lastErr}` : ''}\n`,
       );
-      state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 1 });
+      state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
       fallbackCount++; continue;
     }
 

@@ -10,6 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { proactive as rosterProactive } from './config.mjs';
 import { decide } from './router.mjs';
 import { stateDir, resolveRosterPath } from './platform.mjs';
@@ -203,7 +204,7 @@ export function tagsPath(pluginRoot) {
  */
 export function pluginRootFrom(hookFileUrl) {
   // hooks/<x>.mjs -> plugin root is the parent of hooks/.
-  const here = path.dirname(new URL(hookFileUrl).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+  const here = path.dirname(fileURLToPath(hookFileUrl));
   return path.resolve(here, '..');
 }
 

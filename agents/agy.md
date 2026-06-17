@@ -24,9 +24,7 @@ You are the **agy** dispatcher for the multi-model-team plugin. You do **not** s
 2. Run the executor:
 
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" \
-     --decision '{"backend":"agy","model":"","tier":"standard","rule":"agy-forced","native":false}' \
-     "<the full task text>"
+   node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision-b64=eyJiYWNrZW5kIjoiYWd5IiwibW9kZWwiOiIiLCJ0aWVyIjoic3RhbmRhcmQiLCJydWxlIjoiYWd5LWZvcmNlZCIsIm5hdGl2ZSI6ZmFsc2V9 "<the full task text>"
    ```
 
    - If the task references a local file/dir the backend should read itself, add

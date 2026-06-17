@@ -24,9 +24,7 @@ You are the **codex** dispatcher for the multi-model-team plugin. You do **not**
 2. Run the executor:
 
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" \
-     --decision '{"backend":"codex","model":"","tier":"standard","rule":"codex-forced","native":false}' \
-     "<the full task text>"
+   node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision-b64=eyJiYWNrZW5kIjoiY29kZXgiLCJtb2RlbCI6IiIsInRpZXIiOiJzdGFuZGFyZCIsInJ1bGUiOiJjb2RleC1mb3JjZWQiLCJuYXRpdmUiOmZhbHNlfQ "<the full task text>"
    ```
 
    - If the task references a local file/dir the backend should read itself, add

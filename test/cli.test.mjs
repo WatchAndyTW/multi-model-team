@@ -236,3 +236,23 @@ test('run.mjs --add-dir: accepted (not an unknown flag) with a forced native dec
   assert.doesNotMatch(result.stderr, /unknown flag/, 'must not report --add-dir as an unknown flag');
   assert.match(result.stdout, /MMT_NATIVE_HANDOFF/, 'native decision emits the handoff sentinel');
 });
+
+test('pluginRootFrom: decodes percent-encoded file:// URLs (space/non-ASCII paths)', async () => {
+  // Regression: pluginRootFrom used URL.pathname (percent-ENCODED, never decoded), so a plugin
+  // path with a space (C:\Users\First Last\...) — very common on Windows — resolved to a non-
+  // existent `…First%20Last…` root. Every roster/tags lookup then failed fs.existsSync and ALL
+  // hooks fail-open (silent no-op). The fix uses fileURLToPath. Assert no stray %xx survives and
+  // that the returned root is the parent of the hooks/ dir.
+  const { pluginRootFrom } = await import('../src/lib/hook-common.mjs');
+  const { pathToFileURL } = await import('node:url');
+  const { join: pjoin } = await import('node:path');
+
+  // A hook file living at <root>/hooks/x.mjs where <root> contains a space and a non-ASCII char.
+  const fakeRoot = pjoin(tmpdir(), 'My Plugin Dir é', 'mmt-root');
+  const hookFile = pjoin(fakeRoot, 'hooks', 'proactive-route.mjs');
+  const hookUrl = pathToFileURL(hookFile).href;
+
+  const root = pluginRootFrom(hookUrl);
+  assert.doesNotMatch(root, /%[0-9A-Fa-f]{2}/, 'resolved root must not contain percent-escapes');
+  assert.equal(root, fakeRoot, 'root is the parent of the hooks/ directory, fully decoded');
+});
