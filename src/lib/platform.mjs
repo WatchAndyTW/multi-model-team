@@ -34,25 +34,30 @@ export function stateDir() {
   return path.join(homeDir(), '.cache', 'mmt');
 }
 
-// Resolve the roster.json the whole plugin should read, with a USER-LEVEL OVERRIDE.
-// Precedence (highest first):
-//   1. $MMT_ROSTER            — explicit env override (tests, power users); used verbatim.
-//   2. ~/.claude/mmt-roster.json  — the user's personal roster, if it exists. This is the
-//      "setup is correct" path: a user drops their tuned config here and every entry point picks
-//      it up automatically, instead of editing the (cache-managed, upgrade-clobbered) plugin copy.
-//   3. <pluginRoot>/config/roster.json  — the shipped default, used when neither above is present.
-// `pluginRoot` is required for the fallback; pass the directory that contains config/roster.json
-// (each caller already knows its own root). The user file is honored ONLY when it actually exists,
-// so an absent ~/.claude/mmt-roster.json transparently falls through to the shipped default.
-const USER_ROSTER_REL = ['.claude', 'mmt-roster.json'];
+// Resolve the roster.json the whole plugin should read. Precedence (highest first):
+//   1. <cwd>/.mmt/roster.json     — PROJECT-LOCAL roster: per-repo tuning, checked into the project
+//      so a team shares one routing config. Looked up relative to the current working directory.
+//   2. ~/.claude/mmt-roster.json  — the USER's personal roster: your global tuning across projects.
+//   3. <pluginRoot>/config/roster.json — the shipped default, used when neither above is present.
+// Each file is honored ONLY when it actually exists, so an absent .mmt/ or ~/.claude file
+// transparently falls through to the next tier. There is no env-var override — config is file-based
+// and discoverable (drop a file in .mmt/ or ~/.claude and it's picked up automatically).
+// `pluginRoot` is the directory containing config/roster.json (each caller knows its own root).
+// `cwd` is overridable for testing; defaults to process.cwd().
+const USER_ROSTER_REL    = ['.claude', 'mmt-roster.json'];
+const PROJECT_ROSTER_REL = ['.mmt', 'roster.json'];
 
 export function userRosterPath() {
   return path.join(homeDir(), ...USER_ROSTER_REL);
 }
 
-export function resolveRosterPath(pluginRoot) {
-  const env = process.env.MMT_ROSTER;
-  if (env && env.trim()) return env;
+export function projectRosterPath(cwd = process.cwd()) {
+  return path.join(cwd, ...PROJECT_ROSTER_REL);
+}
+
+export function resolveRosterPath(pluginRoot, cwd = process.cwd()) {
+  const project = projectRosterPath(cwd);
+  if (isUsableFile(project)) return project;
   const user = userRosterPath();
   if (isUsableFile(user)) return user;
   return path.join(pluginRoot, 'config', 'roster.json');

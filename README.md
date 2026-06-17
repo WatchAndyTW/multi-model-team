@@ -116,14 +116,15 @@ still → Opus. Default fallback chain: **agy → codex → native**.
 
 ## ⚙️ Configuration
 
-All config lives in **one JSON file**. By default the plugin ships `config/roster.json`, but **your
-personal config belongs in `~/.claude/mmt-roster.json`** — drop a file there and every entry point
-picks it up automatically, so plugin updates never clobber your tuning.
+All config lives in **one JSON file**, and resolution is **file-based** (no env var) — drop a file
+in the right place and every entry point picks it up automatically, so plugin updates never clobber
+your tuning. Run **`/mmt-setup`** to scaffold your personal roster.
 
 **Roster resolution order** (highest first):
 
-1. `$MMT_ROSTER` — explicit env override.
-2. **`~/.claude/mmt-roster.json`** — your personal roster, if it exists. ← the recommended place to tune.
+1. **`<cwd>/.mmt/roster.json`** — project-local roster: per-repo tuning, checked into the project so a
+   team shares one routing config.
+2. **`~/.claude/mmt-roster.json`** — your personal roster across all projects (created by `/mmt-setup`).
 3. `<plugin>/config/roster.json` — the shipped default.
 
 Sections (keys prefixed `_comment`/`_about` are inline docs the parsers ignore):
@@ -288,7 +289,6 @@ MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network require
 | Var | Purpose |
 |---|---|
 | `MMT_AGY_BIN` / `MMT_CODEX_BIN` | explicit path to the agy / codex binary |
-| `MMT_ROSTER` | explicit roster path (wins over `~/.claude/mmt-roster.json`) |
 | `MMT_TAGS` | alternate `tags.txt` |
 | `MMT_STATE_DIR` / `MMT_STATE_FILE` | HUD state location |
 | `MMT_PROACTIVE_DISABLE` | `=1` hard-disables both proactive hooks |

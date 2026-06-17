@@ -91,7 +91,9 @@ Respect the **per-backend caps** (≤ the cap for each backend). If unsure of a 
 dry-run the router (`src/bin/route.mjs --explain` with the subtask on a single-quoted heredoc).
 
 ## 3 · Write the plan (injection-safe)
-Use the **Write tool** to write a plan JSON file — an array of subtasks. Include `deps`/`verify`
+Use the **Write tool** to write the plan JSON to **`.mmt/plans/plan.json`** (relative to the project
+root — this plugin's own state directory; **do NOT write it under `.omc/`** even if oh-my-claudecode
+is active, and do NOT scatter it elsewhere). It is an array of subtasks; include `deps`/`verify`
 when relevant (the dispatcher ignores keys it doesn't use, so they're safe to carry):
 
 ```json
@@ -101,7 +103,8 @@ when relevant (the dispatcher ignores keys it doesn't use, so they're safe to ca
 ]
 ```
 
-Writing via the Write tool keeps every subtask as inert data.
+Writing via the Write tool keeps every subtask as inert data. `.mmt/` is this plugin's state dir
+(plans, scratch); it's gitignored, so the plan file is local-only.
 
 ## 4 · Dispatch each subtask as a PARALLEL Task agent (dependency-ordered waves)
 This is the OMC-style fan-out **using our CLI dispatching**: every subtask becomes its own **`Task`

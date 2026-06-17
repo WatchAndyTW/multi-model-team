@@ -66,8 +66,8 @@ test('run.mjs: exit-0 backend whose stdout contains quota words is returned, not
     c.defaults.quota_fallback = ['codex', 'native:sonnet'];
   });
   const { stdout } = runNode(BIN_RUN, {
-    args: ['--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
-    env: { MMT_ROSTER: r, MMT_BE_BIN: fake },
+    args: ['--roster', r, '--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
+    env: { MMT_BE_BIN: fake },
   });
   assert.match(stdout, /REVIEW_OK/, 'the backend answer is returned');
   assert.doesNotMatch(stdout, /MMT_NATIVE_HANDOFF/, 'a successful answer is NOT misread as quota + handed off');
@@ -103,7 +103,7 @@ test('run.mjs: all backends disabled -> native handoff', () => {
     c.backends.agy.enabled = false;
     c.backends.codex.enabled = false;
   });
-  const { stdout } = runNode(BIN_RUN, { args: ['Write a SQL query to list users'], env: { MMT_ROSTER: off } });
+  const { stdout } = runNode(BIN_RUN, { args: ['--roster', off, 'Write a SQL query to list users'] });
   assert.match(stdout, /MMT_NATIVE_HANDOFF/);
 });
 
@@ -115,7 +115,7 @@ test('run.mjs: no-invoker kind (opencode) health-fails -> native handoff', () =>
     c.backends.opencode.enabled = true;
     c.defaults.quota_fallback = ['agy', 'opencode', 'native:sonnet'];
   });
-  const { stdout } = runNode(BIN_RUN, { args: ['Write a SQL query to list users'], env: { MMT_ROSTER: oc } });
+  const { stdout } = runNode(BIN_RUN, { args: ['--roster', oc, 'Write a SQL query to list users'] });
   assert.match(stdout, /MMT_NATIVE_HANDOFF/);
 });
 
@@ -128,8 +128,7 @@ test('forced decision bypasses route.sh hard-line; forced rule survives to hando
     c.backends.codex.enabled = false;
   });
   const { stdout } = runNode(BIN_RUN, {
-    args: ['--decision', '{"backend":"agy","model":"","tier":"standard","rule":"delegate-forced","native":false}', reTask],
-    env: { MMT_ROSTER: nocli },
+    args: ['--roster', nocli, '--decision', '{"backend":"agy","model":"","tier":"standard","rule":"delegate-forced","native":false}', reTask],
   });
   // The forced rule must survive — and the auto-route rule must NOT appear (it was bypassed).
   assert.doesNotMatch(stdout, /re-injection-heavy/, 'auto-route rule must not leak through a forced decision');
@@ -161,8 +160,8 @@ test('run.mjs surfaces a failing backend stderr + carries it into the handoff', 
     c.defaults.quota_fallback = ['codex', 'native:sonnet'];
   });
   const { stdout, stderr } = runNode(BIN_RUN, {
-    args: ['--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
-    env: { MMT_ROSTER: r, MMT_BE_BIN: fake },
+    args: ['--roster', r, '--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
+    env: { MMT_BE_BIN: fake },
   });
   const all = stdout + stderr;
   assert.match(all, /returned no usable output \(exit 1\)/, 'announces the backend failure + exit code');

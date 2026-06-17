@@ -185,8 +185,9 @@ Flow (in `commands/team.md`):
 
 1. Parse the optional cap spec via `src/lib/team-spec.mjs` → `{gemini, claude}` (caps = max
    agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
-2. Claude decomposes the task, then **writes a `plan.json`** (array of
-   `{label, task, backend, tier, deps?, verify?}`) via the Write tool — task text stays inert
+2. Claude decomposes the task, then **writes `.mmt/plans/plan.json`** (array of
+   `{label, task, backend, tier, deps?, verify?}`) via the Write tool — `.mmt/` is this plugin's
+   state dir (NOT `.omc/`, even under OMC) — task text stays inert
    data, never shell-parsed (injection-safe boundary; same reason `/route-test` uses stdin).
    `deps` = labels this subtask consumes; `verify` = a one-line acceptance criterion.
    `src/lib/team-plan.mjs` **ignores `deps`/`verify`** (inert in the scripted path).

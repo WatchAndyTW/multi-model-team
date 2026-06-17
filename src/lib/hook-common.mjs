@@ -178,12 +178,12 @@ export function proactiveDisabled() {
 }
 
 /**
- * Resolve the roster path the way the bash hooks did: $MMT_ROSTER override else <root>/config/roster.json.
+ * Resolve the roster path via the shared resolver:
+ *   .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > <pluginRoot>/config/roster.json.
  * @param {string} pluginRoot
  * @returns {string}
  */
 export function rosterPath(pluginRoot) {
-  // Delegate to the shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json (if present) > plugin default.
   return resolveRosterPath(pluginRoot);
 }
 

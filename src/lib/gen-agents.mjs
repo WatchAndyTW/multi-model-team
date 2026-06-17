@@ -212,7 +212,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // A flag-looking positional (e.g. --help) must NOT be taken as the output dir (it would create a
   // literal `--help/` directory). Print usage for --help/-h; ignore any other leading-dash token.
   if (arg === '--help' || arg === '-h') {
-    console.log('Usage: node src/lib/gen-agents.mjs [agentsDir]\n  Regenerates agents/*.md from config/roster.json (MMT_ROSTER overrides).\n  agentsDir defaults to <repo>/agents.');
+    console.log('Usage: node src/lib/gen-agents.mjs [agentsDir]\n  Regenerates agents/*.md from the resolved roster (.mmt/roster.json > ~/.claude/mmt-roster.json > plugin default).\n  agentsDir defaults to <repo>/agents.');
     process.exit(0);
   }
   const rosterPath = resolveRosterPath(root);

@@ -241,7 +241,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // Two arg forms:
-  //   node config.mjs <mode>              -> roster via shared resolver ($MMT_ROSTER >
+  //   node config.mjs <mode>              -> roster via shared resolver (.mmt/roster.json >
   //                                          ~/.claude/mmt-roster.json > plugin default)
   //   node config.mjs <rosterPath> <mode> -> explicit roster path (back-compat; tests use this)
   const KNOWN_MODES = new Set(['team-config', 'reasoning-config']);

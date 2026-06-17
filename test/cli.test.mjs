@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -138,57 +138,87 @@ test('config.mjs missing args: exits 2', () => {
   assert.equal(result.status, 2, 'missing args → exit 2');
 });
 
-// ── roster resolution: $MMT_ROSTER > ~/.claude/mmt-roster.json > plugin default ──
-// The "setup is correct" fix: a user's ~/.claude/mmt-roster.json must be picked up automatically.
-// Exercised end-to-end through config.mjs's one-arg form, with HOME/USERPROFILE pointed at a tmp
-// dir so the user-file branch is deterministic (config.mjs reads it via the shared resolver).
+// ── roster resolution: .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > plugin default ──
+// File-based, env-free. Exercised end-to-end through config.mjs's one-arg form: HOME/USERPROFILE
+// point at a tmp dir (the user-roster branch) and cwd is a tmp project dir (the .mmt branch).
+// A distinctive reasoning.cap proves WHICH file was read (plugin default ships cap=6).
 
-// A roster with a distinctive reasoning.cap proves WHICH file was read.
 function rosterWithCap(cap) {
   return JSON.stringify({ reasoning: { panel: ['opus'], cap } });
 }
-// Spawn `node config.mjs reasoning-config` (one-arg form -> shared resolver) with a fake home.
-function runReasoningConfig(home, env = {}) {
+function writeUserRoster(home, cap) {
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(join(home, '.claude', 'mmt-roster.json'), rosterWithCap(cap), 'utf8');
+}
+function writeProjectRosterFile(projDir, cap) {
+  mkdirSync(join(projDir, '.mmt'), { recursive: true });
+  writeFileSync(join(projDir, '.mmt', 'roster.json'), rosterWithCap(cap), 'utf8');
+}
+// `node config.mjs reasoning-config` (one-arg form -> shared resolver), with a fake home + cwd.
+function runReasoningConfig(home, cwd) {
   return spawnSync(
     process.execPath,
     [join(ROOT, 'src/lib/config.mjs'), 'reasoning-config'],
-    { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home, MMT_ROSTER: '', ...env } }
+    { encoding: 'utf8', cwd, env: { ...process.env, HOME: home, USERPROFILE: home } }
   );
 }
 
-test('roster resolution: ~/.claude/mmt-roster.json is used when present (one-arg form)', () => {
+test('roster resolution: .mmt/roster.json (cwd) wins over ~/.claude and plugin default', () => {
   const home = mkdtempSync(join(tmpdir(), 'mmt-home-'));
-  mkdirSync(join(home, '.claude'), { recursive: true });
-  writeFileSync(join(home, '.claude', 'mmt-roster.json'), rosterWithCap(99), 'utf8');
+  const proj = mkdtempSync(join(tmpdir(), 'mmt-proj-'));
+  writeUserRoster(home, 99);       // user roster present...
+  writeProjectRosterFile(proj, 7); // ...but project .mmt/roster.json must win.
 
-  const r = runReasoningConfig(home);
+  const r = runReasoningConfig(home, proj);
   assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
-  const parsed = JSON.parse(r.stdout.trim());
-  assert.equal(parsed.cap, 99, 'used ~/.claude/mmt-roster.json (cap=99), not the plugin default');
+  assert.equal(JSON.parse(r.stdout.trim()).cap, 7, '.mmt/roster.json (cap=7) wins');
 });
 
-test('roster resolution: falls back to plugin default when no user roster', () => {
+test('roster resolution: ~/.claude/mmt-roster.json used when no project roster', () => {
+  const home = mkdtempSync(join(tmpdir(), 'mmt-home-'));
+  const proj = mkdtempSync(join(tmpdir(), 'mmt-proj-empty-')); // no .mmt/
+  writeUserRoster(home, 99);
+
+  const r = runReasoningConfig(home, proj);
+  assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
+  assert.equal(JSON.parse(r.stdout.trim()).cap, 99, 'used ~/.claude/mmt-roster.json (cap=99)');
+});
+
+test('roster resolution: falls back to plugin default when neither project nor user roster', () => {
   const home = mkdtempSync(join(tmpdir(), 'mmt-home-empty-'));
-  // No .claude/mmt-roster.json written.
-  const r = runReasoningConfig(home);
+  const proj = mkdtempSync(join(tmpdir(), 'mmt-proj-empty2-'));
+  const r = runReasoningConfig(home, proj);
   assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
-  const parsed = JSON.parse(r.stdout.trim());
-  // The shipped config/roster.json has reasoning.cap = 6.
-  assert.equal(parsed.cap, 6, 'fell back to plugin default roster (cap=6)');
+  assert.equal(JSON.parse(r.stdout.trim()).cap, 6, 'fell back to plugin default roster (cap=6)');
 });
 
-test('roster resolution: $MMT_ROSTER wins over the user roster', () => {
-  const home = mkdtempSync(join(tmpdir(), 'mmt-home-env-'));
-  mkdirSync(join(home, '.claude'), { recursive: true });
-  writeFileSync(join(home, '.claude', 'mmt-roster.json'), rosterWithCap(99), 'utf8');
-  // An explicit env roster with a different cap must win.
-  const envRoster = join(home, 'env-roster.json');
-  writeFileSync(envRoster, rosterWithCap(42), 'utf8');
+// ── setup.mjs (/mmt-setup): creates ~/.claude/mmt-roster.json, never clobbers ─
+test('setup.mjs: creates ~/.claude/mmt-roster.json, no-op on re-run, --force resets', () => {
+  const home = mkdtempSync(join(tmpdir(), 'mmt-setup-home-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  const setup = (args = []) => spawnSync(process.execPath, [join(ROOT, 'src/bin/setup.mjs'), ...args], { encoding: 'utf8', env });
+  const target = join(home, '.claude', 'mmt-roster.json');
 
-  const r = runReasoningConfig(home, { MMT_ROSTER: envRoster });
-  assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
-  const parsed = JSON.parse(r.stdout.trim());
-  assert.equal(parsed.cap, 42, '$MMT_ROSTER (cap=42) wins over the user roster (cap=99)');
+  // First run creates it, seeded from the plugin default (cap=6).
+  const r1 = setup();
+  assert.equal(r1.status, 0, `exit ${r1.status}; stderr: ${r1.stderr}`);
+  assert.match(r1.stdout, /created your personal roster/, 'reports creation');
+  assert.ok(existsSync(target), 'file created at ~/.claude/mmt-roster.json');
+  const seeded = JSON.parse(readFileSync(target, 'utf8'));
+  assert.equal(seeded.reasoning.cap, 6, 'seeded from the shipped default (cap=6)');
+
+  // Re-run is a no-op: it must NOT clobber an edited personal roster.
+  writeFileSync(target, JSON.stringify({ reasoning: { panel: ['opus'], cap: 123 } }), 'utf8');
+  const r2 = setup();
+  assert.equal(r2.status, 0);
+  assert.match(r2.stdout, /already exists — leaving it untouched/, 're-run is a no-op');
+  assert.equal(JSON.parse(readFileSync(target, 'utf8')).reasoning.cap, 123, 'edited roster preserved');
+
+  // --force resets it back to the shipped default.
+  const r3 = setup(['--force']);
+  assert.equal(r3.status, 0);
+  assert.match(r3.stdout, /reset your personal roster/, '--force resets');
+  assert.equal(JSON.parse(readFileSync(target, 'utf8')).reasoning.cap, 6, '--force restored the default');
 });
 
 // ── run.mjs CLI (--add-dir is accepted, not rejected as an unknown flag) ──────

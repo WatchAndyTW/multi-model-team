@@ -119,7 +119,7 @@ async function main() {
   if (!task) task = (await readStdin()).trim();
   if (!task) { process.stderr.write('run.mjs: no task text\n'); process.exit(2); }
 
-  // --roster flag wins; else shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json > plugin default.
+  // --roster flag wins; else shared resolver: .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > plugin default.
   const rosterPath = opts.roster || resolveRosterPath(MMT_ROOT);
   const tagsPath = opts.tags || path.join(MMT_ROOT, 'config', 'tags.txt');
 

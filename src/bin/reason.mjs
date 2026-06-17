@@ -141,7 +141,7 @@ async function resolvePanel() {
 // Load the roster reasoning config (default panel + cap) for the convenience paths.
 async function loadReasoningConfig() {
   const cfgMod = await import('../lib/config.mjs');
-  // Shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json (if present) > plugin default.
+  // Shared resolver: .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > plugin default.
   const rosterPath = resolveRosterPath(resolve(__dirname, '..', '..'));
   const roster = cfgMod.loadRoster(rosterPath);
   return cfgMod.reasoningConfig(roster);

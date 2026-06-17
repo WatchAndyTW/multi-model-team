@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  HOOK_HEAVY, HOOK_PROACTIVE, HOOK_SPAWN, HOOK_FANOUT, ROSTER_PATH,
-  tmp, writeRosterVariant, runNode,
+  HOOK_HEAVY, HOOK_PROACTIVE, HOOK_SPAWN, HOOK_FANOUT,
+  tmp, makeProjectRoster, runNode,
 } from './helpers.mjs';
 
 // ── heavy-read guard (allow / deny) ──────────────────────────────────────────
@@ -36,20 +36,21 @@ test('heavy-read guard: MMT_HOOK_DISABLE=1 -> silent', () => {
 
 // ── proactive route (UserPromptSubmit) ───────────────────────────────────────
 test('proactive hook: off->silent, on+agy->nudge, opus/slash/cap/env->silent', () => {
-  const d = tmp('pr-');
-  const on = writeRosterVariant(d, 'on.json', (c) => { c.proactive.enabled = true; });
-  const cap = writeRosterVariant(d, 'cap.json', (c) => { c.proactive.enabled = true; c.proactive.max_chars = 10; });
+  // Roster is resolved from <cwd>/.mmt/roster.json; each variant gets its own project dir.
+  const offDir = makeProjectRoster('pr-off-');                                                   // proactive disabled (default)
+  const onDir = makeProjectRoster('pr-on-', (c) => { c.proactive.enabled = true; });
+  const capDir = makeProjectRoster('pr-cap-', (c) => { c.proactive.enabled = true; c.proactive.max_chars = 10; });
   const sql = JSON.stringify({ prompt: 'Write a SQL query to join users and orders tables' });
-  const run = (payload, roster, env = {}) => runNode(HOOK_PROACTIVE, { input: payload, env: { MMT_ROSTER: roster, ...env } }).stdout;
+  const run = (payload, cwd, env = {}) => runNode(HOOK_PROACTIVE, { input: payload, cwd, env }).stdout;
 
-  assert.equal(run(sql, ROSTER_PATH), '', 'disabled -> silent');
-  const nudge = run(sql, on);
+  assert.equal(run(sql, offDir), '', 'disabled -> silent');
+  const nudge = run(sql, onDir);
   assert.match(nudge, /routes to agy/, 'enabled+agy -> nudge');
   assert.match(nudge, /multi-model-team:delegate/, 'nudge names delegate agent');
-  assert.equal(run(JSON.stringify({ prompt: 'Reverse engineer the IL2CPP dump and extract protobuf' }), on), '', 'opus task -> silent');
-  assert.equal(run(JSON.stringify({ prompt: '/team build a thing' }), on), '', 'slash command -> silent');
-  assert.equal(run(sql, cap), '', 'max_chars cap -> silent');
-  assert.equal(run(sql, on, { MMT_PROACTIVE_DISABLE: '1' }), '', 'env DISABLE -> silent');
+  assert.equal(run(JSON.stringify({ prompt: 'Reverse engineer the IL2CPP dump and extract protobuf' }), onDir), '', 'opus task -> silent');
+  assert.equal(run(JSON.stringify({ prompt: '/team build a thing' }), onDir), '', 'slash command -> silent');
+  assert.equal(run(sql, capDir), '', 'max_chars cap -> silent');
+  assert.equal(run(sql, onDir, { MMT_PROACTIVE_DISABLE: '1' }), '', 'env DISABLE -> silent');
 });
 
 // ── spawn-route guard (PreToolUse Task/Agent) ────────────────────────────────
@@ -58,11 +59,12 @@ function mkspawn(sub, desc, prompt) {
 }
 
 test('spawn guard: agy nudge / enforce-deny / codex / exemptions', () => {
-  const d = tmp('sp-');
-  const on = writeRosterVariant(d, 'on.json', (c) => { c.proactive.enabled = true; });
-  const enforce = writeRosterVariant(d, 'enforce.json', (c) => { c.proactive.enabled = true; c.proactive.enforce_spawns = true; });
-  const guardoff = writeRosterVariant(d, 'guardoff.json', (c) => { c.proactive.enabled = true; c.proactive.guard_spawns = false; });
-  const sh = (payload, roster, env = {}) => runNode(HOOK_SPAWN, { input: payload, env: { MMT_ROSTER: roster, ...env } }).stdout;
+  // Roster resolved from <cwd>/.mmt/roster.json; each variant gets its own project dir.
+  const offDir = makeProjectRoster('sp-off-');                                                          // proactive disabled (default)
+  const onDir = makeProjectRoster('sp-on-', (c) => { c.proactive.enabled = true; });
+  const enforceDir = makeProjectRoster('sp-enf-', (c) => { c.proactive.enabled = true; c.proactive.enforce_spawns = true; });
+  const guardoffDir = makeProjectRoster('sp-go-', (c) => { c.proactive.enabled = true; c.proactive.guard_spawns = false; });
+  const sh = (payload, cwd, env = {}) => runNode(HOOK_SPAWN, { input: payload, cwd, env }).stdout;
 
   const sql = mkspawn('general-purpose', 'write sql', 'Write a SQL query to list all users sorted by signup date');
   const codex = mkspawn('general-purpose', 'review', 'Review this diff for correctness bugs and regressions, then write a regression test suite');
@@ -71,21 +73,21 @@ test('spawn guard: agy nudge / enforce-deny / codex / exemptions', () => {
   const runsh = mkspawn('general-purpose', 'x', 'bash run.sh --decision to dispatch this subtask');
   const worker = mkspawn('general-purpose', 'x', '[mmt-team-worker] Write a SQL query to list all users');
 
-  assert.equal(sh(sql, ROSTER_PATH), '', 'disabled -> silent');
-  const nudge = sh(sql, on);
+  assert.equal(sh(sql, offDir), '', 'disabled -> silent');
+  const nudge = sh(sql, onDir);
   assert.match(nudge, /"permissionDecision":"allow"/, 'agy task -> allow nudge');
   assert.match(nudge, /routes to agy/, 'nudge names agy');
   assert.match(nudge, /multi-model-team:delegate/, 'nudge names delegate');
-  assert.match(sh(sql, enforce), /"permissionDecision":"deny"/, 'enforce -> deny');
-  const cnudge = sh(codex, on);
+  assert.match(sh(sql, enforceDir), /"permissionDecision":"deny"/, 'enforce -> deny');
+  const cnudge = sh(codex, onDir);
   assert.match(cnudge, /routes to codex/, 'codex task -> nudge codex');
   assert.match(cnudge, /multi-model-team:codex/, 'codex nudge names codex agent');
-  assert.equal(sh(nat, on), '', 'native task -> silent');
-  assert.equal(sh(our, on), '', 'our subagent -> silent');
-  assert.equal(sh(runsh, on), '', 'already-dispatching -> silent');
-  assert.equal(sh(worker, on), '', 'team-worker tag -> silent');
-  assert.equal(sh(sql, guardoff), '', 'guard_spawns=false -> silent');
-  assert.equal(sh(sql, on, { MMT_PROACTIVE_DISABLE: '1' }), '', 'env DISABLE -> silent');
+  assert.equal(sh(nat, onDir), '', 'native task -> silent');
+  assert.equal(sh(our, onDir), '', 'our subagent -> silent');
+  assert.equal(sh(runsh, onDir), '', 'already-dispatching -> silent');
+  assert.equal(sh(worker, onDir), '', 'team-worker tag -> silent');
+  assert.equal(sh(sql, guardoffDir), '', 'guard_spawns=false -> silent');
+  assert.equal(sh(sql, onDir, { MMT_PROACTIVE_DISABLE: '1' }), '', 'env DISABLE -> silent');
 });
 
 // ── command fan-out guard (UserPromptSubmit: /reasoning, /team) ──────────────
@@ -122,15 +124,14 @@ test('command fan-out guard: fires on /reasoning & /team (bare + namespaced), si
   assert.equal(run('/reasoning x', { MMT_HOOK_DISABLE: '1' }), '', 'MMT_HOOK_DISABLE -> silent');
   assert.equal(run('/reasoning x', { MMT_COMMAND_GUARD_DISABLE: '1' }), '', 'MMT_COMMAND_GUARD_DISABLE -> silent');
 
-  // NOT gated on proactive.enabled: fires even with the default roster (proactive off).
-  assert.match(run('/reasoning x', { MMT_ROSTER: ROSTER_PATH }), /MANDATORY ENGINE PATH/, 'fires regardless of proactive.enabled');
+  // NOT gated on proactive.enabled: the guard never reads the roster, so it fires regardless.
+  assert.match(run('/reasoning x'), /MANDATORY ENGINE PATH/, 'fires regardless of proactive.enabled');
 });
 
 test('spawn guard: OMC team worker is nudged-never-denied (even under enforce)', () => {
-  const d = tmp('sp-omc-');
-  const on = writeRosterVariant(d, 'on.json', (c) => { c.proactive.enabled = true; });
-  const enforce = writeRosterVariant(d, 'enforce.json', (c) => { c.proactive.enabled = true; c.proactive.enforce_spawns = true; });
-  const sh = (payload, roster) => runNode(HOOK_SPAWN, { input: payload, env: { MMT_ROSTER: roster } }).stdout;
+  const onDir = makeProjectRoster('sp-omc-on-', (c) => { c.proactive.enabled = true; });
+  const enforceDir = makeProjectRoster('sp-omc-enf-', (c) => { c.proactive.enabled = true; c.proactive.enforce_spawns = true; });
+  const sh = (payload, cwd) => runNode(HOOK_SPAWN, { input: payload, cwd }).stdout;
 
   const omc = JSON.stringify({
     tool_name: 'Task',
@@ -140,10 +141,10 @@ test('spawn guard: OMC team worker is nudged-never-denied (even under enforce)',
       prompt: 'You are a TEAM WORKER in team fix-ts. You report to team-lead. Write a SQL query to list all users sorted by signup date.',
     },
   });
-  const a = sh(omc, on);
+  const a = sh(omc, onDir);
   assert.match(a, /"permissionDecision":"allow"/, 'OMC worker -> allow nudge');
   assert.match(a, /node .*run\.mjs/, 'OMC nudge points at node src/bin/run.mjs');
   assert.doesNotMatch(a, /scripts[\\/]run\.sh/, 'OMC nudge must not reference the deleted scripts/run.sh');
   // The key OMC-aware invariant: NEVER denied, even with enforce_spawns on.
-  assert.match(sh(omc, enforce), /"permissionDecision":"allow"/, 'OMC worker under enforce -> still allow (never deny)');
+  assert.match(sh(omc, enforceDir), /"permissionDecision":"allow"/, 'OMC worker under enforce -> still allow (never deny)');
 });

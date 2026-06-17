@@ -11,6 +11,11 @@ __pycache__/
 # oh-my-claudecode local working state
 .omc/
 
+# multi-model-team local state (plans, scratch). The project-local roster (.mmt/roster.json) is
+# meant to be checked in (shared team routing config), so it is un-ignored below.
+.mmt/
+!.mmt/roster.json
+
 # Runtime HUD state lives in ~/.cache/mmt (outside the repo), but ignore any local copy
 .cache/
 *.tmp

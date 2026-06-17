@@ -20,7 +20,7 @@ const args = process.argv.slice(2);
 let preset = '';
 let explain = false;
 let tagsPath = process.env.MMT_TAGS || join(MMT_ROOT, 'config', 'tags.txt');
-// Default via shared resolver: $MMT_ROSTER > ~/.claude/mmt-roster.json (if present) > plugin default.
+// Default via shared resolver: .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > plugin default.
 // An explicit --roster flag (below) still overrides this.
 let rosterPath = resolveRosterPath(MMT_ROOT);
 let taskParts = [];
