@@ -76,15 +76,21 @@ test('team.mjs: writable-mode worktree machinery present (Setup/Integrate, --cwd
     "phase('Integrate')",
     '--cwd=',                   // relay passes the worktree cwd
     '--writable',               // relay passes the writable flag
-    'conflicts',                // conflicts reported, not auto-resolved
     'INT_WORKTREE',             // dedicated integration worktree (user's checkout never touched)
     'safeLabel',                // labels sanitized before use in refs/paths
     'show-ref --verify',        // idempotent branch creation (resume-safe)
-    'merge --abort',            // conflicts aborted, not blindly resolved
+    'RESOLVE it',               // the orchestrator resolves conflicts itself (not abort+leave)
+    'resolved',                 // the schema field for orchestrator-resolved conflicts
+    'unresolved',               // the rare conflict left for the user
   ];
   for (const m of markers) {
     assert.ok(SRC.includes(m), `team.mjs missing writable-mode marker: ${m}`);
   }
+  // The integration agent RESOLVES conflicts rather than the old abort-and-leave-for-user flow:
+  // `merge --abort` must only appear on the genuinely-unresolvable path, and the prompt must instruct
+  // editing the conflicted files (remove conflict markers) + completing the merge.
+  assert.match(SRC, /do NOT abort\. RESOLVE it/, 'integration must resolve conflicts, not blindly abort');
+  assert.match(SRC, /remove ALL conflict markers/i, 'integration must remove conflict markers when resolving');
   // Determinism still holds with the new code (no Date/random crept in).
   assert.doesNotMatch(SRC, /Date\.now|Math\.random|new Date/, 'writable code must stay determinism-safe');
 });

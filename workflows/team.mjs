@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Dispatch', detail: 'dependency-ordered waves: each subtask on its assigned backend (CLI relay or native)' },
     { title: 'Verify', detail: 'score each result against its acceptance criterion' },
     { title: 'Fix', detail: 'bounded re-dispatch of failed subtasks with verifier feedback' },
-    { title: 'Integrate', detail: 'writable mode only: merge each worktree into the integration branch, report conflicts' },
+    { title: 'Integrate', detail: 'writable mode only: merge each worktree into the integration branch, orchestrator resolves any conflicts' },
     { title: 'Synthesize', detail: 'merge verified results into one answer' },
   ],
 }
@@ -29,9 +29,10 @@ export const meta = {
 // branch, no branch/worktree/PR. writable (A.writable) — each subtask gets its own git worktree+
 // branch off HEAD, the agent writes real changes there (CLI full-auto via run.mjs --cwd --writable),
 // and a deterministic Setup/Integrate pair of Bash sub-agents create the worktrees and merge them
-// into one integration branch `mmt/team-<slug>` off HEAD (conflicts reported, never auto-resolved;
-// the user's branch is untouched; no gh PR). git runs in sub-agents because the Workflow runtime has
-// no fs/git; the workflow only orchestrates them deterministically (slug/labels, no Date/random).
+// into one integration branch `mmt/team-<slug>` off HEAD; the orchestrator RESOLVES any merge
+// conflicts itself and completes the merge, so the user gets one finished, conflict-free branch (the
+// user's branch is untouched; no gh PR). git runs in sub-agents because the Workflow runtime has no
+// fs/git; the workflow only orchestrates them deterministically (slug/labels, no Date/random).
 // =============================================================================
 
 // ---- inputs (from Workflow args) -------------------------------------------
@@ -85,9 +86,10 @@ const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? TC.max_fix_loops
 //   writable (A.writable===true / TC.mode==='writable'): each subtask gets its OWN git worktree +
 //     branch off current HEAD; the agent (CLI full-auto, or native) writes real changes there; then
 //     a deterministic integration stage merges every agent branch into ONE integration branch
-//     `mmt/team-<slug>` off current HEAD (conflicts reported), left for the user (no auto-merge onto
-//     their branch, no gh PR). The Workflow runtime has no fs/git, so the worktree lifecycle is run
-//     by sub-agents (Bash tool); the workflow orchestrates them deterministically.
+//     `mmt/team-<slug>` off current HEAD, the orchestrator RESOLVING any conflicts so the branch is
+//     finished + conflict-free (no auto-merge onto their branch, no gh PR). The Workflow runtime has
+//     no fs/git, so the worktree lifecycle is run by sub-agents (Bash tool); the workflow
+//     orchestrates them deterministically.
 // Accept boolean true OR the strings "true"/"writable"/"1"/"yes" (args/roster values may arrive as
 // strings from a JSON-string arg or a hand-edited roster), so writable mode isn't silently skipped.
 function truthyMode(v) {
@@ -248,8 +250,9 @@ const INTEGRATE_SCHEMA = {
     ok: { type: 'boolean' },
     integration_branch: { type: 'string' },
     base_sha: { type: 'string' },
-    merged: { type: 'array', items: { type: 'string' }, description: 'labels successfully merged into the integration branch' },
-    conflicts: { type: 'array', items: { type: 'string' }, description: 'labels whose merge hit conflicts (left for the user to resolve)' },
+    merged: { type: 'array', items: { type: 'string' }, description: 'labels that merged CLEANLY into the integration branch' },
+    resolved: { type: 'array', items: { type: 'string' }, description: 'labels that hit conflicts which the orchestrator RESOLVED, then completed the merge' },
+    unresolved: { type: 'array', items: { type: 'string' }, description: 'labels whose conflict could not be safely resolved and were left for the user (rare)' },
     empty: { type: 'array', items: { type: 'string' }, description: 'labels whose worktree had no changes to merge' },
     summary: { type: 'string', description: 'human-readable summary of the integration outcome + how to inspect/merge the branch' },
     reason: { type: 'string' },
@@ -627,18 +630,21 @@ const usage = {
 if (cliRecords.length) log(`usage: ${cliRecords.length} subtask(s) executed on CLI (off-budget); ${nativeRecords.length} on native Claude`)
 
 // ---- 2.5 · Writable integration: merge worktrees -> integration branch ------
-// A single integration sub-agent (Bash) commits each subtask's worktree on its branch, merges every
-// branch into the integration branch (off HEAD), reports conflicts (left for the user — NOT
-// auto-resolved blindly), and removes the worktrees. The user's current branch is NEVER touched; the
-// result sits on `${INT_BRANCH}` for them to inspect / merge / PR. No gh PR is created.
+// A single integration sub-agent (native Claude, Bash + edit tools) commits each subtask's worktree
+// on its branch, then merges every branch into the integration branch (off HEAD). On a CONFLICT it
+// RESOLVES it itself — reading both sides and editing the files to a correct combined result, then
+// completing the merge — so the user ends up with ONE finished, conflict-free integration branch
+// (not a pile of worktrees to merge by hand). Only a conflict it genuinely cannot resolve is left
+// for the user (reported under `unresolved`). The user's current branch is NEVER touched and no gh
+// PR is created — the result sits on `${INT_BRANCH}` for them to merge/PR when they're ready.
 let integration = null
 if (WRITABLE) {
   phase('Integrate')
   const labelLines = kept.map((s) => `  - "${s.label}": worktree "${worktreeFor(s.label)}", branch "${branchFor(s.label)}"`).join('\n')
   integration = await agent(
-`You are the WRITABLE-MODE INTEGRATION agent for the multi-model-team /team pipeline. Use the Bash tool to merge each subtask's worktree into the integration branch. Do NOT solve any task or write feature code — only git plumbing + an honest report.
+`You are the WRITABLE-MODE INTEGRATION agent for the multi-model-team /team pipeline. Use the Bash tool (plus the Read/Edit/Write tools when resolving a conflict) to merge each subtask's worktree into the integration branch AND to resolve any merge conflicts yourself. The goal is ONE finished, conflict-free integration branch the user can merge as-is — not a pile of worktrees for them to reconcile.
 
-CRITICAL SAFETY RULE: all merges happen INSIDE the dedicated integration worktree at "${INT_WORKTREE}" (checked out to "${INT_BRANCH}"). NEVER run \`git switch\`/\`git checkout\` in the main working tree, and NEVER merge the integration branch into the user's current branch. The user's checkout must end exactly as it started.
+CRITICAL SAFETY RULE: all merges + conflict edits happen INSIDE the dedicated integration worktree at "${INT_WORKTREE}" (checked out to "${INT_BRANCH}"). NEVER run \`git switch\`/\`git checkout\` in the main working tree, and NEVER merge the integration branch into the user's current branch. The user's checkout must end exactly as it started.
 
 Integration branch: "${INT_BRANCH}" (already created off the original HEAD). Integration worktree: "${INT_WORKTREE}".
 Subtasks (each wrote changes into its own worktree):
@@ -648,16 +654,18 @@ Do EXACTLY this, in order:
 1. For EACH subtask worktree: \`git -C "<worktree>" add -A\`; if there are staged changes, commit them: \`git -C "<worktree>" commit -m "mmt(${SLUG}): <label>"\`. If the worktree has NO changes (\`git -C "<worktree>" status --porcelain\` empty), record the label under "empty" and skip it.
 2. From the INTEGRATION WORKTREE only, merge each non-empty subtask branch into "${INT_BRANCH}", one at a time, no-fast-forward (visible merge commit):
    \`git -C ${JSON.stringify(INT_WORKTREE)} merge --no-ff -m "mmt(${SLUG}): merge <label>" "<branch>"\`
-   If a merge hits CONFLICTS, do NOT guess — \`git -C ${JSON.stringify(INT_WORKTREE)} merge --abort\`, record the label under "conflicts", and KEEP that subtask's worktree (do not remove it) so the user has the change to resolve. Continue with the rest.
-3. Remove ONLY the cleanly-merged and empty subtask worktrees (\`git worktree remove --force "<path>"\`). Keep conflicted worktrees AND the integration worktree "${INT_WORKTREE}" in place. Do NOT delete the integration branch and do NOT touch the user's branch.
-4. Report honestly: which labels merged, which conflicted (still need manual resolution), which were empty.
+   - If it merges cleanly, record the label under "merged".
+   - If it CONFLICTS: do NOT abort. RESOLVE it. Inspect the conflicted files in "${INT_WORKTREE}" (\`git -C "${INT_WORKTREE}" diff\`, the \`<<<<<<<\`/\`=======\`/\`>>>>>>>\` markers), read BOTH sides, and edit each conflicted file to a correct COMBINED result that preserves the intent of every subtask (don't just pick one side unless that is genuinely correct; remove ALL conflict markers). Then \`git -C "${INT_WORKTREE}" add -A\` and \`git -C "${INT_WORKTREE}" commit --no-edit\` to complete the merge. Record the label under "resolved" (it IS merged — just needed manual conflict work). If a conflict is genuinely beyond safe resolution (e.g. fundamentally contradictory changes you cannot reconcile without guessing at intent), THEN \`git -C "${INT_WORKTREE}" merge --abort\`, record it under "unresolved", keep that subtask's worktree, and continue.
+3. After integrating, sanity-check the integration worktree builds/parses if it's quick and obvious (e.g. \`node --check\` a changed .mjs); note any breakage in the summary. Then remove the cleanly-merged + resolved + empty subtask worktrees (\`git worktree remove --force "<path>"\`). Keep ONLY any "unresolved" worktrees AND the integration worktree "${INT_WORKTREE}". Do NOT delete the integration branch and do NOT touch the user's branch.
+4. Report honestly.
 
-Return JSON matching the schema: { ok, integration_branch, base_sha, merged:[label], conflicts:[label], empty:[label], summary, reason? }. The summary MUST tell the user how to inspect the result (e.g. "git log ${INT_BRANCH}" or open the integration worktree at "${INT_WORKTREE}") and that conflicts (if any) remain for them to resolve in those kept worktrees.`,
-    { label: 'integrate-worktrees', phase: 'Integrate', model: tierModel('sonnet'), schema: INTEGRATE_SCHEMA }
+Return JSON matching the schema: { ok, integration_branch, base_sha, merged:[label], resolved:[label], unresolved:[label], empty:[label], summary, reason? }. "resolved" = merged after you fixed conflicts; "unresolved" = the rare conflict you left for the user. The summary MUST tell the user the integration branch is ready to merge (e.g. "git log ${INT_BRANCH}"), note any "resolved" conflicts you reconciled (so they can review your resolution), and flag any "unresolved" ones.`,
+    { label: 'integrate-worktrees', phase: 'Integrate', model: tierModel('opus'), schema: INTEGRATE_SCHEMA }
   )
-  if (integration && Array.isArray(integration.conflicts) && integration.conflicts.length) {
-    log(`writable: ${integration.conflicts.length} subtask(s) had merge conflicts on ${INT_BRANCH} (left for you): ${integration.conflicts.join(', ')}`)
-  }
+  const resolved = (integration && Array.isArray(integration.resolved)) ? integration.resolved : []
+  const unresolved = (integration && Array.isArray(integration.unresolved)) ? integration.unresolved : []
+  if (resolved.length) log(`writable: orchestrator resolved ${resolved.length} merge conflict(s) into ${INT_BRANCH}: ${resolved.join(', ')}`)
+  if (unresolved.length) log(`writable: ${unresolved.length} conflict(s) left UNRESOLVED — NOT merged into ${INT_BRANCH}; the subtask worktree/branch is kept for you to reconcile: ${unresolved.join(', ')}`)
   log(`writable: integration ${integration && integration.ok ? 'complete' : 'had problems'} on ${INT_BRANCH} — ${integration ? integration.summary : 'no report'}`)
 }
 

@@ -32,7 +32,9 @@ and synthesizer default to native Opus.
 | `test/reason.test.mjs` | new | unit tests |
 | `README.md`, `CLAUDE.md` | edit — docs | docs |
 
-Keep the house style: Node ESM `.mjs`, **zero runtime deps** (Node stdlib only), injection-safe
+Keep the house style: Node ESM `.mjs`, **Node stdlib only for the reasoning path** (the plugin's one
+native dep, `node-pty`, is loaded lazily only by the agy lane in `backends.mjs` — nothing here needs
+it), injection-safe
 (untrusted question text never touches a shell argument — it rides on stdin / a single-quoted
 heredoc / a JSON `args` value), determinism-safe in the workflow (no `Date`/`Math.random`).
 

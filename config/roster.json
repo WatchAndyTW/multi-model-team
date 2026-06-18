@@ -30,7 +30,7 @@
   },
 
   "backends": {
-    "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in backends.sh ('gemini' (agy) and 'codex' are implemented; 'opencode' is a config stub with no invoker yet, so enabling it simply falls through until an invoker is added).",
+    "_comment": "Each key is a backend name a route can target. 'enabled' gates use (disabled -> skipped, falls through to the next hop / native). 'kind' selects the invoker in src/lib/backends.mjs ('gemini' (agy) and 'codex' are implemented; 'opencode' is a config stub with no invoker yet, so enabling it simply falls through until an invoker is added). 'writable_extra' = flags used INSTEAD of 'extra' in /team --writable mode (full-auto).",
 
     "agy": {
       "enabled": true,
@@ -82,7 +82,7 @@
       "cost_per_1k_chars": 0.0004,
       "quota_patterns": ["rate limit", "quota", "429", "usage limit", "insufficient_quota", "too many requests", "exceeded"],
       "quota_exit_codes": [],
-      "_note": "Invoked as `codex exec <flags> <prompt>` — non-interactive, prints only the final message to stdout (no winpty). models empty = codex's own config.toml default; set per-tier model IDs here to map cheap/standard. `-s read-only` keeps it from modifying files; drop --skip-git-repo-check only if you require a git repo."
+      "_note": "Invoked as `codex exec <flags> -` with the PROMPT delivered on STDIN (the `-` sentinel), not as a positional arg — sidesteps the Windows .cmd newline-truncation bug (see backends.mjs invokeCodex / PROBES.md). Non-interactive, prints only the final message to stdout (no winpty). models empty = codex's own config.toml default; set per-tier model IDs here to map cheap/standard. `-s read-only` (in `extra`) keeps it from modifying files; `/team --writable` swaps to `writable_extra` (full-auto)."
     },
 
     "opencode": {

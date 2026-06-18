@@ -63,9 +63,11 @@ otherwise **read-only mode** (the default).
 - **writable (`--writable`):** each subtask gets its **own git worktree + branch** off the current HEAD;
   the assigned agent (CLI **full-auto** via `run.mjs --cwd <worktree> --writable`, or a native solver
   writing in the worktree) makes **real file changes** there; then the orchestrator **merges every
-  subtask branch into one integration branch `mmt/team-<slug>`** off HEAD, **reports conflicts** (never
-  blind-resolves them), and leaves that branch for you. Your current branch is **untouched** (no
-  auto-merge), and **no GitHub PR is created** — you inspect/merge/PR the integration branch yourself.
+  subtask branch into one integration branch `mmt/team-<slug>`** off HEAD and **resolves any merge
+  conflicts itself** (reading both sides, editing to a correct combined result, completing the merge) —
+  so you get **one finished, conflict-free branch**, not a pile of worktrees. (Only a conflict it
+  genuinely can't reconcile is left `unresolved` for you.) Your current branch is **untouched** (no
+  auto-merge onto it), and **no GitHub PR is created** — you merge/PR the integration branch when ready.
 
 In the Ultracode path, pass `writable: true` in the Workflow args for writable mode (the workflow runs
 the Setup → Dispatch → Integrate stages). In the Task-agent path, follow the writable steps marked
@@ -265,9 +267,10 @@ override (`verifier`, `caps`, `verify`, `maxFixLoops`). With no `teamConfig`, th
 apply (all three backends eligible; codex verify). Read its returned `{ plan, mode, backends, caps,
 counts:{byBackend,…}, verifier, writable, results, final }` and present `final`, noting `counts.failed`
 if non-zero. **In writable mode** (`mode:"writable"`), also surface `writable.integration_branch` and
-`writable.integration` — tell the user the changes are on that branch (their current branch is
-untouched), list any `writable.integration.conflicts` that still need manual resolution, and how to
-inspect it (`git switch <integration_branch>` / `git log <integration_branch>`). (`args.task` is passed
+`writable.integration` — tell the user the changes are on that **finished, conflict-free** branch (their
+current branch is untouched), note any `writable.integration.resolved` conflicts the orchestrator
+reconciled (so they can review the resolution) and flag any `writable.integration.unresolved` ones that
+still need their hand, and how to inspect it (`git log <integration_branch>`). (`args.task` is passed
 as a JSON value, not shell — injection-safe.)
 
 A trivial single task needs no fan-out: one subtask reduces this to a plain verified dispatch.

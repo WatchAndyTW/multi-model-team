@@ -10,7 +10,8 @@ glanceable statusline HUD.
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
 **Status:** built, adversarially reviewed, and green. `npm test` passes **99/99** offline
-(plus live agy + codex smoke tests under `MMT_LIVE=1`). Two live backends: **agy** (Gemini)
+(no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
+Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
 `docs/PLAN.md` (original design plan).
@@ -108,6 +109,7 @@ src/lib/team-spec.mjs           /team cap-spec parser (replaces team_spec.py)
 src/lib/team-plan.mjs           plan.json → per-subtask files (replaces team_plan.py)
 src/lib/reason-spec.mjs         /reasoning panel-spec parser: expandPanel / parsePanel / splitPanel
 src/lib/gen-agents.mjs          regenerate agents/*.md from roster.json (replaces gen_agents.py)
+src/lib/validate-config.mjs     roster.json validator (unique route names, valid tiers/backends/agents)
 src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
@@ -125,6 +127,7 @@ workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → S
 test/*.test.mjs                 offline test suite (npm test — node --test)
 docs/PLAN.md                    original implementation plan (historical)
 docs/REASONING.md               design contract for the /reasoning Fusion pipeline
+docs/INTERFACES.md              module interface contract (binding signatures for the Node ESM port)
 ```
 
 ---
@@ -190,8 +193,10 @@ PR** (back-compat). *writable (`--writable`):* each subtask gets its **own git w
 HEAD; the agent makes **real changes** there (CLI **full-auto** via `run.mjs --cwd <wt> --writable`,
 selecting the backend's `writable_extra` instead of `extra`); then a deterministic **Setup → Integrate**
 pair of Bash sub-agents (the Workflow runtime has no fs/git) create the worktrees and **merge each into
-one integration branch `mmt/team-<slug>`** off HEAD — **conflicts reported, never auto-resolved**; the
-user's branch is untouched (no auto-merge) and **no `gh` PR** is created. Worktrees live under
+one integration branch `mmt/team-<slug>`** off HEAD — **the orchestrator resolves any merge conflicts
+itself and completes the merge**, so you get one finished, conflict-free branch (only a conflict it
+genuinely can't reconcile is left as `unresolved`); the user's branch is untouched (no auto-merge) and
+**no `gh` PR** is created. Worktrees live under
 `.mmt/worktrees/<slug>/` (gitignored). Enable per-invocation (`--writable` / Workflow `args.writable`)
 or via roster `team.mode:"writable"`. The full-auto sandbox is config-tunable: each backend's
 `writable_extra` in `roster.json` (codex `--dangerously-bypass-approvals-and-sandbox`; agy keeps its
@@ -349,11 +354,11 @@ fallback hop.
 
 ```bash
 npm test                         # offline: 99/99 routing + unit tests (no backend calls)
-MMT_LIVE=1 npm test              # + live agy + codex smoke tests (network required)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`
-and run with `node --test`.
+and run with `node --test`. The suite is fully offline — there is no `MMT_LIVE` live-test gate; verify
+agy/codex behaviour by hand against the installed CLIs.
 
 ---
 

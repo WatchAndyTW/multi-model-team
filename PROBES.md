@@ -1,7 +1,16 @@
 # Grounded probe findings — agy v1.0.8 (Windows)
 
+> **Historical capture — read with the SUPERSEDED notes.** This file records the raw probe results
+> from the original **bash** implementation (2026-06-13/14): the actual CLI bytes, flags, the
+> `isatty` discovery, and the model list — all still factually true about the CLIs. But the *plugin's
+> implementation* has since moved to **Node ESM** with **node-pty/ConPTY** (not winpty) and a
+> **stdin-delivered** codex prompt. Where a section describes the old bash/winpty mechanism, a
+> **SUPERSEDED** note points to the live code (`src/lib/backends.mjs`); `backends.sh`, `route.sh`,
+> `run.sh`, and the python/jq tooling referenced below were all deleted in the rewrite. `CLAUDE.md`
+> is the current source of truth for the implementation.
+
 Captured 2026-06-13 against the real `agy` CLI. These resolve the plan's open probes
-P1/P2 and the non-obvious headless behavior. Source of truth for `backends.sh` / `clean()`.
+P1/P2 and the non-obvious headless behavior.
 
 ## Binary
 - Path: `C:\Users\WatchAndyTW\AppData\Local\agy\bin\agy.exe`
@@ -13,12 +22,21 @@ P1/P2 and the non-obvious headless behavior. Source of truth for `backends.sh` /
   Subcommands: `models`, `update`, `install`, `plugin`/`plugins`, `changelog`, `help`.
   **No `--output-format`** — text output only (matches plan).
 
-## THE KEY FINDING — agy needs a TTY (use winpty)
+## THE KEY FINDING — agy needs a TTY
 `agy` gates its output on `isatty(stdout)`. When invoked through a normal pipe
 (Claude Code Bash/PowerShell tool, hook runner, subagent shell) it **exits 0 and prints
-NOTHING**. It only produces output when attached to a real console.
+NOTHING**. It only produces output when attached to a real console. *(This finding is still true
+and is the whole reason the agy lane needs a pseudo-terminal.)*
 
-Fix: wrap every invocation in **winpty** (`/usr/bin/winpty`, present on this msys/git-bash):
+> **SUPERSEDED — the live fix is node-pty/ConPTY, not winpty.** The plugin now runs agy under a real
+> pseudo-terminal via **node-pty** (`backends.mjs runPty`): **ConPTY** on Windows, **forkpty** on
+> POSIX — so `isatty(stdout)` is true with **no visible console**, working from a fully headless
+> parent. winpty could NOT allocate a console with non-zero dims from a console-less parent (the
+> `winpty.cc:924` assertion below), so it was dropped from the agy path; `platform.ptyWrap` (winpty/
+> `script`) survives only as the **POSIX-without-node-pty** fallback. The winpty recipe below is the
+> historical bash approach, kept for the byte-level findings — not the current mechanism.
+
+Historical bash fix (superseded): wrap every invocation in **winpty** (`/usr/bin/winpty`):
 
 ```
 winpty -Xallow-non-tty -Xplain <agy.exe> --print "<prompt>" --model "<name>" \
@@ -39,8 +57,10 @@ With the recipe above, `agy -p "Say exactly: HELLO"`:
   appears AFTER output, does **not** change the exit code (still 0 on success).
 - **exit**: 0 on success.
 
-=> `clean()`: take stdout only, strip `\r`, trim trailing newline/whitespace.
-   Defensive: also drop any line matching winpty's `Assertion failed:.*winpty\.cc`.
+=> `clean()` (now `backends.mjs clean()`): take stdout only, strip `\r` + ANSI/CSI/OSC, trim trailing
+   whitespace. *(The winpty `Assertion failed:.*winpty\.cc` line filter still exists in `clean()` for
+   the POSIX winpty fallback, but is dead on the primary node-pty/ConPTY path — ConPTY emits no such
+   assertion.)*
 => HUD token totals are **char estimates** (no usage emitted) — label them `~`.
 
 ### `--model` argument format (RESOLVED)
@@ -65,11 +85,17 @@ Not yet hit a real limit. Shipping default `quota_patterns`; will harden on firs
 exhaustion. winpty's assertion line is NOT a quota pattern, so no false positive.
 
 ## Tooling on this machine (bash/msys)
-- `jq`: **missing** -> statusline parses state.json with pure bash/sed (no jq dep).
-- `python3`: 3.12.12 (stdlib `json`) -> used by `route.sh`/`run.sh` to parse `roster.json`.
-- `winpty`, `timeout`, `sed`, `grep`, `awk`, `perl`: present.
-- agy is **not** on bash PATH in this session (added after Claude Code started); scripts
-  resolve the binary themselves (env override -> `command -v` -> `$LOCALAPPDATA` path).
+> **SUPERSEDED.** This captured the *bash-era* tool deps. The plugin is now **Node ESM with one
+> native dep (`node-pty`)** — no `jq`, no `python3`, no `route.sh`/`run.sh`. `roster.json` is parsed
+> by `JSON.parse` (`src/lib/config.mjs`); the statusline parses `state.json` line-by-line in Node
+> (`statusline/statusline.mjs`); routing/execution are `src/bin/route.mjs` / `src/bin/run.mjs`.
+
+- `jq`: **missing** -> (bash era) statusline parsed state.json with pure bash/sed. *(Now: Node, no jq.)*
+- `python3`: 3.12.12 -> (bash era) `route.sh`/`run.sh` parsed `roster.json` with it. *(Now: `JSON.parse`; those scripts are deleted.)*
+- `winpty`, `timeout`, `sed`, `grep`, `awk`, `perl`: present. *(Now off the hot path — only the POSIX winpty/`script` fallback remains.)*
+- agy is **not** on bash PATH in this session (added after Claude Code started); the binary is
+  resolved by the plugin itself (env override -> PATH scan -> `$LOCALAPPDATA` path) — still true
+  (`platform.resolveBinary`).
 
 ---
 
@@ -81,10 +107,14 @@ section above; contrasts noted explicitly.
 ## Binary
 - Path: `~/AppData/Roaming/npm/codex` (on PATH; resolved via `command -v codex`).
 - Version: `codex --version` -> `codex-cli 0.139.0`. Not TTY-gated — runs fine headless.
-- Non-interactive entrypoint: **`codex exec [OPTIONS] [PROMPT]`** (alias `codex e`).
-  The prompt rides as the positional arg. If stdin is piped AND a prompt arg is given,
-  codex appends stdin as a `<stdin>` block — so invoke with stdin = `/dev/null` (or
-  the equivalent held-closed) to avoid spurious context injection.
+- Non-interactive entrypoint: **`codex exec [OPTIONS] [PROMPT]`** (alias `codex e`). codex also
+  reads the prompt from **stdin** via the `-` sentinel: `codex exec … -`.
+  > **SUPERSEDED — the live invoker delivers the prompt on STDIN, not as a positional arg.**
+  > `backends.mjs invokeCodex` builds `codex exec … -` and writes the prompt to stdin. This was a
+  > deliberate fix: on Windows codex is a `.cmd` shim spawned via `cmd.exe`, which **truncates a
+  > multi-line prompt at the first newline** (and expands `%VAR%`) when it rides as an argv element.
+  > stdin sidesteps both. The "prompt as positional arg + stdin=`/dev/null`" recipe below is the
+  > historical pre-fix approach.
 
 ## THE KEY DIFFERENCE vs agy — no winpty, no TTY gating
 
@@ -117,15 +147,20 @@ No `winpty`, no open-stdin FIFO, no output-scrubbing gymnastics required.
 | `-m <MODEL>` | Model selector (omitted → codex's own `config.toml` default). |
 | `--add-dir <DIR>` | Extra readable directory to expose. |
 
-`--dangerously-bypass-approvals-and-sandbox` exists but is NOT used — `read-only` is
-safer for relay use.
+`--dangerously-bypass-approvals-and-sandbox` is the read-only DEFAULT's opposite: it is **used** by
+the `/team --writable` lane (`roster.json` codex `writable_extra`) so codex can write files + run
+commands in its worktree (full-auto). The default `extra` keeps `-s read-only` for the safe text-relay
+path. *(Original note said this flag was "not used" — true in the read-only-only era, now stale.)*
 
 ## Health check
 
 `codex --version` (not `codex exec`) prints the version line to stdout, exit 0.
-Not TTY-gated. Suitable for a fast health gate in `backends.sh`.
+Not TTY-gated. Suitable for a fast health gate — now in `backends.mjs health()` (was `backends.sh`).
 
 ## Invocation recipe
+
+> **SUPERSEDED** — the live invoker is `backends.mjs invokeCodex` (prompt on stdin via `-`; writable
+> mode swaps the sandbox flags). Historical read-only recipe (positional prompt + `/dev/null`):
 
 ```bash
 codex exec \

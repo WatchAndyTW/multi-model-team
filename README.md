@@ -90,11 +90,13 @@ work runs across parallel agents — never one inline session.
 - **writable (`--writable`):** each subtask gets its **own git worktree + branch** off your current
   `HEAD`; the assigned agent makes **real file changes** there (CLI backends run **full-auto** in the
   worktree). The orchestrator then **merges every subtask branch into one integration branch
-  `mmt/team-<slug>`** (off `HEAD`), **reports any merge conflicts** instead of guessing at them, and
-  leaves that branch for you. **Your current branch is never touched** (no auto-merge) and **no
-  GitHub PR is created** — you inspect / merge / open a PR for the integration branch yourself
-  (`git log mmt/team-<slug>`). Per-subtask worktrees live under `.mmt/worktrees/` (gitignored);
-  conflicted ones are kept so you can resolve them. The full-auto sandbox per backend is tunable via
+  `mmt/team-<slug>`** (off `HEAD`) and **resolves any merge conflicts itself** — reading both sides and
+  editing to a correct combined result, then completing the merge — so you get **one finished,
+  conflict-free branch**, not a pile of worktrees to reconcile. **Your current branch is never touched**
+  (no auto-merge onto it) and **no GitHub PR is created** — you merge / open a PR for the integration
+  branch when ready (`git log mmt/team-<slug>`). Only a conflict the orchestrator genuinely can't
+  reconcile is left for you (reported as `unresolved`, its worktree kept). Per-subtask worktrees live
+  under `.mmt/worktrees/` (gitignored). The full-auto sandbox per backend is tunable via
   `writable_extra` in `roster.json`. Enable per-invocation with `--writable`, or set
   `team.mode: "writable"` in the roster.
 
@@ -271,6 +273,7 @@ src/lib/team-spec.mjs        /team cap-spec parser
 src/lib/team-plan.mjs        plan.json → per-subtask files
 src/lib/reason-spec.mjs      /reasoning panel-spec parser
 src/lib/gen-agents.mjs       regenerate agents/*.md from the roster
+src/lib/validate-config.mjs  roster.json validator (route names, tiers, backends, agents)
 src/bin/route.mjs            task → decision JSON CLI
 src/bin/run.mjs              executor + fallback chain + HUD state (file relay transport: --call-file)
 src/bin/team.mjs             scripted CLI fan-out for /team
@@ -287,6 +290,7 @@ workflows/reasoning.mjs      Ultracode Fusion workflow: Panel → Judge → Synt
 test/*.test.mjs              offline test suite
 docs/PLAN.md                 original implementation plan (historical)
 docs/REASONING.md            design contract for the /reasoning Fusion pipeline
+docs/INTERFACES.md           module interface contract (Node ESM port signatures)
 ```
 
 ---
@@ -295,8 +299,10 @@ docs/REASONING.md            design contract for the /reasoning Fusion pipeline
 
 ```bash
 npm test                # offline: 99/99 routing + unit tests (no backend calls)
-MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network required)
 ```
+
+The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a
+real `node src/bin/run.mjs --call-file=…` against the installed CLIs), not by a `npm test` gate.
 
 > **Why Node ESM?** The original bash hooks forked ~6–7 processes per invocation under a 10 s msys
 > timeout and were intermittently killed ("hooks not triggering sometimes"). Each hook is now **one

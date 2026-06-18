@@ -137,7 +137,8 @@ function invocationExtra(cfg, writable) {
 // such argv through `cmd.exe /d /s /c` with the args as an ARRAY (Node quotes them), which avoids
 // shell:true (DEP0190 — unescaped concatenation). agy/.exe and all posix argv pass through untouched.
 // NOTE: cmd.exe still expands %VAR% inside quoted args; a literal % in a prompt is a rare edge for
-// codex review/test prompts — covered by the live (MMT_LIVE) smoke test, not the offline suite.
+// codex review/test prompts — exercised by a manual live smoke test against the real CLI, not the
+// offline suite (there is no automated live-test gate).
 function winCmdWrap(argv) {
   if (!platform.isWindows() || !Array.isArray(argv) || argv.length === 0) return argv;
   const [cmd, ...rest] = argv;
