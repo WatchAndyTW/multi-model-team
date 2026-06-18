@@ -257,7 +257,6 @@ src/bin/route.mjs            task → decision JSON CLI
 src/bin/run.mjs              executor + fallback chain + HUD state (base64url relay transport)
 src/bin/team.mjs             scripted CLI fan-out for /team
 src/bin/reason.mjs           scripted panel fan-out for /reasoning
-hooks/heavy-read-guard.mjs   PreToolUse(Read) guard — oversized RE-dump reads
 hooks/proactive-route.mjs    UserPromptSubmit delegation nudge (opt-in)
 hooks/spawn-route-guard.mjs  PreToolUse(Task|Agent) guard — CLI-routable spawns (opt-in)
 hooks/command-fanout-guard.mjs  UserPromptSubmit guard — forces /reasoning & /team into the engine
@@ -297,7 +296,6 @@ MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network require
 | `MMT_PROACTIVE_DISABLE` | `=1` hard-disables both proactive hooks |
 | `MMT_HOOK_DISABLE` | `=1` disables all hooks |
 | `MMT_COMMAND_GUARD_DISABLE` | `=1` disables just the `/reasoning`·`/team` engine guard |
-| `MMT_HOOK_MAX_BYTES` / `MMT_HOOK_EXTS` | heavy-read guard tuning (size threshold / guarded extensions) |
 | `MMT_HOOK_DEBUG` | `=1` appends firing markers to `stateDir/hooks.log` |
 
 ---

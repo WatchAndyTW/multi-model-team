@@ -9,7 +9,7 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **81/81** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **87/87** offline
 (plus live agy + codex smoke tests under `MMT_LIVE=1`). Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
@@ -112,13 +112,14 @@ src/bin/route.mjs               task → decision JSON CLI (replaces route.sh)
 src/bin/run.mjs                 executor + fallback chain + HUD state (replaces run.sh)
 src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
 src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
-src/bin/setup.mjs               /mmt-setup engine: external MMT_ROSTER override + settings.json wiring + --sync
+src/bin/setup.mjs               /mmt-setup engine: create/reset ~/.claude/mmt-roster.json
 hooks/proactive-route.mjs       UserPromptSubmit nudge: CLI-routable prompt → suggest delegating
 hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard: nudge/deny CLI-routable agent spawns
+hooks/command-fanout-guard.mjs  UserPromptSubmit guard: force /reasoning and /team into the engine
 hooks/hooks.json                hook registrations (all commands: `node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`)
 statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
 agents/{agy,codex}.md   GENERATED from roster.json (gen-agents.mjs)
-commands/{team,route-test,reasoning,mmt-setup}.md   /team = multi-agent fan-out; /route-test = dry-run router; /reasoning = Fusion pipeline; /mmt-setup = durable proactive config (external MMT_ROSTER)
+commands/{team,route-test,reasoning,mmt-setup}.md   /team = multi-agent fan-out; /route-test = dry-run router; /reasoning = Fusion pipeline; /mmt-setup = durable personal roster setup
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs                 offline test suite (npm test — node --test)
@@ -334,7 +335,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 81/81 routing + unit tests (no backend calls)
+npm test                         # offline: 87/87 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test              # + live agy + codex smoke tests (network required)
 ```
 

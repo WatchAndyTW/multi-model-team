@@ -125,7 +125,8 @@ QUESTION:
 ```
 
 **CLI panelist** (backend `agy` or `codex`) — spawn a FAITHFUL RELAY agent (`subagent_type:
-"general-purpose"`, and **set `model` to the `relay_model` from step 1 — `haiku` by default**). A
+"general-purpose"`, and **set `model` to the `relay_model` from step 1 — resolved from merged roster
+config; the shipped roster value is `haiku`, and the built-in fallback is `sonnet`**). A
 relay does ZERO reasoning (one Bash call, return stdout verbatim), so pin it to the cheap relay
 model — do NOT let it inherit the orchestrator's model (e.g. Opus). It does NOT solve the question;
 it runs the one dispatch command and returns stdout verbatim. Substitute the real plugin root for

@@ -8,8 +8,9 @@ __pycache__/
 # Claude Code local / harness state
 .claude/
 
-# oh-my-claudecode local working state
+# oh-my-claudecode and oh-my-codex local working state
 .omc/
+.omx/
 
 # multi-model-team local state (plans, scratch). The project-local roster (.mmt/roster.json) is
 # meant to be checked in (shared team routing config), so it is un-ignored below.
