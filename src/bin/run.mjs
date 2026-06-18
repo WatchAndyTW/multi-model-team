@@ -254,8 +254,11 @@ async function main() {
       fallbackCount++; continue;
     }
 
-    // success.
-    state.end({ id: callId, backend: be, model, rule: D_rule, code: 0, durMs, outChars, fallback: fallbackCount });
+    // success. Approximate cost (USD micros) from the backend's per-1k-char rate × (in+out) chars —
+    // a rough HUD figure only (chars, not tokens). Missing/zero rate -> 0 cost.
+    const rate = Number(beCfg.cost_per_1k_chars) || 0;
+    const costMicros = Math.round(rate * ((inChars + outChars) / 1000) * 1e6);
+    state.end({ id: callId, backend: be, model, rule: D_rule, code: 0, durMs, outChars, fallback: fallbackCount, costMicros });
     process.stdout.write(cleanOut + '\n');
     process.exit(0);
   }

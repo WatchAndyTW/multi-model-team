@@ -61,3 +61,27 @@ export function classify(task, tagsPath) {
 
   return result;
 }
+
+/**
+ * Collect the set of task-type labels DEFINED in tags.txt (the first token of each non-comment,
+ * non-blank line). Used by `route.mjs --validate` to flag routes that reference an unknown type.
+ * @param {string} tagsPath  absolute path to config/tags.txt
+ * @returns {Set<string>}
+ */
+export function knownTypes(tagsPath) {
+  const out = new Set();
+  let raw;
+  try {
+    raw = readFileSync(tagsPath, 'utf8');
+  } catch {
+    return out;
+  }
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const spaceIdx = trimmed.search(/\s/);
+    if (spaceIdx === -1) continue;
+    out.add(trimmed.slice(0, spaceIdx));
+  }
+  return out;
+}

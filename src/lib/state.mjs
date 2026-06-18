@@ -46,6 +46,7 @@ function loadCounters() {
     errors: getNum(text, 'errors', 0),
     approx_in_chars: getNum(text, 'approx_in_chars', 0),
     approx_out_chars: getNum(text, 'approx_out_chars', 0),
+    approx_cost_micros: getNum(text, 'approx_cost_micros', 0),
   };
 }
 
@@ -137,7 +138,8 @@ function flush(s) {
     `  "last_dur_ms": ${intOr(s.last_dur_ms, 0)},`,
     `  "last_out_chars": ${intOr(s.last_out_chars, 0)},`,
     `  "approx_in_chars": ${intOr(s.approx_in_chars, 0)},`,
-    `  "approx_out_chars": ${intOr(s.approx_out_chars, 0)}`,
+    `  "approx_out_chars": ${intOr(s.approx_out_chars, 0)},`,
+    `  "approx_cost_micros": ${intOr(s.approx_cost_micros, 0)}`,
     '}',
     '',
   ];
@@ -179,8 +181,8 @@ export function start({ id, backend, model, rule, inChars } = {}) {
   }
 }
 
-// end({ id, backend, model, rule, code, durMs, outChars, fallback }) — open--, calls++, set last_*.
-export function end({ id, backend, model, rule, code, durMs, outChars, fallback } = {}) {
+// end({ id, backend, model, rule, code, durMs, outChars, fallback, costMicros }) — open--, calls++, set last_*.
+export function end({ id, backend, model, rule, code, durMs, outChars, fallback, costMicros } = {}) {
   const locked = lock();
   try {
     const s = loadCounters();
@@ -204,6 +206,7 @@ export function end({ id, backend, model, rule, code, durMs, outChars, fallback 
     s.last_dur_ms = intOr(durMs, 0);
     s.last_out_chars = intOr(outChars, 0);
     s.approx_out_chars = (s.approx_out_chars || 0) + intOr(outChars, 0);
+    s.approx_cost_micros = (s.approx_cost_micros || 0) + intOr(costMicros, 0);
     flush(s);
   } finally {
     if (locked) unlock();

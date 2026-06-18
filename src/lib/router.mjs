@@ -43,14 +43,20 @@ function applyPreset(preset, ruleName, backend, tier) {
 
 /**
  * First-match-wins rule evaluation (parity with match.py match_rule).
+ * Returns the winning rule or null; also collects near-misses for confidence.
  * @param {object[]} routes
  * @param {number} chars
  * @param {string[]} types
- * @returns {object|null}
+ * @returns {{ rule: object|null, nearMisses: object[] }}
  */
 function matchRule(routes, chars, types) {
   const tset = new Set(types.filter(Boolean));
+  const nearMisses = [];
+
   for (const r of routes) {
+    // Skip marker objects (no name key)
+    if (!r.name) continue;
+
     const when = r.when || {};
     let ok = true;
 
@@ -65,16 +71,40 @@ function matchRule(routes, chars, types) {
     if (ok && 'max_chars' in when) {
       if (chars > Number(when.max_chars)) ok = false;
     }
-    if (ok) return r;
+
+    if (ok) return { rule: r, nearMisses };
+
+    // Collect near-misses: rules with type overlap (ignore char constraints)
+    if ('type' in when) {
+      const ruleTypes = when.type;
+      const hasTypeOverlap = ruleTypes.some(t => tset.has(t));
+      if (hasTypeOverlap) {
+        nearMisses.push({ rule: r, backend: r.backend || 'native', tier: r.tier || 'sonnet' });
+      }
+    }
   }
-  return null;
+
+  return { rule: null, nearMisses };
+}
+
+/**
+ * Compute decision confidence.
+ * @param {string[]} types - matched task types
+ * @param {object[]} nearMisses - rules with type overlap but failed on chars/min_chars/max_chars
+ * @returns {"high" | "medium" | "low"}
+ */
+function computeConfidence(types, nearMisses) {
+  if (types.length > 0 && nearMisses.length === 0) return 'high';
+  if (nearMisses.length > 0) return 'medium';
+  return 'low'; // catch-all only
 }
 
 /**
  * Produce a routing decision.
  * @param {{ task: string, roster: object, tagsPath: string, preset?: string }} opts
  * @returns {{ backend: string, model: string, tier: string, rule: string, native: boolean,
- *             preset: string, score: { chars: number, types: string[] } }}
+ *             preset: string, score: { chars: number, types: string[] },
+ *             nearMisses: object[], confidence: string }}
  */
 export function decide({ task, roster, tagsPath, preset: presetArg }) {
   const defs = getRosterDefaults(roster);
@@ -83,15 +113,13 @@ export function decide({ task, roster, tagsPath, preset: presetArg }) {
   const chars = charCount(task);
   const types = classify(task, tagsPath);
 
-  // Filter out _comment marker objects; keep only real rules (those with a `name` key).
   const rawRoutes = getRosterRoutes(roster);
   const score = { chars, types };
 
-  let rule = matchRule(rawRoutes, chars, types);
+  const { rule, nearMisses } = matchRule(rawRoutes, chars, types);
 
   let backend, tier, ruleName;
   if (rule === null) {
-    // Should be impossible given catch-all-safe with when:{}, but stay safe.
     backend = 'native';
     tier = 'sonnet';
     ruleName = 'catch-all-safe';
@@ -103,6 +131,7 @@ export function decide({ task, roster, tagsPath, preset: presetArg }) {
 
   [backend, tier] = applyPreset(preset, ruleName, backend, tier);
   const { model, native } = resolveModel(roster, backend, tier);
+  const confidence = computeConfidence(types, nearMisses);
 
-  return { backend, model, tier, rule: ruleName, native, preset, score };
+  return { backend, model, tier, rule: ruleName, native, preset, score, nearMisses, confidence };
 }

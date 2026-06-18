@@ -51,6 +51,8 @@
         "$HOME/AppData/Local/agy/bin/agy.exe"
       ],
       "hard_timeout": "6m",
+      "_cost_note": "tunable estimate, USD per 1000 output chars — for the HUD cost figure only",
+      "cost_per_1k_chars": 0.0001,
       "quota_patterns": [
         "quota", "rate limit", "resource_exhausted", "429",
         "exceeded your current quota", "insufficient", "out of credits",
@@ -72,6 +74,8 @@
       "sandbox_flag": "",
       "use_winpty": false,
       "hard_timeout": "6m",
+      "_cost_note": "tunable estimate, USD per 1000 output chars — for the HUD cost figure only",
+      "cost_per_1k_chars": 0.0004,
       "quota_patterns": ["rate limit", "quota", "429", "usage limit", "insufficient_quota", "too many requests", "exceeded"],
       "quota_exit_codes": [],
       "_note": "Invoked as `codex exec <flags> <prompt>` — non-interactive, prints only the final message to stdout (no winpty). models empty = codex's own config.toml default; set per-tier model IDs here to map cheap/standard. `-s read-only` keeps it from modifying files; drop --skip-git-repo-check only if you require a git repo."
@@ -146,7 +150,7 @@
 
     { "_comment": "Standard, verifiable coding — most everyday code work.",
       "name": "standard-coding",
-      "when": { "type": ["frontend", "react-component", "css", "html", "ui", "svg", "animation", "3d", "asset-gen", "mockup", "boilerplate", "scaffold", "crud", "rest-endpoint", "script", "cli-tool", "glue-code", "data-transform", "sql-query", "regex", "config-file", "dockerfile", "rename", "format", "codegen", "fixture"] },
+      "when": { "type": ["frontend", "react-component", "css", "html", "ui", "svg", "animation", "3d", "asset-gen", "mockup", "boilerplate", "scaffold", "crud", "rest-endpoint", "script", "cli-tool", "glue-code", "data-transform", "sql-query", "regex", "config-file", "dockerfile", "rename", "format", "codegen", "fixture", "docs-write", "i18n", "deps-bump"] },
       "backend": "agy", "tier": "standard" },
 
     { "_comment": "Cheap/fast trivia — tiny, throwaway, zero-judgment.",

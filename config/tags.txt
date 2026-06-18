@@ -86,6 +86,9 @@ format         reformat|prettier|fix (the )?indentation|lint fix|run the formatt
 codegen        code ?gen(eration)?|generate (the )?code
 unit-test      unit test|write tests?|test cases?|\bjest\b|\bpytest\b|test coverage
 fixture        fixture|mock data|test data|seed data|sample data
+docs-write     (writ|updat|add|generat|creat|author).{0,30}(docs?|documentation|readme|jsdoc|docstrings?|changelog)|document (the )?(api|module|function|code)
+i18n           \bi18n\b|internationali(z|s)ation|locali(z|s)ation|translat.{0,15}(strings?|\bui\b|text|copy)|add locale support
+deps-bump      (bump|upgrade|update).{0,20}(the )?(version|dependenc(y|ies)|package)|upgrade .{0,20} to v?\d|bump .{0,20} to v?\d
 
 # ============================ AGY: trivial ============================
 quick-email    \bemail\b|draft (a|an) (email|message|note)|reply to

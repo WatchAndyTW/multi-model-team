@@ -19,6 +19,15 @@ import Module, { createRequire } from 'node:module';
 import { spawn, execSync } from 'node:child_process';
 import * as platform from './platform.mjs';
 
+// Health-check TTL memoization — health() is called on EVERY fallback-chain hop in run.mjs; without
+// caching that re-spawns `<bin> --version` each time. Cache the boolean per backend for HEALTH_TTL_MS.
+const _healthCache = new Map();
+const HEALTH_TTL_MS = 60_000;
+
+function _healthKey(backendCfg) {
+  return (backendCfg?.kind || '') + ':' + (backendCfg?.cmd || '');
+}
+
 // node-pty resolution: plugin-local install first, then a GLOBAL `npm install -g node-pty` via the
 // NODE_PATH shim (ensureGlobalNodeModules). createRequire is used instead of ESM import() because
 // NODE_PATH only affects CommonJS require() resolution — this is the same trick oh-my-claudecode uses
@@ -350,7 +359,7 @@ export async function invoke(backendCfg, prompt, opts = {}) {
 // --- health ------------------------------------------------------------------
 // `<bin> --version` -> non-empty output, exit 0. WITHOUT any PTY wrapper for BOTH backends:
 // PROBES.md confirms winpty yields empty for agy --version (not TTY-gated), and codex isn't gated.
-export async function health(backendCfg) {
+async function _healthUncached(backendCfg) {
   const kind = backendCfg && backendCfg.kind;
   let bin;
   if (kind === 'gemini') {
@@ -375,6 +384,28 @@ export async function health(backendCfg) {
   // Non-empty stdout (CR-stripped) + clean exit. spawnError/ENOENT -> code 127 -> false.
   const out = res.stdout.replace(/\r/g, '').trim();
   return res.code === 0 && out.length > 0;
+}
+
+// TTL-memoized health check. Returns the cached boolean if checked within HEALTH_TTL_MS, else
+// re-probes and caches. Keeps the per-hop fallback-chain cost down to one probe per backend per TTL.
+export async function health(backendCfg) {
+  const key = _healthKey(backendCfg);
+  const cached = _healthCache.get(key);
+  const now = Date.now();
+  if (cached !== undefined && (now - cached.ts) < HEALTH_TTL_MS) return cached.ok;
+  const ok = await _healthUncached(backendCfg);
+  _healthCache.set(key, { ok, ts: now });
+  return ok;
+}
+
+// Drop a backend's cached health (e.g. after it errors mid-run) so the next call re-probes it.
+export function invalidateHealth(backendCfg) {
+  _healthCache.delete(_healthKey(backendCfg));
+}
+
+// Reset the whole health cache — for tests.
+export function _clearHealthCache() {
+  _healthCache.clear();
 }
 
 // --- clean -------------------------------------------------------------------

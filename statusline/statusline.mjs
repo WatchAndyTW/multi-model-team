@@ -55,6 +55,12 @@ function toInt(v, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+// Convert integer micro-USD (millionths of a dollar) to a short display string ($0.04).
+function usd(micros) {
+  const m = parseInt(micros, 10) || 0;
+  return `$${(m / 1_000_000).toFixed(2)}`;
+}
+
 function main() {
   const file = stateFile();
   let text;
@@ -72,16 +78,17 @@ function main() {
   const lastCode = S.last_code ?? '0';
   const lastDur = S.last_dur_ms ?? '0';
   const outChars = S.approx_out_chars ?? '0';
+  const costMicros = S.approx_cost_micros ?? '0';
   const abk = S.active_backend || '';
   const amodel = S.active_model || '';
   const lbk = S.last_backend || '';
 
   if (open > 0) {
-    process.stdout.write(`⟳ ${abk || 'agy'}·${shortModel(amodel || '?')} │ ${open} open │ ${human(outChars)}↓\n`);
+    process.stdout.write(`⟳ ${abk || 'agy'}·${shortModel(amodel || '?')} │ ${open} open │ ${human(outChars)}↓ │ ${usd(costMicros)}\n`);
   } else if (calls > 0) {
     const ok = String(lastCode) === '0' ? '✓' : '✗';
     const fbword = String(fallbacks) === '1' ? 'fallback' : 'fallbacks';
-    process.stdout.write(`◦ ${lbk || 'agy'} idle │ ${calls} calls · ${fallbacks} ${fbword} │ last ${dur(lastDur)} ${ok}\n`);
+    process.stdout.write(`◦ ${lbk || 'agy'} idle │ ${calls} calls · ${fallbacks} ${fbword} │ last ${dur(lastDur)} ${ok} │ ${usd(costMicros)}\n`);
   } else {
     process.stdout.write('◦ mmt idle\n');
   }
