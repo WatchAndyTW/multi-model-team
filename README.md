@@ -102,12 +102,17 @@ work runs across parallel agents — never one inline session.
 
 ### Agents (Claude spawns these on its own for matching work)
 
-| Agent | Use for | Backend |
-|---|---|---|
-| **`agy`** | Standard, verifiable coding + Gemini's edges (compact/checkable results) | agy |
-| **`codex`** | Code review, test-writing, verification | codex |
+Each is a **dispatcher for its CLI backend** — a configurable, equal tool, not a fixed task bucket.
+*Where* work routes is decided by `config/roster.json` (routes + `tags.txt`) and per-`/team`
+assignments, so the "default lane" below is tunable roster policy, not a hard limit.
 
-There is intentionally **no RE/injection agent** — that work stays **native by default**. An explicit
+| Agent | Default lane (per shipped config) | Backend |
+|---|---|---|
+| **`agy`** | Commodity, easily-verifiable work + Gemini's edges — UI/CSS, scaffolding, CRUD, scripts, SQL, regex, configs, tests, data transforms, web-research/summarization, audio/video | agy |
+| **`codex`** | Code review, test-writing, verification (and the default `/team` verifier; writes code full-auto under `--writable`) | codex |
+
+The shipped routing keeps RE/injection/systems-hard work **native by default** — that's roster policy
+you can retune, not a property of the agents (there's intentionally no RE/injection agent). An explicit
 agent spawn is honored as-is (forces that backend; the router's hard line won't bounce it).
 
 ---
