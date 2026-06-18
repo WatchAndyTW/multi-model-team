@@ -18,8 +18,8 @@ binary         reverse[- ]?engineer|rever(se|sing).{0,20}(binary|exe|dll|game|ap
 ffi            \bffi\b|foreign function|p/?invoke|pinvoke|extern \"c\"|\bctypes\b|marshal
 unsafe         raw pointer|pointer arithmetic|transmute|\bunsafe\b\s*(block|pointer|code|rust|\{)|rust\s+unsafe
 exploit        exploit|rop chain|\bcve\b|buffer overflow|use[- ]after[- ]free|heap spray
-hooking        detour|minhook|trampoline|iat hook|inline hook|function hook|hook(ing|ed)? (the )?(syscall|address|game (function|process)|process memory)
-injection      (?<!dependency )(?<!constructor )(?<!sql )(?<!spring )(?<!service )(code|dll|process|shellcode|payload|library|memory|remote) inject(ion|ing|ed)?|inject(ing|ed|ion)?.{0,20}(into (the )?(process|memory|remote|target)|payload|shellcode)
+hooking        detour|minhook|trampoline|iat hook|inline hook|function hook|hook(ing|ed)? (the )?(syscall|address|function|render|call|game (function|process)|process memory)
+injection      (?<!dependency )(?<!constructor )(?<!sql )(?<!spring )(?<!service )(code|dll|process|shellcode|payload|library|memory|remote) inject(ion|ing|ed)?|inject(ing|ed)?\b(?! (depend|dao|bean|service|repositor|the (depend|service|bean))).{0,20}(into (the )?(process|memory|remote|target)|payload|shellcode)
 dll-inject     dll inject|inject.{0,15}dll|reflective (dll|load)|loadlibrary inject
 detours        \bdetours\b
 minhook        minhook
@@ -87,8 +87,8 @@ codegen        code ?gen(eration)?|generate (the )?code
 unit-test      unit test|write tests?|test cases?|\bjest\b|\bpytest\b|test coverage
 fixture        fixture|mock data|test data|seed data|sample data
 docs-write     (writ|updat|add|generat|creat|author).{0,30}(docs?|documentation|readme|jsdoc|docstrings?|changelog)|document (the )?(api|module|function|code)
-i18n           \bi18n\b|internationali(z|s)ation|locali(z|s)ation|translat.{0,15}(strings?|\bui\b|text|copy)|add locale support
-deps-bump      (bump|upgrade|update).{0,20}(the )?(version|dependenc(y|ies)|package)|upgrade .{0,20} to v?\d|bump .{0,20} to v?\d
+i18n           \bi18n\b|internationali(z|s)(e|ation)|locali(z|s)(e|ation)|translat(e|ion|ions)?.{0,15}(strings?|\bui\b|text|copy)|add (locale|translations?) support|add translations?
+deps-bump      (bump|upgrade) (the )?(dependenc(y|ies)|package|\bdep\b|version)|(bump|upgrade) .{0,30} to v?\d|update (the )?(dependenc(y|ies)|package(\.json)?)\b(?! (doc|comment))
 
 # ============================ AGY: trivial ============================
 quick-email    \bemail\b|draft (a|an) (email|message|note)|reply to

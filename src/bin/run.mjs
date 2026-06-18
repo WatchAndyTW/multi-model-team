@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 
 import { loadRoster, defaults, backend } from '../lib/config.mjs';
 import { decide } from '../lib/router.mjs';
-import { invoke, health, clean } from '../lib/backends.mjs';
+import { invoke, health, clean, invalidateHealth } from '../lib/backends.mjs';
 import * as state from '../lib/state.mjs';
 import { resolveRosterPath } from '../lib/platform.mjs';
 
@@ -244,20 +244,23 @@ async function main() {
       fallbackCount++; continue;
     }
 
-    // non-zero exit OR empty clean output -> surface + sanitize stderr, next hop.
+    // non-zero exit OR empty clean output -> surface + sanitize stderr, next hop. Drop this backend's
+    // cached health so a later call re-probes it instead of trusting a now-stale "healthy" verdict.
     if (res.code !== 0 || !cleanOut) {
       lastErr = sanitizeErr(res.stderr);
       process.stderr.write(
         `run.mjs: backend '${be}' returned no usable output (exit ${res.code})${lastErr ? ` — stderr: ${lastErr}` : ''}\n`,
       );
+      invalidateHealth(beCfg);
       state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
       fallbackCount++; continue;
     }
 
-    // success. Approximate cost (USD micros) from the backend's per-1k-char rate × (in+out) chars —
-    // a rough HUD figure only (chars, not tokens). Missing/zero rate -> 0 cost.
+    // success. Approximate cost (USD micros) from the backend's per-1k-OUTPUT-char rate × outChars —
+    // a rough HUD figure only (chars, not tokens), matching roster.json's "per 1000 output chars"
+    // note. Missing/zero rate -> 0 cost.
     const rate = Number(beCfg.cost_per_1k_chars) || 0;
-    const costMicros = Math.round(rate * ((inChars + outChars) / 1000) * 1e6);
+    const costMicros = Math.round(rate * (outChars / 1000) * 1e6);
     state.end({ id: callId, backend: be, model, rule: D_rule, code: 0, durMs, outChars, fallback: fallbackCount, costMicros });
     process.stdout.write(cleanOut + '\n');
     process.exit(0);

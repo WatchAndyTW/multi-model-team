@@ -66,7 +66,19 @@ async function main() {
     roster = JSON.parse(readFileSync(rosterPath, 'utf8'));
   } catch (e) {
     process.stderr.write(`route.mjs: could not load roster: ${e.message}\n`);
-    process.exit(1);
+    // --validate has nothing to check without a roster -> hard error. The routing path must never
+    // leave a caller without a decision, so degrade to a safe native fallback instead of exiting.
+    if (validate) process.exit(1);
+    const fallback = {
+      backend: 'native', model: 'native:sonnet', tier: 'sonnet',
+      rule: 'no-roster', native: true,
+      preset: preset || 'balanced',
+      score: { chars: [...task].length, types: [] },
+      nearMisses: [],
+      confidence: 'low',
+    };
+    process.stdout.write(JSON.stringify(fallback) + '\n');
+    process.exit(0);
   }
 
   // --validate mode: check roster schema and exit. Pass the tags.txt type labels so the validator

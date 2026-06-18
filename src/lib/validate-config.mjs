@@ -9,13 +9,18 @@ export function validateRoster(roster, knownTypes) {
   }
 
   const validTiers = ['cheap', 'standard', 'sonnet', 'opus'];
-  const routes = (roster.routes || []).filter(r => typeof r === 'object' && r.name);
+  const allRoutes = Array.isArray(roster.routes) ? roster.routes : [];
+  // A "real" route carries routing intent (when/backend/tier); a bare {_comment:...} marker does not.
+  // Markers are skipped; real routes are validated even if their name is missing/empty.
+  const isMarker = r => r && typeof r === 'object'
+    && !('when' in r) && !('backend' in r) && !('tier' in r);
+  const routes = allRoutes.filter(r => r && typeof r === 'object' && !isMarker(r));
   const backends = roster.backends || {};
   const agents = roster.agents || {};
   const knownTypeSet = knownTypes instanceof Set ? knownTypes : new Set(knownTypes || []);
   const shouldCheckKnownTypes = knownTypeSet.size > 0;
 
-  // Check all routes have unique non-empty names
+  // Check all real routes have unique non-empty names
   const seenNames = new Set();
   routes.forEach((route, idx) => {
     if (!route.name || typeof route.name !== 'string' || route.name.trim() === '') {
