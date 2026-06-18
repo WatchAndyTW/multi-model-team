@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-91%2F91%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-93%2F93%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -276,7 +276,7 @@ docs/REASONING.md            design contract for the /reasoning Fusion pipeline
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 91/91 routing + unit tests (no backend calls)
+npm test                # offline: 93/93 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network required)
 ```
 

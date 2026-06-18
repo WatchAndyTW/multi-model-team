@@ -56,6 +56,11 @@ test('team.mjs: relay uses the file transport (--call-file), no heredoc, no base
   assert.match(SRC, /node \$\{JSON\.stringify\(RUN\)\} --call-file=/, 'relay must run `node ${RUN} --call-file=…`');
   assert.ok(SRC.includes('.mmt/calls/'), 'team.mjs relay must write the payload under .mmt/calls/');
   assert.ok(SRC.includes('function callFilePath'), 'team.mjs missing the deterministic call-file path helper');
+
+  // 5. The relay must instruct a FOREGROUND wait (the premature-give-up fix): no background, no
+  //    self-imposed sleep/timeout, retry-and-wait on the relay's own time limit.
+  assert.match(SRC, /FOREGROUND and WAIT/, 'team.mjs relay must tell the worker to run foreground and wait');
+  assert.ok(SRC.includes('status file') || SRC.includes('.status.json'), 'team.mjs relay must mention the pollable status file');
 });
 
 // ── workflows/reasoning.mjs — the Fusion (Panel -> Judge -> Synthesize) workflow ─────
@@ -102,4 +107,6 @@ test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, no
   assert.match(REASON_SRC, /node \$\{JSON\.stringify\(RUN\)\} --call-file=/, 'relay must run `node ${RUN} --call-file=…`');
   assert.ok(REASON_SRC.includes('.mmt/calls/'), 'reasoning.mjs relay must write the payload under .mmt/calls/');
   assert.ok(REASON_SRC.includes('function callFilePath'), 'reasoning.mjs missing the deterministic call-file path helper');
+  assert.match(REASON_SRC, /FOREGROUND and WAIT/, 'reasoning.mjs relay must tell the worker to run foreground and wait');
+  assert.ok(REASON_SRC.includes('status file') || REASON_SRC.includes('.status.json'), 'reasoning.mjs relay must mention the pollable status file');
 });

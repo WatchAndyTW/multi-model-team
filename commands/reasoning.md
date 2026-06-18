@@ -153,6 +153,14 @@ with no preamble:
 
 node "<PLUGIN_ROOT>/src/bin/run.mjs" --call-file="<CALL_PATH>"
 
+CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The <BE> CLI can legitimately take
+several minutes; run.mjs blocks until it completes (it has its own generous timeout). Do NOT
+background it (no `&`, no run_in_background), do NOT wrap it in your own sleep/timeout/tail -f, and do
+NOT give up early — a slow response is NOT a failure. If your Bash tool hits its own time limit, run
+the SAME command again and keep waiting; run.mjs prints a "[mmt] backend still running (Ns)…"
+heartbeat to stderr and writes "<CALL_PATH>.status.json" ({state:"running"|"done"|"failed"}) you can
+read to confirm it is still alive.
+
 If stdout begins with "MMT_NATIVE_HANDOFF" (the <BE> CLI was unavailable), return EXACTLY that
 sentinel line and nothing else — do not answer the question yourself.
 ```

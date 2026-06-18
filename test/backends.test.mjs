@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, chmodSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
 import { backend, teamConfig, proactive } from '../src/lib/config.mjs';
@@ -179,6 +179,57 @@ test('run.mjs surfaces a failing backend stderr + carries it into the handoff', 
   assert.equal(rec.code, 1, 'log record records the exit code');
   assert.match(rec.error, /FAKE_SANDBOX_DENIED/, 'log record captures the stderr reason');
   assert.ok(typeof rec.ts === 'string' && rec.ts.length > 0, 'log record is timestamped');
+
+  // Heartbeat status file: a failed call leaves a terminal status:"failed" record (callId is random,
+  // so glob the calls/ dir). MMT_LOG_DIR=<d>/logs -> status under <d>/calls/<callId>.status.json.
+  const callsDir = join(d, 'calls');
+  assert.ok(existsSync(callsDir), 'status calls/ dir created');
+  const statusFiles = readdirSync(callsDir).filter((f) => f.endsWith('.status.json'));
+  assert.ok(statusFiles.length >= 1, 'a status file was written');
+  const st = JSON.parse(readFileSync(join(callsDir, statusFiles[0]), 'utf8').trim());
+  assert.equal(st.state, 'failed', 'status reflects the failed call');
+  assert.equal(st.backend, 'codex', 'status names the backend');
+  assert.ok(typeof st.elapsed_ms === 'number', 'status records elapsed_ms');
+});
+
+test('run.mjs --call-file: a successful CLI writes a terminal status:"done" file next to the call file', () => {
+  const d = tmp('estatus-');
+  // Fake CLI that passes health and succeeds with output (uses codex's stdin `-` path on posix; on
+  // win32 the .cmd echoes a fixed line). The point is a clean exit-0 with usable stdout.
+  const fake = join(d, process.platform === 'win32' ? 'fakeok.cmd' : 'fakeok.sh');
+  if (process.platform === 'win32') {
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if "%1"=="--version" ( echo fakeok 1.0 & exit /b 0 )\r\n' +
+      'echo RELAY_OK\r\n' +
+      'exit /b 0\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'case "${1:-}" in\n' +
+      '  --version) echo "fakeok 1.0" ;;\n' +
+      '  *) echo "RELAY_OK" ;;\n' +
+      'esac\n');
+    chmodSync(fake, 0o755);
+  }
+  const r = writeRosterVariant(d, 'r.json', (c) => { c.backends.agy.enabled = false; });
+  const callFile = join(d, 'call.json');
+  writeFileSync(callFile, JSON.stringify({
+    decision: { backend: 'codex', model: '', tier: 'standard', rule: 'team', native: false },
+    task: 'say hello',
+  }), 'utf8');
+  const { stdout } = runNode(BIN_RUN, {
+    args: ['--roster', r, '--call-file', callFile],
+    env: { MMT_BE_BIN: fake },
+  });
+  assert.match(stdout, /RELAY_OK/, 'CLI output is returned');
+  // Predictable status path: "<call-file>.status.json", terminal state "done".
+  const statusFile = `${callFile}.status.json`;
+  assert.ok(existsSync(statusFile), 'status file written next to the call file (predictable path)');
+  const st = JSON.parse(readFileSync(statusFile, 'utf8').trim());
+  assert.equal(st.state, 'done', 'status is done on success');
+  assert.equal(st.backend, 'codex', 'status names the backend');
+  assert.equal(st.code, 0, 'status records exit 0');
 });
 
 // ── team config (equal, configurable roles) ──────────────────────────────────

@@ -118,6 +118,56 @@ function failuresLogPath() {
   return path.join(base, 'failures.log');
 }
 
+// --- progress heartbeat + status file ---------------------------------------
+// A CLI backend can legitimately take minutes (agy/codex on a hard task). The OLD behaviour gave the
+// orchestrator no signal that a slow call was still ALIVE — so a Claude-side poll that timed out at
+// ~15s looked like a failure even though the CLI answered seconds later. While a call is in flight
+// run.mjs now (a) emits a `[mmt] …still running (Ns)` heartbeat to stderr every HEARTBEAT_MS, and
+// (b) maintains a status file at .mmt/calls/<callId>.status.json the orchestrator can poll —
+// {state:"running"|"done"|"failed", backend, elapsed_ms, ...}. This makes "slow but alive"
+// distinguishable from "dead" without shortening the (generous) hard_timeout. All best-effort: a
+// status/heartbeat write that fails NEVER affects the actual dispatch.
+const HEARTBEAT_MS = 10_000;
+
+// Resolve the status-file path. PREDICTABLE so the orchestrator can poll it: when a --call-file was
+// used, it is "<call-file>.status.json" (sits right next to the payload the relay wrote). Otherwise
+// it falls back to .mmt/calls/<callId>.status.json (or MMT_LOG_DIR's parent /calls when set).
+function statusFilePath(callId, callFile) {
+  if (callFile) return `${callFile}.status.json`;
+  const base = process.env.MMT_LOG_DIR ? path.dirname(process.env.MMT_LOG_DIR) : path.join(process.cwd(), '.mmt');
+  return path.join(base, 'calls', `${callId}.status.json`);
+}
+
+function writeStatus(statusFile, callId, obj) {
+  if (!statusFile) return;
+  try {
+    fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+    fs.writeFileSync(statusFile, JSON.stringify({ callId, updated: new Date().toISOString(), ...obj }) + '\n', 'utf8');
+  } catch { /* status is observability-only — never break the run */ }
+}
+
+// Start a heartbeat for a backend call. Returns a stop(finalObj) that clears the timer and writes the
+// terminal status. Writes an initial "running" status immediately so a poll right after spawn sees it.
+function startHeartbeat({ callId, statusFile, backend: be, model, tier, rule, startMs }) {
+  writeStatus(statusFile, callId, { state: 'running', backend: be, model, tier, rule, elapsed_ms: 0 });
+  const tick = () => {
+    // Best-effort: a heartbeat must NEVER throw out of the interval callback (an uncaught throw there
+    // is an unhandledException). Guard the stderr write (EPIPE/closed stream) and the status write.
+    try {
+      const elapsed = Date.now() - startMs;
+      const secs = Math.round(elapsed / 1000);
+      try { process.stderr.write(`[mmt] backend '${be}' still running (${secs}s)… [call=${callId}]\n`); } catch { /* stderr closed/EPIPE */ }
+      writeStatus(statusFile, callId, { state: 'running', backend: be, model, tier, rule, elapsed_ms: elapsed });
+    } catch { /* heartbeat is observability-only — never affect the dispatch */ }
+  };
+  const timer = setInterval(tick, HEARTBEAT_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  return function stop(finalObj) {
+    clearInterval(timer);
+    writeStatus(statusFile, callId, { backend: be, model, tier, rule, ...finalObj });
+  };
+}
+
 function logFailure({ backend: be, model, tier, rule, code, durMs, stderr, kind, callId }) {
   // 1. Loud, human-readable stderr banner (always — even if the file write fails).
   const why = sanitizeErr(stderr) || `exit ${code}`;
@@ -250,6 +300,8 @@ async function main() {
   const fullPrompt = COMPACT_PROMPT(task);
   const inChars = charCount(task);
   const callId = randomUUID().replace(/-/g, '').slice(0, 8);
+  // Predictable status path so the orchestrator can poll it (next to the call file when given).
+  const statusFile = statusFilePath(callId, opts.callFile);
 
   // ---- 4. Walk the chain -----------------------------------------------------
   let lastErr = ''; // short, sanitized reason from the last backend that actually failed
@@ -293,6 +345,9 @@ async function main() {
 
     state.start({ id: callId, backend: be, model, rule: D_rule, inChars });
     const startMs = Date.now();
+    // Heartbeat: emit "still running" to stderr + status file while the (possibly slow) CLI works,
+    // so the orchestrator can tell alive-but-slow from dead. Always stopped below (every branch).
+    const stopHeartbeat = startHeartbeat({ callId, statusFile, backend: be, model, tier: D_tier, rule: D_rule, startMs });
     let res;
     try {
       res = await invoke(invokeCfg, fullPrompt, { model, tier: D_tier, addDir: opts.addDir });
@@ -307,6 +362,7 @@ async function main() {
     // fallback); the single fallback tally is counted once on the success hop via fallbackCount.
     if (res.quota) {
       lastErr = `quota/credit limit on '${be}'`;
+      stopHeartbeat({ state: 'failed', kind: 'quota', code: res.code, elapsed_ms: durMs });
       logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: res.code, durMs,
         stderr: res.stderr || 'quota/credit limit reached', kind: 'quota', callId });
       state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
@@ -317,9 +373,11 @@ async function main() {
     // cached health so a later call re-probes it instead of trusting a now-stale "healthy" verdict.
     if (res.code !== 0 || !cleanOut) {
       lastErr = sanitizeErr(res.stderr) || `exit ${res.code}, empty output`;
+      const kind = res.code !== 0 ? 'nonzero-exit' : 'empty-output';
+      stopHeartbeat({ state: 'failed', kind, code: res.code, elapsed_ms: durMs });
       logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: res.code, durMs,
         stderr: res.stderr || `no usable output (exit ${res.code})`,
-        kind: res.code !== 0 ? 'nonzero-exit' : 'empty-output', callId });
+        kind, callId });
       invalidateHealth(beCfg);
       state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
       fallbackCount++; continue;
@@ -330,6 +388,7 @@ async function main() {
     // note. Missing/zero rate -> 0 cost.
     const rate = Number(beCfg.cost_per_1k_chars) || 0;
     const costMicros = Math.round(rate * (outChars / 1000) * 1e6);
+    stopHeartbeat({ state: 'done', code: 0, elapsed_ms: durMs, out_chars: outChars });
     state.end({ id: callId, backend: be, model, rule: D_rule, code: 0, durMs, outChars, fallback: fallbackCount, costMicros });
     process.stdout.write(cleanOut + '\n');
     process.exit(0);

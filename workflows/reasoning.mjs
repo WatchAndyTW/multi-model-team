@@ -221,6 +221,8 @@ Step 2 — run EXACTLY this with the Bash tool and nothing else. The payload is 
 
 node ${JSON.stringify(RUN)} --call-file=${JSON.stringify(callPath)}
 
+CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI can legitimately take several minutes; run.mjs blocks until it completes (it has its own generous timeout). Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure. If your Bash tool reports its own time limit, simply run the SAME command again and keep waiting; run.mjs prints a "[mmt] backend still running (Ns)…" heartbeat to stderr and writes a status file next to the call file ("<the call-file path>.status.json", {state:"running"|"done"|"failed"}) you can read to confirm it is still alive.
+
 Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Panel', model: RELAY_MODEL, schema: RELAY_SCHEMA }
   )

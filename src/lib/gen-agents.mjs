@@ -167,6 +167,13 @@ function _render(name, spec) {
     `   - If the task references a local file/dir the backend should read itself, add\n` +
     `     \`--add-dir "<dir>"\` so the backend reads it on its own quota instead of through Claude.\n` +
     `   - Do NOT inline the task on the command line and do NOT add commentary to the prompt.\n` +
+    `   - **Run it in the FOREGROUND and WAIT.** The ${backend} CLI can take several minutes on a\n` +
+    `     hard task; run.mjs blocks until it finishes (it has its own generous timeout). Do NOT\n` +
+    `     background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own\n` +
+    `     \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure.\n` +
+    `     If your shell hits its own time limit, run the SAME command again and keep waiting; run.mjs\n` +
+    `     emits a \`[mmt] backend still running (Ns)…\` heartbeat to stderr and writes a\n` +
+    `     \`<call-file>.status.json\` ({state:"running"|"done"|"failed"}) you can read to confirm it's alive.\n` +
     `4. Interpret the output:\n` +
     `   - ${handoff}\n` +
     `   - Otherwise stdout **is** the delegated result. Return it **verbatim** — no analysis, no\n` +
