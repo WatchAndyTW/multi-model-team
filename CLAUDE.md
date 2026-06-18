@@ -14,7 +14,7 @@ else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type
 Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
-`docs/PLAN.md` (original design plan).
+`docs/REASONING.md` (the `/reasoning` design contract).
 
 **Why the Node ESM rewrite?** The bash hooks forked ~6–7 processes per invocation under a 10 s
 msys timeout and were intermittently killed ("hooks not triggering sometimes"). Each hook is now
@@ -125,7 +125,6 @@ commands/{team,route-test,reasoning,mmt-setup}.md   /team = multi-agent fan-out;
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs                 offline test suite (npm test — node --test)
-docs/PLAN.md                    original implementation plan (historical)
 docs/REASONING.md               design contract for the /reasoning Fusion pipeline
 docs/INTERFACES.md              module interface contract (binding signatures for the Node ESM port)
 ```

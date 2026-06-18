@@ -293,7 +293,6 @@ commands/                    reasoning, team, route-test
 workflows/team.mjs           Ultracode team workflow
 workflows/reasoning.mjs      Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs              offline test suite
-docs/PLAN.md                 original implementation plan (historical)
 docs/REASONING.md            design contract for the /reasoning Fusion pipeline
 docs/INTERFACES.md           module interface contract (Node ESM port signatures)
 ```
