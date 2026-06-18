@@ -9,7 +9,7 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **89/89** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **91/91** offline
 (plus live agy + codex smoke tests under `MMT_LIVE=1`). Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
@@ -327,15 +327,15 @@ fallback hop.
 - **Binary self-location.** `src/bin/*.mjs` and `hooks/*.mjs` resolve sibling files via
   `import.meta.url` (Node ESM); agents/commands reference `${CLAUDE_PLUGIN_ROOT}`.
 - **Cross-platform:** `src/lib/platform.mjs` is the only place OS branching for PTY/binary/state
-  belongs. Developed and tested on Windows; Linux/macOS POSIX paths are wired up but not yet
-  exercised on a real POSIX box.
+  belongs. Developed on Windows and **tested on Linux/macOS** — the POSIX paths (the `script` PTY
+  shim, XDG state dir, POSIX binary candidates) are exercised on a real POSIX box.
 
 ---
 
 ## Testing
 
 ```bash
-npm test                         # offline: 89/89 routing + unit tests (no backend calls)
+npm test                         # offline: 91/91 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test              # + live agy + codex smoke tests (network required)
 ```
 
@@ -354,5 +354,5 @@ and run with `node --test`.
   first real agy/codex credit-exhaustion error.
 - **Backends:** opencode is config-only (stub, `enabled:false`); codex is live. Health-gate
   ensures an unavailable CLI falls through to the next fallback hop.
-- **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir are wired up in `platform.mjs`
-  but not yet exercised on a real POSIX box.
+- **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir in `platform.mjs` are exercised and
+  tested on a real POSIX box.

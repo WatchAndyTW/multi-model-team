@@ -11,6 +11,7 @@
 //   echo "<task text>" | node run.mjs
 
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
@@ -28,7 +29,7 @@ const COMPACT_PROMPT = (task) => `${COMPACT_CONTRACT}\n\n${task}`;
 
 // ---- arg parsing -----------------------------------------------------------
 function parseArgs(argv) {
-  const o = { preset: '', tags: '', roster: '', decision: '', decisionB64: '', taskB64: '', sandbox: false, addDir: '', task: '' };
+  const o = { preset: '', tags: '', roster: '', decision: '', callFile: '', taskFile: '', decisionFile: '', sandbox: false, addDir: '', task: '' };
   let i = 0;
   const positional = [];
   while (i < argv.length) {
@@ -42,13 +43,16 @@ function parseArgs(argv) {
       case '--tags':         o.tags = next() ?? ''; break;
       case '--roster':       o.roster = next() ?? ''; break;
       case '--decision':     o.decision = next() ?? ''; break;
-      // base64url transports (shell-agnostic): the Workflow relay can't safely put a heredoc or a
-      // single-quoted JSON arg on a command line that may run in PowerShell — both mangle. b64url is
-      // [A-Za-z0-9_-] only, so the token survives verbatim in BOTH PowerShell and bash (and avoids
-      // the MSYS argv path-conversion that a literal '/' in standard base64 triggers). Decoded here in
-      // Node, never by a shell — so the untrusted payload never appears as parseable shell text.
-      case '--decision-b64': o.decisionB64 = next() ?? ''; break;
-      case '--task-b64':     o.taskB64 = next() ?? ''; break;
+      // File transports (shell-agnostic): the Workflow relay can't safely put a heredoc or a
+      // single-quoted JSON arg on a command line that may run in PowerShell — both mangle. Instead the
+      // relay sub-agent WRITES the payload to a file in .mmt/calls/ (via the Write tool — never a
+      // shell), and passes only the PATH on the command line. A path is [A-Za-z0-9_/.\\-] and survives
+      // verbatim in BOTH PowerShell and bash; the untrusted task/decision text never appears as
+      // parseable shell text. --call-file = one JSON file holding BOTH {decision, task}; --task-file
+      // and --decision-file carry them separately (each a raw UTF-8 / JSON file).
+      case '--call-file':     o.callFile = next() ?? ''; break;
+      case '--task-file':     o.taskFile = next() ?? ''; break;
+      case '--decision-file': o.decisionFile = next() ?? ''; break;
       case '--add-dir':      o.addDir = next() ?? ''; break;
       case '--sandbox':      o.sandbox = true; break;
       case '--':             positional.push(...argv.slice(i + 1)); i = argv.length; break;
@@ -62,19 +66,15 @@ function parseArgs(argv) {
   return o;
 }
 
-// Decode a base64url arg to UTF-8 (Node Buffer is guaranteed here, unlike the Workflow sandbox).
-// Validates the alphabet ([A-Za-z0-9_-], optional, no '+'/'/'/'='), restores standard base64 +
-// padding, then decodes. Invalid input exits 2 (a corrupt transport must fail loudly, not silently
-// dispatch garbage to a backend).
-function decodeB64UrlArg(v, flag) {
-  const s = String(v ?? '').trim();
-  if (!/^[A-Za-z0-9_-]*$/.test(s) || s.length % 4 === 1) {
-    process.stderr.write(`run.mjs: invalid ${flag}\n`);
+// Read a transport file's UTF-8 contents. A missing/unreadable file is a corrupt transport — fail
+// loudly (exit 2), never silently dispatch an empty payload to a backend.
+function readFileArg(p, flag) {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch (e) {
+    process.stderr.write(`run.mjs: cannot read ${flag} '${p}': ${sanitizeErr(e && e.message)}\n`);
     process.exit(2);
   }
-  const std = s.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = std + '='.repeat((4 - (std.length % 4)) % 4);
-  return Buffer.from(padded, 'base64').toString('utf8');
 }
 
 async function readStdin() {
@@ -104,6 +104,41 @@ function nativeSentinel(tier, rule, reason) {
   );
 }
 
+// --- failure logging --------------------------------------------------------
+// When a CLI backend call fails (non-zero exit, empty output, or quota/credit limit) the user
+// previously saw only a terse one-line stderr buried under the eventual native handoff. This makes
+// failures LOUD and DURABLE: a clearly-marked `[mmt] ERROR …` banner on stderr (so the operator
+// sees it live) PLUS a structured JSON record appended to .mmt/logs/failures.log (so it can be
+// inspected after the fact — pairs with the .mmt/calls/ payload files). The HUD is non-critical, so
+// a logging failure is swallowed — it must never break the delegation it's reporting on.
+function failuresLogPath() {
+  // Project-local .mmt/logs (cwd), independent of the HUD stateDir. Falls back to stateDir if cwd
+  // is unwritable. Override with MMT_LOG_DIR.
+  const base = process.env.MMT_LOG_DIR || path.join(process.cwd(), '.mmt', 'logs');
+  return path.join(base, 'failures.log');
+}
+
+function logFailure({ backend: be, model, tier, rule, code, durMs, stderr, kind, callId }) {
+  // 1. Loud, human-readable stderr banner (always — even if the file write fails).
+  const why = sanitizeErr(stderr) || `exit ${code}`;
+  process.stderr.write(
+    `[mmt] ERROR: backend '${be}' (${kind}) failed — ${why} ` +
+    `[rule=${rule} tier=${tier}${durMs != null ? ` ${durMs}ms` : ''} call=${callId}]\n`,
+  );
+  // 2. Durable structured record (best-effort; never throws).
+  try {
+    const file = failuresLogPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const rec = {
+      ts: new Date().toISOString(),
+      callId, backend: be, model, tier, rule, kind, code,
+      durMs: durMs ?? null,
+      error: sanitizeErr(stderr),
+    };
+    fs.appendFileSync(file, JSON.stringify(rec) + '\n', 'utf8');
+  } catch { /* logging is non-critical — never break the run */ }
+}
+
 // Resolve tier -> concrete model from a backend cfg's model_tiers.
 function modelForTier(beCfg, tier) {
   const tiers = beCfg.model_tiers || {};
@@ -115,8 +150,30 @@ function modelForTier(beCfg, tier) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
+  // --call-file holds BOTH the decision and the task as one JSON object: { decision, task }. It is
+  // resolved first so it can seed both. --task-file / --decision-file carry them separately. Inline
+  // --task / positional / stdin remain for direct CLI use.
+  let callPayload = null;
+  if (opts.callFile) {
+    const raw = readFileArg(opts.callFile, '--call-file');
+    try {
+      callPayload = JSON.parse(raw);
+    } catch (e) {
+      process.stderr.write(`run.mjs: invalid JSON in --call-file '${opts.callFile}': ${sanitizeErr(e && e.message)}\n`);
+      process.exit(2);
+    }
+  }
+
   let task = opts.task;
-  if (!task && opts.taskB64) task = decodeB64UrlArg(opts.taskB64, '--task-b64');
+  if (!task && opts.taskFile) task = readFileArg(opts.taskFile, '--task-file');
+  if (!task && callPayload && typeof callPayload.task === 'string') task = callPayload.task;
+  // A --call-file is a relay transport, not an interactive call: if it carries no usable task, fail
+  // LOUD (exit 2) rather than silently falling through to stdin (which would block on a non-TTY or
+  // emit a confusing "no task text"). A corrupt/empty relay payload must surface as an error.
+  if (opts.callFile && !task) {
+    process.stderr.write(`run.mjs: --call-file '${opts.callFile}' has no usable "task" field\n`);
+    process.exit(2);
+  }
   if (!task) task = (await readStdin()).trim();
   if (!task) { process.stderr.write('run.mjs: no task text\n'); process.exit(2); }
 
@@ -136,11 +193,22 @@ async function main() {
   // ---- 1. Decision -----------------------------------------------------------
   // Safe native defaults survive any decision failure (fail closed — never fall open to agy).
   let decision = { backend: 'native', model: 'native:sonnet', tier: 'sonnet', rule: 'catch-all-safe', native: true };
-  // --decision-b64 (shell-agnostic) wins over --decision; either supplies the forced decision JSON.
-  const forcedDecision = opts.decisionB64 ? decodeB64UrlArg(opts.decisionB64, '--decision-b64') : opts.decision;
-  if (forcedDecision) {
+  // Forced-decision precedence (file transports win over inline): --decision-file > --call-file's
+  // .decision > inline --decision. A file's contents are a JSON string; --call-file's .decision may
+  // already be a parsed object (it lived inside the call JSON).
+  let forcedDecision = '';
+  let forcedDecisionObj = null;
+  if (opts.decisionFile) {
+    forcedDecision = readFileArg(opts.decisionFile, '--decision-file');
+  } else if (callPayload && callPayload.decision != null) {
+    if (typeof callPayload.decision === 'object') forcedDecisionObj = callPayload.decision;
+    else forcedDecision = String(callPayload.decision);
+  } else if (opts.decision) {
+    forcedDecision = opts.decision;
+  }
+  if (forcedDecision || forcedDecisionObj) {
     try {
-      const d = JSON.parse(forcedDecision);
+      const d = forcedDecisionObj || JSON.parse(forcedDecision);
       decision = {
         backend: d.backend || 'native',
         model: d.model || 'native:sonnet',
@@ -239,7 +307,8 @@ async function main() {
     // fallback); the single fallback tally is counted once on the success hop via fallbackCount.
     if (res.quota) {
       lastErr = `quota/credit limit on '${be}'`;
-      process.stderr.write(`run.mjs: backend '${be}' hit a quota/credit limit — falling back\n`);
+      logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: res.code, durMs,
+        stderr: res.stderr || 'quota/credit limit reached', kind: 'quota', callId });
       state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
       fallbackCount++; continue;
     }
@@ -247,10 +316,10 @@ async function main() {
     // non-zero exit OR empty clean output -> surface + sanitize stderr, next hop. Drop this backend's
     // cached health so a later call re-probes it instead of trusting a now-stale "healthy" verdict.
     if (res.code !== 0 || !cleanOut) {
-      lastErr = sanitizeErr(res.stderr);
-      process.stderr.write(
-        `run.mjs: backend '${be}' returned no usable output (exit ${res.code})${lastErr ? ` — stderr: ${lastErr}` : ''}\n`,
-      );
+      lastErr = sanitizeErr(res.stderr) || `exit ${res.code}, empty output`;
+      logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: res.code, durMs,
+        stderr: res.stderr || `no usable output (exit ${res.code})`,
+        kind: res.code !== 0 ? 'nonzero-exit' : 'empty-output', callId });
       invalidateHealth(beCfg);
       state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
       fallbackCount++; continue;

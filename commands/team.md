@@ -15,9 +15,10 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 > engine: use the Workflow tool path if available, otherwise use the scripted `team.mjs` path or
 > explicit faithful-relay `Task` subtasks. Do **not** solve with Claude's native analysis or with
 > plain native `Task` agents in place of CLI subtasks. Every `gemini`/`codex` subtask must actually
-> run through `node src/bin/run.mjs --decision-b64=<…> --task-b64=<…>` (a forced `"native":false`
-> decision, shell-agnostic base64url args); a `gemini:`/`codex:` result must come from that CLI,
-> never from Claude dressing up an answer under that label.
+> run through `node src/bin/run.mjs --call-file=<path>` (a `.mmt/calls/` file holding a forced
+> `"native":false` decision + the task, written by the relay with the Write tool — no base64, no
+> task text on the command line); a `gemini:`/`codex:` result must come from that CLI, never from
+> Claude dressing up an answer under that label.
 
 Orchestrate the input above as a multi-model team — a staged **plan → exec → verify → fix**
 pipeline built for **our model dispatching**. By default, the "provider per role" is **native Claude**
@@ -125,23 +126,29 @@ alone. There are two worker kinds:
   from merged roster config; the shipped roster value is `haiku`, and the built-in fallback is `sonnet`**). A relay does ZERO reasoning (one Bash call, return stdout verbatim), so it must be
   pinned to the cheap relay model — do NOT let it inherit the orchestrator's model (e.g. Opus), or
   you pay Opus rates to shell out to a CLI. Use this prompt — substitute the real plugin root for
-  `<PLUGIN_ROOT>`, the subtask's `<BE>` (agy|codex) and `<TIER>`, and the two **base64url tokens** you
-  (the orchestrator) compute below — never the raw text:
+  `<PLUGIN_ROOT>`, the subtask's `<BE>` (agy|codex) and `<TIER>`, a short unique `<CALL_PATH>` like
+  `.mmt/calls/<label>.json`, and the subtask text into the call file's `"task"` field — never the
+  raw text on the command line:
 
-  **YOU encode the tokens before spawning the relay** (shell-agnostic — the relay's shell may be
-  PowerShell, where a `<<'EOF'` heredoc is a parse error and single-quoted `'{...}'` JSON gets
-  mangled; base64url `[A-Za-z0-9_-]` survives verbatim in any shell and keeps the untrusted task text
-  off the parsed command line):
-  - `<DECISION_B64>` = base64url of `{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false}`
-  - `<TASK_B64>` = base64url of the subtask text (with any `Upstream result — <dep>:` blocks appended)
+  **File transport, not base64** (shell-agnostic — the relay's shell may be PowerShell, where a
+  `<<'EOF'` heredoc is a parse error and single-quoted `'{...}'` JSON gets mangled). The relay writes
+  the payload to a FILE with the Write tool (untrusted task text never touches a command line), then
+  passes only the file PATH to run.mjs. The path is a safe `[A-Za-z0-9_/.-]` token, verbatim in any
+  shell. The call file holds both the forced decision and the task:
 
   ````
   [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve, analyze,
-  or answer the task yourself. Run EXACTLY this one command with the Bash tool (both payloads ride as
-  inert base64url tokens — decoded only inside run.mjs by Node, never parsed by the shell), then
-  return its stdout VERBATIM with no preamble:
+  or answer the task yourself.
 
-  node "<PLUGIN_ROOT>/src/bin/run.mjs" --decision-b64=<DECISION_B64> --task-b64=<TASK_B64>
+  Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>" (the task text
+  goes in the "task" field; the Write tool creates parent dirs):
+  {"decision":{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false},"task":"<the subtask text, with any Upstream result — <dep>: blocks appended>"}
+
+  Step 2 — run EXACTLY this one command with the Bash tool (only the file path is on the command line;
+  the payload stays in the file, read only inside run.mjs by Node), then return its stdout VERBATIM
+  with no preamble:
+
+  node "<PLUGIN_ROOT>/src/bin/run.mjs" --call-file="<CALL_PATH>"
 
   If stdout begins with "MMT_NATIVE_HANDOFF" (the <BE> CLI was unavailable), return EXACTLY that
   sentinel line and nothing else — do not solve the task yourself. Otherwise return stdout as printed.
@@ -169,19 +176,20 @@ result be quietly produced by Claude. Track which backend **actually** ran each 
 **Delegate the review to the configured `verifier` backend** (`team.verifier`, default codex — any
 backend, or `native` for Claude judgment). For every subtask result, run that backend through
 `run.mjs` with a forced decision, feeding the review brief — the subtask, its `verify` criterion, and
-the result. **Encode both payloads as base64url** (same reason as the dispatch relay: the verifier
-command may run under PowerShell, where a heredoc + single-quoted JSON mangles and silently falls
-through to native). Swap `codex` below for the configured verifier:
+the result. **Use the same file transport as the dispatch relay** (the verifier command may run under
+PowerShell, where a heredoc + single-quoted JSON mangles and silently falls through to native): write
+the decision + review brief to a call file with the Write tool, then pass only its path. Swap `codex`
+below for the configured verifier:
 
-- `<VERIFY_DECISION_B64>` = base64url of `{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}`
-- `<VERIFY_TASK_B64>` = base64url of the review brief:
-  ```
-  You are a strict reviewer. Reply with a first line of exactly PASS or FAIL, one sentence why, then (only if FAIL) a one-line fix instruction.
-  SUBTASK: <text>   ACCEPTANCE CRITERION: <verify>   RESULT: <result>
+- `<VERIFY_CALL_PATH>` = a short unique path like `.mmt/calls/verify-<label>.json`, written with the
+  Write tool, containing:
+  ```json
+  {"decision":{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false},
+   "task":"You are a strict reviewer. Reply with a first line of exactly PASS or FAIL, one sentence why, then (only if FAIL) a one-line fix instruction.\nSUBTASK: <text>   ACCEPTANCE CRITERION: <verify>   RESULT: <result>"}
   ```
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision-b64=<VERIFY_DECISION_B64> --task-b64=<VERIFY_TASK_B64>
+node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --call-file="<VERIFY_CALL_PATH>"
 ```
 
 Trust the verifier's PASS/FAIL verdict. Be skeptical of the result: incomplete, wrong, empty, or

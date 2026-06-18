@@ -18,8 +18,10 @@ export const meta = {
 // Determinism: this script runs under the Workflow runtime, which forbids
 // Date/random APIs (they break resume). Nothing here uses them. Vary-by-index is
 // used wherever uniqueness is needed.
-// Injection-safety: agy subtasks ride to run.mjs as base64url args (--task-b64/--decision-b64),
-// so the (untrusted) subtask text is inert data, decoded only in Node and never parsed by a shell.
+// Injection-safety: the relay sub-agent WRITES each subtask's payload to a file in .mmt/calls/ (via
+// the Write tool — never a shell), then passes only the file PATH to run.mjs (--call-file). The
+// (untrusted) subtask text is inert data — it lives in a file, read only in Node, and never appears
+// on a command line or as parseable shell text. The path itself is a safe [A-Za-z0-9_/.-] token.
 // =============================================================================
 
 // ---- inputs (from Workflow args) -------------------------------------------
@@ -73,48 +75,25 @@ const VERIFIER = A.verifier || (A.codexVerify === false ? 'native' : (TC.verifie
 // Human/CLI name for the progress tree: agy is the Gemini CLI; every other backend shows as-is.
 function backendLabel(b) { return b === 'agy' ? 'gemini' : String(b || '') }
 
-// ---- shell-agnostic base64url encoder (the relay-scripting fix) -------------
+// ---- file-based relay transport (the relay-scripting fix) -------------------
 // The relay sub-agent may run its one command in EITHER PowerShell or bash. A POSIX heredoc and a
 // single-quoted '{...}' JSON arg both break under PowerShell (heredoc = parse error; the quotes get
-// stripped/mangled), so the CLI silently never dispatched. We instead carry the payload + decision
-// as base64url args ([A-Za-z0-9_-] only) — inert in EVERY shell, no quoting of untrusted text, and
-// '/'-free so MSYS/Git Bash argv path-conversion can't corrupt them. run.mjs decodes with Buffer.
-// Buffer is NOT guaranteed in the Workflow sandbox, so this encoder is pure JS (standard built-ins
-// only; no Buffer, no Date/random) — deterministic, resume-safe.
-const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-function utf8Bytes(s) {
-  s = String(s ?? '')
-  const out = []
-  for (let i = 0; i < s.length; i++) {
-    let cp = s.charCodeAt(i)
-    if (cp >= 0xd800 && cp <= 0xdbff) {
-      const lo = i + 1 < s.length ? s.charCodeAt(i + 1) : 0
-      if (lo >= 0xdc00 && lo <= 0xdfff) { cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00); i++ }
-      else cp = 0xfffd
-    } else if (cp >= 0xdc00 && cp <= 0xdfff) { cp = 0xfffd }
-    if (cp < 0x80) out.push(cp)
-    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 63))
-    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63))
-    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63))
-  }
-  return out
+// stripped/mangled), so the CLI silently never dispatched. Encoding the payload as a base64url arg
+// fixed that but was opaque. Instead the relay sub-agent now WRITES the payload to a file under
+// .mmt/calls/ (with the Write tool — never a shell) and passes only the file PATH to run.mjs
+// (--call-file). The untrusted text lives in a file, is read only in Node, and never touches a
+// command line; the path is a safe [A-Za-z0-9_/.-] token that survives verbatim in any shell. No
+// command-line length limit applies anymore (the payload isn't on the command line), so the old
+// oversize guard is gone. The call JSON holds BOTH the routing decision and the task text.
+//
+// Determinism: the Workflow runtime forbids Date/random APIs and has no fs — so the call id is
+// derived from the (unique) subtask label + a monotonic counter, NOT random, and the file is written
+// by the sub-agent, not this script. The relay POSIX path uses forward slashes (cross-shell safe).
+let _callSeq = 0
+function callFilePath(label) {
+  const safe = String(label || 'call').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'call'
+  return `.mmt/calls/${safe}-${++_callSeq}.json`
 }
-function b64url(s) {
-  const bytes = utf8Bytes(s)
-  let out = ''
-  for (let i = 0; i < bytes.length; i += 3) {
-    const a = bytes[i]; const b = bytes[i + 1]; const c = bytes[i + 2]
-    out += B64_ALPHABET[a >> 2]
-    out += B64_ALPHABET[((a & 3) << 4) | ((b ?? 0) >> 4)]
-    out += i + 1 < bytes.length ? B64_ALPHABET[((b & 15) << 2) | ((c ?? 0) >> 6)] : '='
-    out += i + 2 < bytes.length ? B64_ALPHABET[c & 63] : '='
-  }
-  return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-}
-// Windows CreateProcess caps a command line near 32767 chars; base64 inflates ~33%. Guard the
-// encoded command length and fall back to a VISIBLE native agent for an oversized payload rather
-// than spawn a relay whose command line would be truncated (which would silently misdispatch).
-const MAX_RELAY_ARG_CHARS = 28000
 
 if (!task || !String(task).trim()) {
   return { error: 'mmt-team: no task provided in args.task' }
@@ -279,27 +258,24 @@ function tierModel(tier) {
 // parameters, never hardcoded). Label is prefixed with the CLI name; the pipe is cheap (RELAY_MODEL).
 function dispatchRelay(backend, text, tier, rule, label, ph) {
   const be = backendLabel(backend)
-  // Build the ONE relay command as shell-agnostic base64url args (no heredoc, no quoted JSON, no
-  // untrusted text on the command line). Works verbatim whether the relay sub-agent runs it in
-  // PowerShell or bash. run.mjs decodes --task-b64 / --decision-b64 in Node.
-  const decisionB64 = b64url(JSON.stringify({ backend, model: '', tier, rule, native: false }))
-  const taskB64 = b64url(text)
-  const command = `node ${JSON.stringify(RUN)} --decision-b64=${decisionB64} --task-b64=${taskB64}`
-
-  // Oversize guard: a payload too big to fit the command line can't be relayed without truncation.
-  // Signal the caller to do a VISIBLE native fallback (same contract as a CLI-unavailable result),
-  // never spawn a relay that would silently misdispatch.
-  if (command.length > MAX_RELAY_ARG_CHARS) {
-    log(`relay payload for "${label}" too large to dispatch on ${be} (${command.length} > ${MAX_RELAY_ARG_CHARS} chars) — visible native fallback`)
-    return Promise.resolve({ stdout: '', backend_ran: false })
-  }
+  // File-based transport: the relay sub-agent writes the payload (decision + task) to a JSON file
+  // under .mmt/calls/ with the Write tool, then runs `node run.mjs --call-file=<path>`. No heredoc,
+  // no quoted JSON, no untrusted text on the command line — works verbatim whether the relay runs in
+  // PowerShell or bash. run.mjs reads the file in Node. The call id is derived from the label (the
+  // Workflow runtime forbids random/Date), so each subtask gets its own file.
+  const callPath = callFilePath(label)
+  const callJson = JSON.stringify({ decision: { backend, model: '', tier, rule, native: false }, task: text }, null, 2)
 
   return agent(
-`You are a PURE RELAY PIPE for the ${be} backend — NOT a problem solver. Run ONE command, report its output, stop. Do NOT read files, browse, reason about, or answer the payload yourself; you have no opinion on its content and must never put your own answer in the output.
+`You are a PURE RELAY PIPE for the ${be} backend — NOT a problem solver. Write one file, run ONE command, report its output, stop. Do NOT browse, reason about, or answer the payload yourself; you have no opinion on its content and must never put your own answer in the output.
 
-Run EXACTLY this with the Bash tool and nothing else. It is a single self-contained line — the payload and the routing decision are carried as base64url arguments (inert data, safe in any shell, never parsed). Do NOT modify, decode, or "fix" the arguments:
+Step 1 — with the Write tool (NOT a shell command), write EXACTLY this content to the file at the relative path "${callPath}" (create the .mmt/calls/ directory if the Write tool requires it — it normally creates parents):
 
-${command}
+${callJson}
+
+Step 2 — run EXACTLY this with the Bash tool and nothing else. The payload is in the file you just wrote; only its PATH is on the command line (inert, safe in any shell). Do NOT inline or echo the payload:
+
+node ${JSON.stringify(RUN)} --call-file=${JSON.stringify(callPath)}
 
 Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL, schema: RELAY_SCHEMA }
@@ -383,8 +359,9 @@ async function verifyResult(s, result) {
 
   if (VERIFIER !== 'native') {
     // Drive the verifier CLI through the faithful pipe, then parse ITS verdict deterministically. The
-    // review brief rides to run.mjs as a base64url arg — the (untrusted) subtask + result text is
-    // inert data, decoded only in Node, never parsed by a shell. rule "team-verify" forces the verifier.
+    // review brief rides to run.mjs via a .mmt/calls/ file (--call-file) — the (untrusted) subtask +
+    // result text is inert data in a file, read only in Node, never parsed by a shell. rule
+    // "team-verify" forces the verifier.
     const vb = backendLabel(VERIFIER)
     const brief =
 `You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
@@ -478,6 +455,36 @@ if (failed.length) log(`${failed.length} subtask(s) still failing after ${MAX_FI
 const fellBack = records.filter((r) => typeof r.ranOn === 'string' && r.ranOn.indexOf('native-fallback') === 0)
 if (fellBack.length) log(`${fellBack.length} subtask(s) fell back to native (CLI unavailable): ${fellBack.map((r) => `${r.label} [${r.ranOn}]`).join(', ')}`)
 
+// ---- usage accounting -------------------------------------------------------
+// The Workflow runtime can't read per-agent token counts (those arrive in the task-notification's
+// aggregate `subagent_tokens`), but it knows WHO ran each piece of work. Classify every record by
+// executor so the operator can see how the budget split: CLI-executed subtasks ran on agy/codex (OFF
+// Claude's token budget — only the thin relay agent spent native tokens), while native-executed
+// subtasks (incl. native-fallbacks) ran on Claude (ON the token budget). Result char counts are a
+// concrete size proxy (the workflow has the text; it does NOT have token numbers). The orchestrator
+// folds the notification's `subagent_tokens` total into this split when reporting to the user.
+function approxChars(r) { return typeof r.result === 'string' ? [...r.result].length : 0 }
+const cliRecords = records.filter((r) => r.ranOn === 'agy' || r.ranOn === 'codex')
+const nativeRecords = records.filter((r) => r.ranOn === 'native' || (typeof r.ranOn === 'string' && r.ranOn.indexOf('native-fallback') === 0))
+const usage = {
+  note: 'Per-agent token counts are not visible inside the workflow; see the run notification\'s aggregate subagent_tokens. This is the executor split + output-size proxy.',
+  cli: {
+    subtasks: cliRecords.length,
+    byBackend: Object.fromEntries(['agy', 'codex'].map((b) => [b, records.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
+    output_chars: cliRecords.reduce((n, r) => n + approxChars(r), 0),
+    comment: 'ran on the CLI backend — off Claude\'s token budget (only the relay agent spent native tokens)',
+  },
+  native: {
+    subtasks: nativeRecords.length,
+    fallbacks: fellBack.length,
+    output_chars: nativeRecords.reduce((n, r) => n + approxChars(r), 0),
+    comment: 'ran on native Claude — on the token budget (includes CLI->native fallbacks)',
+  },
+  relay_agents: cliRecords.length,           // one thin relay agent per CLI subtask (RELAY_MODEL)
+  orchestration_agents: 2 + (VERIFY ? records.length : 0), // decompose + synthesize (+ one verify/subtask)
+}
+if (cliRecords.length) log(`usage: ${cliRecords.length} subtask(s) executed on CLI (off-budget); ${nativeRecords.length} on native Claude`)
+
 // ---- 3 · Synthesize ---------------------------------------------------------
 phase('Synthesize')
 const final = await agent(
@@ -507,6 +514,7 @@ return {
     failed: failed.length,
     nativeFallbacks: fellBack.length,
   },
+  usage,
   results: records,
   final,
 }

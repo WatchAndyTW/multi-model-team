@@ -15,7 +15,7 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 > engine: use the Workflow tool path if available, otherwise use the scripted `reason.mjs` path or
 > explicit faithful-relay `Task` panelists. Do **not** answer with Claude's native analysis or with
 > plain native `Task` agents in place of CLI panelists. Every `gemini`/`codex` panelist must actually
-> run through `node src/bin/run.mjs --decision-b64=<…> --task-b64=<…>` (forced `"native":false`, shell-agnostic base64url); a `gemini:`/`codex:` result
+> run through `node src/bin/run.mjs --call-file=<path>` (a `.mmt/calls/` file holding a forced `"native":false` decision + the question, written by the relay with the Write tool — no base64, no question text on the command line); a `gemini:`/`codex:` result
 > must come from that CLI, never from Claude dressing up an answer under that label.
 
 Fan the question out to every panelist **in parallel**, judge the results into structured
@@ -130,23 +130,28 @@ config; the shipped roster value is `haiku`, and the built-in fallback is `sonne
 relay does ZERO reasoning (one Bash call, return stdout verbatim), so pin it to the cheap relay
 model — do NOT let it inherit the orchestrator's model (e.g. Opus). It does NOT solve the question;
 it runs the one dispatch command and returns stdout verbatim. Substitute the real plugin root for
-`<PLUGIN_ROOT>`, the backend `<BE>` (agy|codex), and `<TIER>`, plus the two **base64url tokens** you
-(the orchestrator) compute below — never the raw question:
+`<PLUGIN_ROOT>`, the backend `<BE>` (agy|codex), `<TIER>`, a short unique `<CALL_PATH>` like
+`.mmt/calls/<label>.json`, and the question text into the call file's `"task"` field — never the raw
+question on the command line:
 
-**YOU encode the tokens before spawning the relay** (shell-agnostic — the relay's shell may be
-PowerShell, where a `<<'EOF'` heredoc is a parse error and single-quoted `'{...}'` JSON gets mangled;
-base64url `[A-Za-z0-9_-]` survives verbatim in any shell and keeps the untrusted question off the
-parsed command line):
-- `<DECISION_B64>` = base64url of `{"backend":"<BE>","model":"","tier":"<TIER>","rule":"reason","native":false}`
-- `<QUESTION_B64>` = base64url of the question text
+**File transport, not base64** (shell-agnostic — the relay's shell may be PowerShell, where a
+`<<'EOF'` heredoc is a parse error and single-quoted `'{...}'` JSON gets mangled). The relay writes
+the payload to a FILE with the Write tool (untrusted question text never touches a command line),
+then passes only the file PATH to run.mjs — a safe `[A-Za-z0-9_/.-]` token, verbatim in any shell:
 
 ```
 [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve,
-analyze, or answer the question yourself. Run EXACTLY this one command with the Bash tool
-(both payloads ride as inert base64url tokens — decoded only inside run.mjs by Node, never
-parsed by the shell), then return its stdout VERBATIM with no preamble:
+analyze, or answer the question yourself.
 
-node "<PLUGIN_ROOT>/src/bin/run.mjs" --decision-b64=<DECISION_B64> --task-b64=<QUESTION_B64>
+Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>" (the question
+goes in the "task" field; the Write tool creates parent dirs):
+{"decision":{"backend":"<BE>","model":"","tier":"<TIER>","rule":"reason","native":false},"task":"<the question text>"}
+
+Step 2 — run EXACTLY this one command with the Bash tool (only the file path is on the command line;
+the payload stays in the file, read only inside run.mjs by Node), then return its stdout VERBATIM
+with no preamble:
+
+node "<PLUGIN_ROOT>/src/bin/run.mjs" --call-file="<CALL_PATH>"
 
 If stdout begins with "MMT_NATIVE_HANDOFF" (the <BE> CLI was unavailable), return EXACTLY that
 sentinel line and nothing else — do not answer the question yourself.

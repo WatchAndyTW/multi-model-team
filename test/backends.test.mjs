@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, chmodSync } from 'node:fs';
+import { writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
 import { backend, teamConfig, proactive } from '../src/lib/config.mjs';
@@ -159,14 +159,26 @@ test('run.mjs surfaces a failing backend stderr + carries it into the handoff', 
     c.backends.agy.enabled = false;
     c.defaults.quota_fallback = ['codex', 'native:sonnet'];
   });
+  const logDir = join(d, 'logs');
   const { stdout, stderr } = runNode(BIN_RUN, {
     args: ['--roster', r, '--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
-    env: { MMT_BE_BIN: fake },
+    env: { MMT_BE_BIN: fake, MMT_LOG_DIR: logDir },
   });
   const all = stdout + stderr;
-  assert.match(all, /returned no usable output \(exit 1\)/, 'announces the backend failure + exit code');
+  // New loud failure banner (replaces the older terse "returned no usable output" line).
+  assert.match(stderr, /\[mmt\] ERROR: backend 'codex' \(nonzero-exit\) failed/, 'loud [mmt] ERROR banner names the backend + failure kind');
   assert.match(all, /FAKE_SANDBOX_DENIED/, 'surfaces the backend stderr');
   assert.match(stdout, /last error:/, 'handoff carries the last error');
+
+  // Durable structured failure record written to .mmt/logs/failures.log (item: better logging).
+  const logFile = join(logDir, 'failures.log');
+  assert.ok(existsSync(logFile), 'failures.log written');
+  const rec = JSON.parse(readFileSync(logFile, 'utf8').trim().split('\n').pop());
+  assert.equal(rec.backend, 'codex', 'log record names the backend');
+  assert.equal(rec.kind, 'nonzero-exit', 'log record records the failure kind');
+  assert.equal(rec.code, 1, 'log record records the exit code');
+  assert.match(rec.error, /FAKE_SANDBOX_DENIED/, 'log record captures the stderr reason');
+  assert.ok(typeof rec.ts === 'string' && rec.ts.length > 0, 'log record is timestamped');
 });
 
 // ── team config (equal, configurable roles) ──────────────────────────────────

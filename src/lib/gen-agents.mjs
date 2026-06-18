@@ -52,30 +52,38 @@ function _wrapDescription(role) {
 }
 
 /**
- * Build the executor command block for the agent body.
- * dispatch 'forced' pins backend+tier via --decision JSON.
- * dispatch 'route'  lets run.mjs auto-route.
- * Both reference `node "…/src/bin/run.mjs"` (retiring bash scripts/run.sh).
+ * Build the executor instruction block for the agent body.
+ *
+ * File transport (no base64, no command-line task text): the agent WRITES a call file under
+ * .mmt/calls/ with the Write tool (the untrusted task text never touches a shell), then runs
+ * `node run.mjs --call-file=<path>`. The path is the only thing on the command line — a safe
+ * [A-Za-z0-9_/.-] token that survives verbatim in BOTH PowerShell (the Windows default) and bash,
+ * fixing the old single-quoted-JSON / heredoc mangling that silently fell through to native.
+ *
+ * dispatch 'forced' pins backend+tier in the call file's decision.
+ * dispatch 'route'  omits the decision so run.mjs auto-routes (task only).
+ * Returns { writeContent, command } — writeContent is null for the route case's task-only file.
  */
 function _dispatchBlock(name, spec) {
   const backend = spec.backend ?? 'agy';
   const tier = spec.tier ?? 'standard';
+  const callPath = '.mmt/calls/<a-short-unique-name>.json';
   if (spec.dispatch === 'forced') {
-    const decision = JSON.stringify({
-      backend,
-      model: '',
-      tier,
-      rule: `${name}-forced`,
-      native: false,
-    });
-    // base64url the decision JSON: the single-line `--decision-b64=<token>` form has no quotes and
-    // no line-continuation, so it survives verbatim in BOTH PowerShell and bash (single-quoted JSON
-    // + `\` continuation mangles under PowerShell — the Windows default — and silently falls through
-    // to native). run.mjs decodes it in-Node, never via a shell.
-    const b64 = Buffer.from(decision).toString('base64url');
-    return `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision-b64=${b64} "<the full task text>"`;
+    const callJson = JSON.stringify({
+      decision: { backend, model: '', tier, rule: `${name}-forced`, native: false },
+      task: '<the full task text>',
+    }, null, 2);
+    return {
+      writeContent: callJson,
+      command: `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --call-file="${callPath}"`,
+    };
   }
-  return `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" "<the full task text>"`;
+  // route: no forced decision — write a call file with just the task; run.mjs auto-routes.
+  const callJson = JSON.stringify({ task: '<the full task text>' }, null, 2);
+  return {
+    writeContent: callJson,
+    command: `node "\${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --call-file="${callPath}"`,
+  };
 }
 
 /**
@@ -89,7 +97,7 @@ function _render(name, spec) {
   const color = spec.color ?? 'blue';
   const role = (spec.role ?? '') || `Delegation agent ${name}.`;
   const forced = spec.dispatch === 'forced';
-  const dispatch = _dispatchBlock(name, spec);
+  const { writeContent, command } = _dispatchBlock(name, spec);
 
   let intro, handoff, rules;
 
@@ -142,16 +150,24 @@ function _render(name, spec) {
     `## What to do\n` +
     `\n` +
     `1. Take the task text you were given.\n` +
-    `2. Run the executor:\n` +
+    `2. With the **Write tool** (not a shell command), write a call file under \`.mmt/calls/\` —\n` +
+    `   give it a short unique name and put the task text in the \`"task"\` field. The untrusted task\n` +
+    `   text goes in the FILE, never on a command line (the Write tool creates parent dirs):\n` +
+    `\n` +
+    `   \`\`\`json\n` +
+    `${writeContent.split('\n').map((l) => '   ' + l).join('\n')}\n` +
+    `   \`\`\`\n` +
+    `\n` +
+    `3. Run the executor, passing only the file path (substitute the name you chose):\n` +
     `\n` +
     `   \`\`\`bash\n` +
-    `   ${dispatch}\n` +
+    `   ${command}\n` +
     `   \`\`\`\n` +
     `\n` +
     `   - If the task references a local file/dir the backend should read itself, add\n` +
     `     \`--add-dir "<dir>"\` so the backend reads it on its own quota instead of through Claude.\n` +
-    `   - Pass the task as a single quoted argument. Do not add commentary to the prompt.\n` +
-    `3. Interpret the output:\n` +
+    `   - Do NOT inline the task on the command line and do NOT add commentary to the prompt.\n` +
+    `4. Interpret the output:\n` +
     `   - ${handoff}\n` +
     `   - Otherwise stdout **is** the delegated result. Return it **verbatim** — no analysis, no\n` +
     `     reformatting, no preamble.\n` +

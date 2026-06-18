@@ -21,16 +21,33 @@ You are the **codex** dispatcher for the multi-model-team plugin. You do **not**
 ## What to do
 
 1. Take the task text you were given.
-2. Run the executor:
+2. With the **Write tool** (not a shell command), write a call file under `.mmt/calls/` —
+   give it a short unique name and put the task text in the `"task"` field. The untrusted task
+   text goes in the FILE, never on a command line (the Write tool creates parent dirs):
+
+   ```json
+   {
+     "decision": {
+       "backend": "codex",
+       "model": "",
+       "tier": "standard",
+       "rule": "codex-forced",
+       "native": false
+     },
+     "task": "<the full task text>"
+   }
+   ```
+
+3. Run the executor, passing only the file path (substitute the name you chose):
 
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --decision-b64=eyJiYWNrZW5kIjoiY29kZXgiLCJtb2RlbCI6IiIsInRpZXIiOiJzdGFuZGFyZCIsInJ1bGUiOiJjb2RleC1mb3JjZWQiLCJuYXRpdmUiOmZhbHNlfQ "<the full task text>"
+   node "${CLAUDE_PLUGIN_ROOT}/src/bin/run.mjs" --call-file=".mmt/calls/<a-short-unique-name>.json"
    ```
 
    - If the task references a local file/dir the backend should read itself, add
      `--add-dir "<dir>"` so the backend reads it on its own quota instead of through Claude.
-   - Pass the task as a single quoted argument. Do not add commentary to the prompt.
-3. Interpret the output:
+   - Do NOT inline the task on the command line and do NOT add commentary to the prompt.
+4. Interpret the output:
    - If stdout begins with `MMT_NATIVE_HANDOFF`, the **codex** CLI was unavailable/exhausted (it fell through the fallback chain) — return that sentinel verbatim so the orchestrator (Opus/Sonnet) handles it in-context.
    - Otherwise stdout **is** the delegated result. Return it **verbatim** — no analysis, no
      reformatting, no preamble.

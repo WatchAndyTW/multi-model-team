@@ -12,49 +12,68 @@ import { tmpdir } from 'node:os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
-// ── run.mjs base64url transports (--task-b64 / --decision-b64) ───────────────
-// The shell-agnostic relay transport: payload + decision ride as base64url args, decoded in Node
-// (never a shell). A NATIVE forced decision needs no backend call, so the handoff sentinel is a
-// deterministic, offline-checkable proof that decode + decision-parse round-trip correctly.
+// ── run.mjs file transports (--call-file / --task-file / --decision-file) ─────
+// The shell-agnostic relay transport: the relay sub-agent WRITES the payload to a .mmt/calls/ file
+// (never a shell), and only the file PATH rides on the command line. run.mjs reads it in Node. A
+// NATIVE forced decision needs no backend call, so the handoff sentinel is a deterministic,
+// offline-checkable proof that the file read + decision-parse round-trip correctly.
 
-// Pure-JS base64url encoder, byte-identical to the workflow-side encoder it must interop with.
-function b64urlEncode(s) {
-  const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const bytes = Buffer.from(String(s), 'utf8');
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const a = bytes[i]; const b = bytes[i + 1]; const c = bytes[i + 2];
-    out += ALPHA[a >> 2];
-    out += ALPHA[((a & 3) << 4) | ((b ?? 0) >> 4)];
-    out += i + 1 < bytes.length ? ALPHA[((b & 15) << 2) | ((c ?? 0) >> 6)] : '=';
-    out += i + 2 < bytes.length ? ALPHA[c & 63] : '=';
-  }
-  return out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
+test('run.mjs --call-file: reads unicode task + parses decision from one JSON file (native handoff)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mmt-call-'));
+  const callPath = join(dir, 'c1.json');
+  writeFileSync(callPath, JSON.stringify({
+    decision: { backend: 'native', model: '', tier: 'opus', rule: 'reason', native: true },
+    task: 'Explain café 日本語 🚀 in one line',
+  }), 'utf8');
+  const r = spawnSync(process.execPath, [join(ROOT, 'src/bin/run.mjs'), `--call-file=${callPath}`], { encoding: 'utf8' });
+  assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
+  // Native decision -> deterministic handoff sentinel carrying the file's tier+rule.
+  assert.match(r.stdout, /MMT_NATIVE_HANDOFF/, 'native decision -> handoff sentinel');
+  assert.match(r.stdout, /tier=opus/, 'call-file decision tier read + applied');
+  assert.match(r.stdout, /rule=reason/, 'call-file decision rule read + applied');
+});
 
-test('run.mjs --task-b64/--decision-b64: decodes unicode + parses decision (native handoff)', () => {
-  const task = 'Explain café 日本語 🚀 in one line';
-  const decision = JSON.stringify({ backend: 'native', model: '', tier: 'opus', rule: 'reason', native: true });
+test('run.mjs --task-file + --decision: reads task from file, decision inline (native handoff)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mmt-task-'));
+  const taskPath = join(dir, 't1.txt');
+  writeFileSync(taskPath, 'Summarize the design 日本語', 'utf8');
   const r = spawnSync(
     process.execPath,
-    [join(ROOT, 'src/bin/run.mjs'), `--task-b64=${b64urlEncode(task)}`, `--decision-b64=${b64urlEncode(decision)}`],
+    [join(ROOT, 'src/bin/run.mjs'), `--task-file=${taskPath}`, '--decision', '{"backend":"native","native":true,"tier":"sonnet","rule":"x"}'],
     { encoding: 'utf8' }
   );
   assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
-  // Native decision -> deterministic handoff sentinel carrying the decoded tier+rule.
   assert.match(r.stdout, /MMT_NATIVE_HANDOFF/, 'native decision -> handoff sentinel');
-  assert.match(r.stdout, /tier=opus/, 'decision-b64 tier decoded + applied');
-  assert.match(r.stdout, /rule=reason/, 'decision-b64 rule decoded + applied');
+  assert.match(r.stdout, /tier=sonnet/, 'inline decision applied with --task-file');
 });
 
-test('run.mjs --task-b64: invalid base64url exits 2 (fail loud, not silent misdispatch)', () => {
+test('run.mjs --call-file: missing file exits 2 (fail loud, not silent misdispatch)', () => {
   const r = spawnSync(
     process.execPath,
-    [join(ROOT, 'src/bin/run.mjs'), '--task-b64=not valid b64!!', '--decision', '{"backend":"native","native":true}'],
+    [join(ROOT, 'src/bin/run.mjs'), `--call-file=${join(tmpdir(), 'mmt-does-not-exist-xyz.json')}`],
     { encoding: 'utf8' }
   );
-  assert.equal(r.status, 2, 'invalid --task-b64 must exit 2');
-  assert.match(r.stderr, /invalid --task-b64/, 'stderr names the bad flag');
+  assert.equal(r.status, 2, 'missing --call-file must exit 2');
+  assert.match(r.stderr, /cannot read --call-file/, 'stderr names the bad flag');
+});
+
+test('run.mjs --call-file: invalid JSON exits 2', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mmt-badjson-'));
+  const callPath = join(dir, 'bad.json');
+  writeFileSync(callPath, '{not valid json', 'utf8');
+  const r = spawnSync(process.execPath, [join(ROOT, 'src/bin/run.mjs'), `--call-file=${callPath}`], { encoding: 'utf8' });
+  assert.equal(r.status, 2, 'invalid JSON in --call-file must exit 2');
+  assert.match(r.stderr, /invalid JSON in --call-file/, 'stderr explains the bad JSON');
+});
+
+test('run.mjs --call-file: valid JSON but no "task" field exits 2 (fail loud, not silent stdin fallthrough)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mmt-notask-'));
+  const callPath = join(dir, 'notask.json');
+  // A corrupt relay payload: decision present, task missing. Must fail loud, not block on stdin.
+  writeFileSync(callPath, JSON.stringify({ decision: { backend: 'codex', native: false } }), 'utf8');
+  const r = spawnSync(process.execPath, [join(ROOT, 'src/bin/run.mjs'), `--call-file=${callPath}`], { encoding: 'utf8', input: '' });
+  assert.equal(r.status, 2, 'call-file with no task must exit 2');
+  assert.match(r.stderr, /has no usable "task" field/, 'stderr names the missing task field');
 });
 
 // ── team-spec.mjs CLI (--split) ──────────────────────────────────────────────

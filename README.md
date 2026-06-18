@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-87%2F87%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-91%2F91%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -231,8 +231,8 @@ prefers a PATHEXT match (`codex.cmd`) over the extensionless shim. No pty needed
   `$LOCALAPPDATA/agy/bin/agy.exe` (Windows) or `~/.local/bin/agy` / `/usr/local/bin/agy` (POSIX).
 - **codex** (Codex CLI, optional) — `npm install -g @openai/codex` + login. If absent, tasks fall through the chain.
 
-Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows. Linux/macOS paths are
-wired up but not yet exercised on a real POSIX box.
+Built and verified against **agy v1.0.8** and **codex-cli 0.139.0** on Windows, and **tested on
+Linux/macOS** — the POSIX paths are exercised on a real POSIX box.
 
 ---
 
@@ -254,7 +254,7 @@ src/lib/team-plan.mjs        plan.json → per-subtask files
 src/lib/reason-spec.mjs      /reasoning panel-spec parser
 src/lib/gen-agents.mjs       regenerate agents/*.md from the roster
 src/bin/route.mjs            task → decision JSON CLI
-src/bin/run.mjs              executor + fallback chain + HUD state (base64url relay transport)
+src/bin/run.mjs              executor + fallback chain + HUD state (file relay transport: --call-file)
 src/bin/team.mjs             scripted CLI fan-out for /team
 src/bin/reason.mjs           scripted panel fan-out for /reasoning
 hooks/proactive-route.mjs    UserPromptSubmit delegation nudge (opt-in)
@@ -276,7 +276,7 @@ docs/REASONING.md            design contract for the /reasoning Fusion pipeline
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 89/89 routing + unit tests (no backend calls)
+npm test                # offline: 91/91 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network required)
 ```
 
@@ -304,8 +304,8 @@ MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network require
 
 - **Quota grounding (P2):** `quota_patterns` are sensible defaults; detection is failure-gated (a
   successful call is never read as exhaustion). Harden on the first real credit-exhaustion error.
-- **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir are wired up but not yet exercised on a
-  real POSIX box.
+- **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir are exercised and tested on a real
+  POSIX box.
 
 ## License
 
