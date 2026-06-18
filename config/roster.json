@@ -103,7 +103,7 @@
       "dispatch": "forced",
       "model": "haiku",
       "color": "blue",
-      "role": "Backend-agnostic dispatcher for STANDARD, VERIFIABLE coding and Gemini's edges where the result is compact or easy to verify: new React/UI components, CSS, SVG/animation, scaffolding, CRUD, REST endpoints, scripts, CLI tools, glue code, SQL, regex, configs, Dockerfiles, unit tests, fixtures, data transforms — plus web-search/doc summarization and bulk text ingestion. Explicitly NOT for reverse-engineering, IL2CPP/protobuf-RE, disassembly, FFI/unsafe, binary, injection/hooking, concurrency, protocol/KCP design, proc-macros, or anything systems-hard (those are Opus-only and never offloaded)."
+      "role": "Dispatcher for the agy (Gemini) CLI backend — a configurable, equal tool, not a fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and per-subtask /team assignments, not hardcoded here. By the shipped routing config, agy is the default lane for fast, commodity, easily-verifiable work and Gemini's edges: new UI/React components, CSS, SVG/animation, scaffolding, CRUD, REST endpoints, scripts, CLI tools, glue code, SQL, regex, configs, Dockerfiles, unit tests, fixtures, data transforms, web-search/doc summarization, bulk text, and audio/video (Gemini-exclusive). The shipped rules keep reverse-engineering, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection/hooking, concurrency, protocol/KCP design and other systems-hard work on native Opus — but that is roster policy you can retune, not a property of this agent. Spawning this agent is an explicit choice to run on agy: it relays the task to the CLI and returns the result verbatim; it does not re-route or refuse based on content."
     },
 
     "codex": {
@@ -113,7 +113,7 @@
       "dispatch": "forced",
       "model": "haiku",
       "color": "magenta",
-      "role": "Delegate code review, test-writing, and verification to the OpenAI Codex CLI (codex exec): review a diff or file for correctness, bugs, edge cases, and regressions; write or extend a unit/integration test suite; or verify that an implementation meets its spec and the tests actually pass. Best for focused, self-contained review/test/verify units where the output is checkable. Use when you specifically want Codex on review/test/verify work rather than the Gemini backend or native Claude. Not for reverse-engineering, IL2CPP/protobuf-RE, injection, or other systems-hard work (those stay native Opus)."
+      "role": "Dispatcher for the codex (OpenAI Codex CLI) backend — a configurable, equal tool, not a fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and per-subtask /team assignments, not hardcoded here. By the shipped routing config, codex is the default lane for code review, test-writing, and verification — review a diff/file for correctness, bugs, edge cases and regressions; write or extend unit/integration/e2e test suites; verify an implementation meets its spec — and it serves as the default /team verifier. It runs full-auto in its own git worktree under /team --writable, so it can also make real code changes there. The shipped rules keep reverse-engineering, IL2CPP/protobuf-RE, injection and other systems-hard work on native Opus, but that is roster policy you can retune, not a property of this agent. Spawning this agent is an explicit choice to run on codex: it relays the task to the CLI and returns the result verbatim; it does not re-route or refuse based on content."
     }
   },
 

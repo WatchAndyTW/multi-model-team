@@ -1,13 +1,18 @@
 ---
 name: codex
 description: >-
-  Delegate code review, test-writing, and verification to the OpenAI Codex CLI (codex exec):
-  review a diff or file for correctness, bugs, edge cases, and regressions; write or extend a
-  unit/integration test suite; or verify that an implementation meets its spec and the tests
-  actually pass. Best for focused, self-contained review/test/verify units where the output is
-  checkable. Use when you specifically want Codex on review/test/verify work rather than the
-  Gemini backend or native Claude. Not for reverse-engineering, IL2CPP/protobuf-RE, injection,
-  or other systems-hard work (those stay native Opus).
+  Dispatcher for the codex (OpenAI Codex CLI) backend — a configurable, equal tool, not a
+  fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt)
+  and per-subtask /team assignments, not hardcoded here. By the shipped routing config, codex
+  is the default lane for code review, test-writing, and verification — review a diff/file for
+  correctness, bugs, edge cases and regressions; write or extend unit/integration/e2e test
+  suites; verify an implementation meets its spec — and it serves as the default /team
+  verifier. It runs full-auto in its own git worktree under /team --writable, so it can also
+  make real code changes there. The shipped rules keep reverse-engineering,
+  IL2CPP/protobuf-RE, injection and other systems-hard work on native Opus, but that is roster
+  policy you can retune, not a property of this agent. Spawning this agent is an explicit
+  choice to run on codex: it relays the task to the CLI and returns the result verbatim; it
+  does not re-route or refuse based on content.
 tools: Bash
 model: haiku
 color: magenta

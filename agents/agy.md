@@ -1,13 +1,18 @@
 ---
 name: agy
 description: >-
-  Backend-agnostic dispatcher for STANDARD, VERIFIABLE coding and Gemini's edges where the
-  result is compact or easy to verify: new React/UI components, CSS, SVG/animation,
-  scaffolding, CRUD, REST endpoints, scripts, CLI tools, glue code, SQL, regex, configs,
-  Dockerfiles, unit tests, fixtures, data transforms — plus web-search/doc summarization and
-  bulk text ingestion. Explicitly NOT for reverse-engineering, IL2CPP/protobuf-RE,
-  disassembly, FFI/unsafe, binary, injection/hooking, concurrency, protocol/KCP design,
-  proc-macros, or anything systems-hard (those are Opus-only and never offloaded).
+  Dispatcher for the agy (Gemini) CLI backend — a configurable, equal tool, not a fixed task
+  bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and
+  per-subtask /team assignments, not hardcoded here. By the shipped routing config, agy is the
+  default lane for fast, commodity, easily-verifiable work and Gemini's edges: new UI/React
+  components, CSS, SVG/animation, scaffolding, CRUD, REST endpoints, scripts, CLI tools, glue
+  code, SQL, regex, configs, Dockerfiles, unit tests, fixtures, data transforms,
+  web-search/doc summarization, bulk text, and audio/video (Gemini-exclusive). The shipped
+  rules keep reverse-engineering, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection/hooking,
+  concurrency, protocol/KCP design and other systems-hard work on native Opus — but that is
+  roster policy you can retune, not a property of this agent. Spawning this agent is an
+  explicit choice to run on agy: it relays the task to the CLI and returns the result
+  verbatim; it does not re-route or refuse based on content.
 tools: Bash
 model: haiku
 color: blue
