@@ -3,9 +3,11 @@ export const meta = {
   description: 'Model-dispatching team pipeline: decompose a task into subtasks and assign each to the best-fit backend (agy / codex / native — all equal, configurable), dispatch dependency-aware, verify each result on the configured verifier, fix failures in a bounded loop, then synthesize.',
   phases: [
     { title: 'Decompose', detail: 'split into backend-assigned subtasks with deps + verify criteria' },
+    { title: 'Setup', detail: 'writable mode only: one git worktree + branch per subtask off HEAD' },
     { title: 'Dispatch', detail: 'dependency-ordered waves: each subtask on its assigned backend (CLI relay or native)' },
     { title: 'Verify', detail: 'score each result against its acceptance criterion' },
     { title: 'Fix', detail: 'bounded re-dispatch of failed subtasks with verifier feedback' },
+    { title: 'Integrate', detail: 'writable mode only: merge each worktree into the integration branch, report conflicts' },
     { title: 'Synthesize', detail: 'merge verified results into one answer' },
   ],
 }
@@ -22,6 +24,14 @@ export const meta = {
 // the Write tool — never a shell), then passes only the file PATH to run.mjs (--call-file). The
 // (untrusted) subtask text is inert data — it lives in a file, read only in Node, and never appears
 // on a command line or as parseable shell text. The path itself is a safe [A-Za-z0-9_/.-] token.
+//
+// Modes: read-only (DEFAULT) — CLI agents return text, the orchestrator applies edits to the CURRENT
+// branch, no branch/worktree/PR. writable (A.writable) — each subtask gets its own git worktree+
+// branch off HEAD, the agent writes real changes there (CLI full-auto via run.mjs --cwd --writable),
+// and a deterministic Setup/Integrate pair of Bash sub-agents create the worktrees and merge them
+// into one integration branch `mmt/team-<slug>` off HEAD (conflicts reported, never auto-resolved;
+// the user's branch is untouched; no gh PR). git runs in sub-agents because the Workflow runtime has
+// no fs/git; the workflow only orchestrates them deterministically (slug/labels, no Date/random).
 // =============================================================================
 
 // ---- inputs (from Workflow args) -------------------------------------------
@@ -67,6 +77,48 @@ const CAP_SUM = DISPATCH.reduce((n, b) => n + CAPS[b], 0)
 // Verify is ON by default; callers can disable it (here or in the roster) or tune the fix loop.
 const VERIFY = (A.verify ?? TC.verify) === false ? false : true
 const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? TC.max_fix_loops ?? 1) || 0))
+
+// ---- writable mode ----------------------------------------------------------
+// Two modes:
+//   read-only (DEFAULT): CLI agents stay read-only and return text; the ORCHESTRATOR applies any
+//     edits directly to the CURRENT branch. No branch, no worktree, no PR (back-compat).
+//   writable (A.writable===true / TC.mode==='writable'): each subtask gets its OWN git worktree +
+//     branch off current HEAD; the agent (CLI full-auto, or native) writes real changes there; then
+//     a deterministic integration stage merges every agent branch into ONE integration branch
+//     `mmt/team-<slug>` off current HEAD (conflicts reported), left for the user (no auto-merge onto
+//     their branch, no gh PR). The Workflow runtime has no fs/git, so the worktree lifecycle is run
+//     by sub-agents (Bash tool); the workflow orchestrates them deterministically.
+// Accept boolean true OR the strings "true"/"writable"/"1"/"yes" (args/roster values may arrive as
+// strings from a JSON-string arg or a hand-edited roster), so writable mode isn't silently skipped.
+function truthyMode(v) {
+  if (v === true) return true
+  const s = String(v == null ? '' : v).trim().toLowerCase()
+  return s === 'true' || s === 'writable' || s === '1' || s === 'yes'
+}
+const WRITABLE = truthyMode(A.writable) || (A.writable == null && truthyMode(TC.mode))
+// Deterministic slug from the task (NO Date/random — the Workflow runtime forbids them and they'd
+// break resume). Stable across a resume so the same worktrees/branches are reused.
+function slugify(s) {
+  return String(s || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'task'
+}
+const SLUG = slugify(task)
+const INT_BRANCH = `mmt/team-${SLUG}`           // the integration branch (off current HEAD)
+const WT_BASE = `.mmt/worktrees/${SLUG}`         // worktrees live under the plugin state dir (gitignored)
+const INT_WORKTREE = `${WT_BASE}/__integration__`  // dedicated worktree for INT_BRANCH — merges happen
+                                                   // HERE so the user's main checkout is NEVER touched.
+// Sanitize a subtask label into a token safe for a git ref AND a filesystem path AND a shell-quoted
+// arg. Beyond the char filter we enforce git check-ref-format rules: no consecutive dots (`a..b`), no
+// `.lock` suffix, no leading/trailing dot or dash. Deterministic (no Date/random).
+function safeLabel(label) {
+  let s = String(label || 'task')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')   // only ref/path-safe chars
+    .replace(/\.{2,}/g, '.')             // collapse `..` (git refs forbid it)
+    .replace(/^[-.]+|[-.]+$/g, '')       // no leading/trailing dot or dash
+    .slice(0, 48)
+    .replace(/[-.]+$/g, '')              // re-trim after the length cap
+  if (/\.lock$/i.test(s)) s = s.replace(/\.lock$/i, '-lock')  // git refs can't end in .lock
+  return s || 'task'
+}
 // Verifier backend: per-invocation arg > roster team.verifier > 'codex'. Any backend works equally;
 // 'native' = Claude judgment (no relay). If the chosen CLI is unavailable at runtime, the relay
 // falls back to native judgment loudly (same contract as the dispatch relay path).
@@ -167,6 +219,44 @@ const RELAY_SCHEMA = {
   required: ['stdout', 'backend_ran'],
 }
 
+// Writable-mode setup: the worktree-creation report.
+const SETUP_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean', description: 'true if the integration branch + worktrees were created (or already existed)' },
+    base_sha: { type: 'string', description: 'short SHA of current HEAD (the base for all worktrees)' },
+    integration_branch: { type: 'string' },
+    worktrees: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: { label: { type: 'string' }, path: { type: 'string' }, branch: { type: 'string' }, created: { type: 'boolean' } },
+        required: ['label', 'path', 'branch'],
+      },
+    },
+    reason: { type: 'string', description: 'on failure, why (e.g. not a git repo)' },
+  },
+  required: ['ok'],
+}
+
+// Writable-mode integration: the merge-into-integration-branch report.
+const INTEGRATE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean' },
+    integration_branch: { type: 'string' },
+    base_sha: { type: 'string' },
+    merged: { type: 'array', items: { type: 'string' }, description: 'labels successfully merged into the integration branch' },
+    conflicts: { type: 'array', items: { type: 'string' }, description: 'labels whose merge hit conflicts (left for the user to resolve)' },
+    empty: { type: 'array', items: { type: 'string' }, description: 'labels whose worktree had no changes to merge' },
+    summary: { type: 'string', description: 'human-readable summary of the integration outcome + how to inspect/merge the branch' },
+    reason: { type: 'string' },
+  },
+  required: ['ok', 'summary'],
+}
+
 // ---- 1 · Decompose ----------------------------------------------------------
 phase('Decompose')
 const plan = await agent(
@@ -256,7 +346,7 @@ function tierModel(tier) {
 // fall back (and that the fallback is a VISIBLE native: agent) is decided in deterministic code by the
 // caller. Backends are equal — the same pipe drives agy, codex, or any future CLI (backend + rule are
 // parameters, never hardcoded). Label is prefixed with the CLI name; the pipe is cheap (RELAY_MODEL).
-function dispatchRelay(backend, text, tier, rule, label, ph) {
+function dispatchRelay(backend, text, tier, rule, label, ph, worktree) {
   const be = backendLabel(backend)
   // File-based transport: the relay sub-agent writes the payload (decision + task) to a JSON file
   // under .mmt/calls/ with the Write tool, then runs `node run.mjs --call-file=<path>`. No heredoc,
@@ -264,7 +354,13 @@ function dispatchRelay(backend, text, tier, rule, label, ph) {
   // PowerShell or bash. run.mjs reads the file in Node. The call id is derived from the label (the
   // Workflow runtime forbids random/Date), so each subtask gets its own file.
   const callPath = callFilePath(label)
+  // In writable mode the CLI writes in its worktree: add --cwd=<worktree> --writable so run.mjs runs
+  // the backend there with full-auto. In read-only mode neither flag is present (unchanged behaviour).
+  const writableFlags = worktree ? ` --cwd=${JSON.stringify(worktree)} --writable` : ''
   const callJson = JSON.stringify({ decision: { backend, model: '', tier, rule, native: false }, task: text }, null, 2)
+  const wtNote = worktree
+    ? `\n\nWRITABLE MODE: the command includes --cwd (a git worktree) and --writable, so the ${be} CLI will WRITE its changes into that worktree. You are still a pure relay — do NOT edit files yourself, do NOT inspect the worktree, just run the command and report stdout.`
+    : ''
 
   return agent(
 `You are a PURE RELAY PIPE for the ${be} backend — NOT a problem solver. Write one file, run ONE command, report its output, stop. Do NOT browse, reason about, or answer the payload yourself; you have no opinion on its content and must never put your own answer in the output.
@@ -275,36 +371,47 @@ ${callJson}
 
 Step 2 — run EXACTLY this with the Bash tool and nothing else. The payload is in the file you just wrote; only its PATH is on the command line (inert, safe in any shell). Do NOT inline or echo the payload:
 
-node ${JSON.stringify(RUN)} --call-file=${JSON.stringify(callPath)}
+node ${JSON.stringify(RUN)} --call-file=${JSON.stringify(callPath)}${writableFlags}
 
-CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI can legitimately take several minutes on a hard task; run.mjs blocks until it completes (it has its own generous timeout). Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure. If your Bash tool reports its own time limit, simply run the SAME command again and keep waiting; run.mjs prints a "[mmt] backend still running (Ns)…" heartbeat to stderr and writes a status file next to the call file ("<the call-file path>.status.json", {state:"running"|"done"|"failed"}) you can read to confirm it is still alive.
+CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI can legitimately take several minutes on a hard task; run.mjs blocks until it completes (it has its own generous timeout). Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure. If your Bash tool reports its own time limit, simply run the SAME command again and keep waiting; run.mjs prints a "[mmt] backend still running (Ns)…" heartbeat to stderr and writes a status file next to the call file ("<the call-file path>.status.json", {state:"running"|"done"|"failed"}) you can read to confirm it is still alive.${wtNote}
 
 Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL, schema: RELAY_SCHEMA }
   )
 }
 
-function dispatchNative(text, tier, label, ph) {
-  return agent(
-`Solve this subtask directly and return a complete, self-contained result:\n\n${text}`,
-    { label: `native:${label}`, phase: ph || 'Dispatch', model: tierModel(tier) }
-  )
+// Native solver. In writable mode it WRITES its changes into the subtask's worktree (cwd) directly;
+// in read-only mode it just returns a self-contained result (the orchestrator applies any edits).
+function dispatchNative(text, tier, label, ph, worktree) {
+  const body = worktree
+    ? `Implement this subtask by WRITING the actual file changes into the git worktree at "${worktree}". cd into it first, edit/create the real files there (use the Edit/Write tools or shell), and leave the working tree with your changes (do NOT commit — the integration stage commits). Then return a short summary of what you changed (files + rationale).\n\nSUBTASK:\n${text}`
+    : `Solve this subtask directly and return a complete, self-contained result:\n\n${text}`
+  return agent(body, { label: `native:${label}`, phase: ph || 'Dispatch', model: tierModel(tier) })
 }
 
 // Equal backends: native solves in-context; every other backend is relayed to its CLI through the
 // faithful pipe. Returns { result, ranOn } so the record can report WHICH backend actually produced
 // the result. If the CLI didn't run (unavailable/exhausted), we fall back to native LOUDLY and
 // VISIBLY — a real `native:<label>-fallback` agent, not a Claude answer hidden behind the CLI's label.
+// Per-subtask worktree path (writable mode only). Each subtask gets its own isolated checkout so
+// parallel writes don't collide; the integration stage merges them. '' in read-only mode.
+function worktreeFor(label) { return WRITABLE ? `${WT_BASE}/${safeLabel(label)}` : '' }
+// Per-subtask integration branch name (sanitized label). Used by Setup + Integrate so the names match.
+function branchFor(label) { return `${INT_BRANCH}/${safeLabel(label)}` }
+
 async function dispatch(s, text, ph) {
+  const wt = worktreeFor(s.label)
   if (s.backend === 'native') {
-    return { result: await dispatchNative(text, s.tier || 'sonnet', s.label, ph), ranOn: 'native' }
+    return { result: await dispatchNative(text, s.tier || 'sonnet', s.label, ph, wt), ranOn: 'native' }
   }
-  const relay = await dispatchRelay(s.backend, text, s.tier || 'standard', 'team', s.label, ph)
+  const relay = await dispatchRelay(s.backend, text, s.tier || 'standard', 'team', s.label, ph, wt)
   if (relay && relay.backend_ran === true && typeof relay.stdout === 'string' && relay.stdout.trim()) {
     return { result: relay.stdout, ranOn: s.backend }
   }
   log(`${backendLabel(s.backend)} unavailable for "${s.label}" — visible native fallback`)
-  const result = await dispatchNative(text, s.tier === 'opus' ? 'opus' : 'sonnet', `${s.label}-fallback`, ph)
+  // Fallback native solver still writes into the SAME worktree (the work must land regardless of which
+  // backend produced it), so the integration stage sees one branch per subtask either way.
+  const result = await dispatchNative(text, s.tier === 'opus' ? 'opus' : 'sonnet', `${s.label}-fallback`, ph, wt)
   return { result, ranOn: `native-fallback(${s.backend})` }
 }
 
@@ -424,6 +531,38 @@ Produce a corrected, complete result.`
   return { label: s.label, backend: s.backend, ranOn, tier: s.tier, deps: s.deps || [], attempts, status, verdict, result }
 }
 
+// ---- 1.5 · Writable setup: one git worktree + branch per subtask ------------
+// The Workflow runtime can't run git itself, so a single setup sub-agent (Bash) creates the
+// integration branch off current HEAD and a worktree+branch per subtask. Deterministic: branch/
+// worktree names are derived from the slug+labels (no Date/random), so a resume reuses them. In
+// read-only mode this stage is skipped entirely (no branch — per the user's contract).
+let setupReport = null
+if (WRITABLE) {
+  phase('Setup')
+  const wtLines = kept.map((s) => `  - label "${s.label}": worktree "${worktreeFor(s.label)}" on branch "${branchFor(s.label)}"`).join('\n')
+  setupReport = await agent(
+`You are the WRITABLE-MODE SETUP agent for the multi-model-team /team pipeline. Use the Bash tool to prepare isolated git worktrees. Do NOT solve any task — only run git plumbing and report. Every branch/worktree op is IDEMPOTENT (this may be a resume — skip anything that already exists; never error out just because it exists).
+
+This repo's current HEAD is the base. The user's current branch must stay checked out and UNTOUCHED — do NOT \`git switch\`/\`git checkout\` in the main working tree. Do EXACTLY this:
+1. Confirm you are in a git repo: \`git rev-parse --is-inside-work-tree\`. If not, report {ok:false, reason:"not a git repo"} and stop.
+2. Create the integration branch off CURRENT HEAD, idempotently (do NOT switch to it):
+   \`git show-ref --verify --quiet refs/heads/${INT_BRANCH} || git branch ${JSON.stringify(INT_BRANCH)} HEAD\`
+3. Create a DEDICATED integration WORKTREE so later merges never touch the user's checkout (idempotent — skip if the path already exists):
+   \`git worktree add ${JSON.stringify(INT_WORKTREE)} ${JSON.stringify(INT_BRANCH)}\`  (omit -b: the branch already exists from step 2)
+4. For EACH subtask below, create a worktree on its own branch off HEAD (idempotent — for each, if the worktree path exists skip it, else \`git worktree add -b "<branch>" "<worktree>" HEAD\`; if the branch already exists drop -b and check it out into the new worktree). Worktrees live under .mmt/ (gitignored):
+${wtLines}
+5. Report which worktrees now exist (include the integration worktree).
+
+Return JSON: { ok: boolean, base_sha: "<git rev-parse --short HEAD>", integration_branch: ${JSON.stringify(INT_BRANCH)}, worktrees: [{label, path, branch, created}], reason?: string }. Use label "__integration__" for the integration worktree entry.`,
+    { label: 'setup-worktrees', phase: 'Setup', model: tierModel('sonnet'), schema: SETUP_SCHEMA }
+  )
+  if (!setupReport || setupReport.ok !== true) {
+    log(`writable setup failed (${(setupReport && setupReport.reason) || 'unknown'}) — aborting writable run`)
+    return { task, mode: 'writable', error: `writable setup failed: ${(setupReport && setupReport.reason) || 'unknown'}`, setup: setupReport }
+  }
+  log(`writable: integration branch ${INT_BRANCH} off ${setupReport.base_sha}; ${(setupReport.worktrees || []).length} worktree(s) ready`)
+}
+
 // ---- 2 · Dispatch in dependency-ordered waves -------------------------------
 // A wave = the set of subtasks whose deps are all complete. Each wave runs in
 // parallel (a barrier is correct here: a dependent cannot start before its dep
@@ -487,6 +626,41 @@ const usage = {
 }
 if (cliRecords.length) log(`usage: ${cliRecords.length} subtask(s) executed on CLI (off-budget); ${nativeRecords.length} on native Claude`)
 
+// ---- 2.5 · Writable integration: merge worktrees -> integration branch ------
+// A single integration sub-agent (Bash) commits each subtask's worktree on its branch, merges every
+// branch into the integration branch (off HEAD), reports conflicts (left for the user — NOT
+// auto-resolved blindly), and removes the worktrees. The user's current branch is NEVER touched; the
+// result sits on `${INT_BRANCH}` for them to inspect / merge / PR. No gh PR is created.
+let integration = null
+if (WRITABLE) {
+  phase('Integrate')
+  const labelLines = kept.map((s) => `  - "${s.label}": worktree "${worktreeFor(s.label)}", branch "${branchFor(s.label)}"`).join('\n')
+  integration = await agent(
+`You are the WRITABLE-MODE INTEGRATION agent for the multi-model-team /team pipeline. Use the Bash tool to merge each subtask's worktree into the integration branch. Do NOT solve any task or write feature code — only git plumbing + an honest report.
+
+CRITICAL SAFETY RULE: all merges happen INSIDE the dedicated integration worktree at "${INT_WORKTREE}" (checked out to "${INT_BRANCH}"). NEVER run \`git switch\`/\`git checkout\` in the main working tree, and NEVER merge the integration branch into the user's current branch. The user's checkout must end exactly as it started.
+
+Integration branch: "${INT_BRANCH}" (already created off the original HEAD). Integration worktree: "${INT_WORKTREE}".
+Subtasks (each wrote changes into its own worktree):
+${labelLines}
+
+Do EXACTLY this, in order:
+1. For EACH subtask worktree: \`git -C "<worktree>" add -A\`; if there are staged changes, commit them: \`git -C "<worktree>" commit -m "mmt(${SLUG}): <label>"\`. If the worktree has NO changes (\`git -C "<worktree>" status --porcelain\` empty), record the label under "empty" and skip it.
+2. From the INTEGRATION WORKTREE only, merge each non-empty subtask branch into "${INT_BRANCH}", one at a time, no-fast-forward (visible merge commit):
+   \`git -C ${JSON.stringify(INT_WORKTREE)} merge --no-ff -m "mmt(${SLUG}): merge <label>" "<branch>"\`
+   If a merge hits CONFLICTS, do NOT guess — \`git -C ${JSON.stringify(INT_WORKTREE)} merge --abort\`, record the label under "conflicts", and KEEP that subtask's worktree (do not remove it) so the user has the change to resolve. Continue with the rest.
+3. Remove ONLY the cleanly-merged and empty subtask worktrees (\`git worktree remove --force "<path>"\`). Keep conflicted worktrees AND the integration worktree "${INT_WORKTREE}" in place. Do NOT delete the integration branch and do NOT touch the user's branch.
+4. Report honestly: which labels merged, which conflicted (still need manual resolution), which were empty.
+
+Return JSON matching the schema: { ok, integration_branch, base_sha, merged:[label], conflicts:[label], empty:[label], summary, reason? }. The summary MUST tell the user how to inspect the result (e.g. "git log ${INT_BRANCH}" or open the integration worktree at "${INT_WORKTREE}") and that conflicts (if any) remain for them to resolve in those kept worktrees.`,
+    { label: 'integrate-worktrees', phase: 'Integrate', model: tierModel('sonnet'), schema: INTEGRATE_SCHEMA }
+  )
+  if (integration && Array.isArray(integration.conflicts) && integration.conflicts.length) {
+    log(`writable: ${integration.conflicts.length} subtask(s) had merge conflicts on ${INT_BRANCH} (left for you): ${integration.conflicts.join(', ')}`)
+  }
+  log(`writable: integration ${integration && integration.ok ? 'complete' : 'had problems'} on ${INT_BRANCH} — ${integration ? integration.summary : 'no report'}`)
+}
+
 // ---- 3 · Synthesize ---------------------------------------------------------
 phase('Synthesize')
 const final = await agent(
@@ -503,6 +677,7 @@ ${JSON.stringify(records, null, 2)}`,
 
 return {
   task,
+  mode: WRITABLE ? 'writable' : 'read-only',
   backends: DISPATCH,
   caps: CAPS,
   verify: VERIFY,
@@ -517,6 +692,9 @@ return {
     nativeFallbacks: fellBack.length,
   },
   usage,
+  // Writable mode only: the integration branch + per-subtask merge outcome (null in read-only mode).
+  // The user's current branch is untouched; changes sit on `integration.integration_branch`.
+  writable: WRITABLE ? { integration_branch: INT_BRANCH, setup: setupReport, integration } : null,
   results: records,
   final,
 }

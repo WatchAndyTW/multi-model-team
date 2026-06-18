@@ -114,6 +114,25 @@ function asArray(v) {
   return Array.isArray(v) ? v.slice() : [];
 }
 
+// Pick the flag set for this invocation: in /team --writable mode use the backend's `writable_extra`
+// (full-auto — the CLI may write files / run commands in its worktree cwd) when present; otherwise
+// (and in the default read-only lane) use `extra`. A backend with no writable_extra simply reuses
+// `extra`, so opting a backend out of the writable lane is a config no-op (no behaviour change).
+function invocationExtra(cfg, writable) {
+  if (writable) {
+    const we = field(cfg, 'writable_extra');
+    if (Array.isArray(we)) return we.slice();
+    // Writable was requested but this backend has no writable_extra. Falling back to `extra` would
+    // SILENTLY run read-only (the agent can't write), defeating writable mode — so signal it loudly
+    // rather than fail mysteriously downstream when no files change.
+    process.stderr.write(
+      `[mmt] WARNING: writable mode requested but backend '${field(cfg, 'kind') || field(cfg, 'cmd') || '?'}' ` +
+      `has no writable_extra — using read-only flags; the agent likely will NOT be able to write.\n`,
+    );
+  }
+  return asArray(field(cfg, 'extra'));
+}
+
 // Windows can't spawn a .cmd/.bat directly — Node throws EINVAL (CVE-2024-27980 hardening). Route
 // such argv through `cmd.exe /d /s /c` with the args as an ARRAY (Node quotes them), which avoids
 // shell:true (DEP0190 — unescaped concatenation). agy/.exe and all posix argv pass through untouched.
@@ -131,7 +150,7 @@ function winCmdWrap(argv) {
 // the stdin lifecycle. When keepStdinOpen is true the stdin pipe is created but NEVER ended until
 // the child exits — this is the agy "open, idle stdin" requirement (replaces the bash held-open
 // FIFO). When false, stdin is closed immediately (codex: equivalent to </dev/null).
-function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env }) {
+function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env, cwd }) {
   return new Promise((resolve) => {
     const [cmd, ...args] = winCmdWrap(argv);
     let child;
@@ -140,6 +159,9 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env }) {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         env: env ? { ...process.env, ...env } : process.env,
+        // cwd: in /team --writable mode this is the subtask's git worktree, so the CLI writes there.
+        // Undefined -> inherit the parent's cwd (read-only/default behaviour, unchanged).
+        ...(cwd ? { cwd } : {}),
       });
     } catch (err) {
       resolve({ stdout: '', stderr: String(err && err.message ? err.message : err), code: 127, spawnError: true });
@@ -212,7 +234,7 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env }) {
 // quota) still loads if the native module is missing; only the agy lane needs it. A pty is ONE merged
 // stream (stdout+stderr); clean() strips the terminal control bytes. Wide cols avoid hard-wrapping the
 // answer. Returns { stdout, stderr:'', code } — the same shape runChild resolves.
-async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50, env } = {}) {
+async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50, env, cwd } = {}) {
   let pty;
   try {
     pty = loadPty();
@@ -224,7 +246,7 @@ async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, row
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, cwd: process.cwd(), env: env ? { ...process.env, ...env } : process.env });
+      proc = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, cwd: cwd || process.cwd(), env: env ? { ...process.env, ...env } : process.env });
     } catch (e) {
       resolve({ stdout: '', stderr: String((e && e.message) || e), code: 127 });
       return;
@@ -266,7 +288,7 @@ async function invokeGemini(cfg, prompt, opts) {
   //   args order (parity with the bash invoker): [print_flag, prompt, model_flag, model, ...extra, add_dir_flag, add_dir]
   const args = [printFlag, prompt];
   if (model) args.push(modelFlag, model);
-  args.push(...asArray(field(cfg, 'extra')));
+  args.push(...invocationExtra(cfg, opts.writable));
   if (addDir) args.push(addDirFlag, addDir);
 
   // agy (Gemini CLI) refuses to run in an untrusted directory unless the workspace is trusted. In a
@@ -276,13 +298,15 @@ async function invokeGemini(cfg, prompt, opts) {
   // env override stand.
   const trustEnv = { GEMINI_CLI_TRUST_WORKSPACE: process.env.GEMINI_CLI_TRUST_WORKSPACE || 'true' };
 
+  // cwd: in /team --writable mode this is the subtask's git worktree, so agy writes there.
+  const cwd = opts.cwd || undefined;
   const hardTimeout = timeoutMs(field(cfg, 'hard_timeout'));
   let res;
   if (platform.isWindows() || ptyAvailable()) {
     // node-pty path: REQUIRED on Windows (ConPTY — winpty can't allocate a console from a headless
     // parent); PREFERRED on POSIX when present (forkpty, uniform mechanism).
     try {
-      res = await runPty(bin, args, { hardTimeout, env: trustEnv });
+      res = await runPty(bin, args, { hardTimeout, env: trustEnv, cwd });
     } catch (e) {
       res = { stdout: '', stderr: String((e && e.message) || e), code: 127 };
     }
@@ -291,7 +315,7 @@ async function invokeGemini(cfg, prompt, opts) {
     // -> `script -qec '…'` on linux / `script -q /dev/null …` on darwin). agy runs under script's pty
     // so isatty(stdout) is true — no native module needed on Linux/macOS.
     const wrapped = platform.ptyWrap([bin, ...args], { needTty: field(cfg, 'use_winpty') !== false });
-    res = await runChild(wrapped.argv, { hardTimeout, keepStdinOpen: true, env: trustEnv });
+    res = await runChild(wrapped.argv, { hardTimeout, keepStdinOpen: true, env: trustEnv, cwd });
   }
 
   const cleaned = clean(res.stdout);
@@ -321,15 +345,18 @@ async function invokeCodex(cfg, prompt, opts) {
   // via STDIN using codex's `-` sentinel ("instructions are read from stdin"), NOT as an argv element.
   // On Windows codex is a .cmd shim spawned through cmd.exe, which truncates a multi-line arg at the
   // first newline (COMPACT_PROMPT adds \n\n) and expands %VAR%; stdin sidesteps both entirely.
-  //   [bin, exec, ...extra(incl `-s read-only`), (-m model)?, (--add-dir dir)?, '-']  + prompt on stdin
-  const argv = [bin, oneshot, ...asArray(field(cfg, 'extra'))];
+  //   [bin, exec, ...extra(`-s read-only`, or writable_extra in --writable mode), (-m model)?, (--add-dir dir)?, '-']  + prompt on stdin
+  const argv = [bin, oneshot, ...invocationExtra(cfg, opts.writable)];
   if (model) argv.push(modelFlag, model);
   if (addDir) argv.push(addDirFlag, addDir);
   argv.push('-');
 
+  // cwd: in /team --writable mode this is the subtask's git worktree, so codex's writes (full-auto)
+  // land there. A worktree IS a git repo, so the writable_extra drops --skip-git-repo-check.
   const res = await runChild(argv, {
     hardTimeout: timeoutMs(field(cfg, 'hard_timeout')),
     stdinData: prompt,
+    cwd: opts.cwd || undefined,
   });
 
   const cleaned = clean(res.stdout);
@@ -342,7 +369,9 @@ async function invokeCodex(cfg, prompt, opts) {
 }
 
 // invoke(backendCfg, prompt, opts) -> { ok, stdout, stderr, code, quota }
-//   opts: { model?:string, tier?:'cheap'|'standard', addDir?:string }
+//   opts: { model?:string, tier?:'cheap'|'standard', addDir?:string, cwd?:string, writable?:boolean }
+//   cwd      — run the CLI in this directory (the subtask's git worktree in /team --writable mode).
+//   writable — use the backend's `writable_extra` (full-auto) instead of `extra` (read-only sandbox).
 export async function invoke(backendCfg, prompt, opts = {}) {
   const kind = backendCfg && backendCfg.kind;
   switch (kind) {

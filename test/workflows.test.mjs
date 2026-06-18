@@ -63,6 +63,57 @@ test('team.mjs: relay uses the file transport (--call-file), no heredoc, no base
   assert.ok(SRC.includes('status file') || SRC.includes('.status.json'), 'team.mjs relay must mention the pollable status file');
 });
 
+test('team.mjs: writable-mode worktree machinery present (Setup/Integrate, --cwd --writable, integration branch)', () => {
+  const markers = [
+    'WRITABLE',                 // the mode flag
+    'INT_BRANCH',               // the integration branch name
+    'mmt/team-',                // integration branch naming off the slug
+    'worktreeFor',              // per-subtask worktree path
+    '.mmt/worktrees/',          // gitignored worktree home
+    'SETUP_SCHEMA',             // setup agent structured report
+    'INTEGRATE_SCHEMA',         // integration agent structured report
+    "phase('Setup')",           // the two new writable-only phases
+    "phase('Integrate')",
+    '--cwd=',                   // relay passes the worktree cwd
+    '--writable',               // relay passes the writable flag
+    'conflicts',                // conflicts reported, not auto-resolved
+    'INT_WORKTREE',             // dedicated integration worktree (user's checkout never touched)
+    'safeLabel',                // labels sanitized before use in refs/paths
+    'show-ref --verify',        // idempotent branch creation (resume-safe)
+    'merge --abort',            // conflicts aborted, not blindly resolved
+  ];
+  for (const m of markers) {
+    assert.ok(SRC.includes(m), `team.mjs missing writable-mode marker: ${m}`);
+  }
+  // Determinism still holds with the new code (no Date/random crept in).
+  assert.doesNotMatch(SRC, /Date\.now|Math\.random|new Date/, 'writable code must stay determinism-safe');
+});
+
+test('team.mjs safeLabel: produces git-ref-safe + path-safe tokens (no .., no .lock, no leading/trailing . or -)', () => {
+  // Extract the REAL safeLabel() from the workflow source and exercise it, so this test tracks the
+  // actual function (it can't be imported — the Workflow runtime globals aren't present under node).
+  const m = SRC.match(/function safeLabel\([\s\S]*?\n\}/);
+  assert.ok(m, 'safeLabel function found in team.mjs');
+  // eslint-disable-next-line no-new-func
+  const safeLabel = new Function(`${m[0]}; return safeLabel;`)();
+  const ok = (label) => {
+    const out = safeLabel(label);
+    // git check-ref-format rules we care about for a single path component:
+    assert.doesNotMatch(out, /\.\./, `"${label}" -> "${out}" must not contain ..`);
+    assert.doesNotMatch(out, /\.lock$/i, `"${label}" -> "${out}" must not end in .lock`);
+    assert.doesNotMatch(out, /^[-.]|[-.]$/, `"${label}" -> "${out}" must not start/end with . or -`);
+    assert.doesNotMatch(out, /[^A-Za-z0-9._-]/, `"${label}" -> "${out}" only ref/path-safe chars`);
+    assert.ok(out.length > 0 && out.length <= 48, `"${label}" -> "${out}" is 1..48 chars`);
+    return out;
+  };
+  assert.equal(ok('a..b'), 'a.b', 'consecutive dots collapsed');
+  assert.equal(ok('v1.lock'), 'v1-lock', '.lock suffix neutralized');
+  assert.equal(ok('.hidden'), 'hidden', 'leading dot stripped');
+  assert.equal(ok('trail-'), 'trail', 'trailing dash stripped');
+  assert.equal(ok('ok-label'), 'ok-label', 'plain label unchanged');
+  ok('weird/\\:*name'); ok(''); ok('...'); ok('a.lock.lock');
+});
+
 // ── workflows/reasoning.mjs — the Fusion (Panel -> Judge -> Synthesize) workflow ─────
 // Same static-analysis contract as team.mjs: determinism (no Date/random), the faithful-relay
 // machinery, the four Fusion judge dimensions, and the `node …run.mjs` (never `bash`) relay shell.

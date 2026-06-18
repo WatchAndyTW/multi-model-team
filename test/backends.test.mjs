@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, chmodSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { writeFileSync, chmodSync, readFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
 import { backend, teamConfig, proactive } from '../src/lib/config.mjs';
@@ -230,6 +230,86 @@ test('run.mjs --call-file: a successful CLI writes a terminal status:"done" file
   assert.equal(st.state, 'done', 'status is done on success');
   assert.equal(st.backend, 'codex', 'status names the backend');
   assert.equal(st.code, 0, 'status records exit 0');
+});
+
+test('run.mjs --cwd --writable: CLI runs IN the worktree cwd and gets the writable sandbox flags', () => {
+  const d = tmp('ewrite-');
+  // The worktree the agent should write into (just a dir for the test — not a real git worktree).
+  const wt = join(d, 'worktree');
+  mkdirSync(wt, { recursive: true });
+  // Fake CLI: on --version, health. Otherwise it records (a) its CWD and (b) the full arg list it was
+  // invoked with into a marker file IN ITS CWD — so we can prove run.mjs ran it in the worktree with
+  // the writable (full-auto) flags rather than the read-only `-s read-only` extra.
+  const fake = join(d, process.platform === 'win32' ? 'fakew.cmd' : 'fakew.sh');
+  if (process.platform === 'win32') {
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if "%1"=="--version" ( echo fakew 1.0 & exit /b 0 )\r\n' +
+      'echo cwd=%CD% > agent-wrote.txt\r\n' +
+      'echo args=%* >> agent-wrote.txt\r\n' +
+      'echo WROTE_IN_WORKTREE\r\n' +
+      'exit /b 0\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'if [ "${1:-}" = "--version" ]; then echo "fakew 1.0"; exit 0; fi\n' +
+      'echo "cwd=$(pwd)" > agent-wrote.txt\n' +
+      'echo "args=$*" >> agent-wrote.txt\n' +
+      'echo WROTE_IN_WORKTREE\n');
+    chmodSync(fake, 0o755);
+  }
+  const r = writeRosterVariant(d, 'r.json', (c) => { c.backends.agy.enabled = false; });
+  const callFile = join(d, 'call.json');
+  writeFileSync(callFile, JSON.stringify({
+    decision: { backend: 'codex', model: '', tier: 'standard', rule: 'team', native: false },
+    task: 'make an edit',
+  }), 'utf8');
+  const { stdout } = runNode(BIN_RUN, {
+    args: ['--roster', r, '--cwd', wt, '--writable', '--call-file', callFile],
+    env: { MMT_BE_BIN: fake },
+  });
+  assert.match(stdout, /WROTE_IN_WORKTREE/, 'CLI ran and produced output');
+  // (a) The CLI wrote its marker file INSIDE the worktree cwd (write isolation).
+  const marker = join(wt, 'agent-wrote.txt');
+  assert.ok(existsSync(marker), 'CLI wrote its file into the --cwd worktree, not the parent');
+  const body = readFileSync(marker, 'utf8');
+  // (b) It was invoked with the writable sandbox flag, NOT the read-only `-s read-only` extra.
+  assert.match(body, /dangerously-bypass-approvals-and-sandbox/, 'writable mode passed codex writable_extra (full-auto)');
+  assert.doesNotMatch(body, /read-only/, 'writable mode dropped the read-only sandbox flag');
+});
+
+test('run.mjs (no --writable): CLI gets the read-only sandbox flags (default behaviour unchanged)', () => {
+  const d = tmp('eread-');
+  const wt = join(d, 'here');
+  mkdirSync(wt, { recursive: true });
+  const fake = join(d, process.platform === 'win32' ? 'faker.cmd' : 'faker.sh');
+  if (process.platform === 'win32') {
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if "%1"=="--version" ( echo faker 1.0 & exit /b 0 )\r\n' +
+      'echo args=%* > ro-args.txt\r\n' +
+      'echo READONLY_OK\r\n' +
+      'exit /b 0\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'if [ "${1:-}" = "--version" ]; then echo "faker 1.0"; exit 0; fi\n' +
+      'echo "args=$*" > ro-args.txt\n' +
+      'echo READONLY_OK\n');
+    chmodSync(fake, 0o755);
+  }
+  const r = writeRosterVariant(d, 'r.json', (c) => { c.backends.agy.enabled = false; });
+  const callFile = join(d, 'call.json');
+  writeFileSync(callFile, JSON.stringify({
+    decision: { backend: 'codex', model: '', tier: 'standard', rule: 'team', native: false },
+    task: 'review',
+  }), 'utf8');
+  // --cwd given but NO --writable: read-only extra must still be used.
+  const { stdout } = runNode(BIN_RUN, { args: ['--roster', r, '--cwd', wt, '--call-file', callFile], env: { MMT_BE_BIN: fake } });
+  assert.match(stdout, /READONLY_OK/, 'CLI ran');
+  const body = readFileSync(join(wt, 'ro-args.txt'), 'utf8');
+  assert.match(body, /read-only/, 'read-only mode keeps the -s read-only sandbox flag');
+  assert.doesNotMatch(body, /dangerously-bypass/, 'read-only mode does NOT use the full-auto flag');
 });
 
 // ── team config (equal, configurable roles) ──────────────────────────────────

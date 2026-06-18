@@ -256,6 +256,31 @@ test('run.mjs --add-dir: accepted (not an unknown flag) with a forced native dec
   assert.match(result.stdout, /MMT_NATIVE_HANDOFF/, 'native decision emits the handoff sentinel');
 });
 
+test('run.mjs --cwd / --writable: accepted (not unknown flags) with a forced native decision', () => {
+  // Writable-mode flags must parse even on the native short-circuit (no backend invoked here).
+  const result = spawnSync(
+    process.execPath,
+    [join(ROOT, 'src/bin/run.mjs'), '--cwd', ROOT, '--writable', '--decision', '{"backend":"native","native":true}'],
+    { input: 'x', encoding: 'utf8' }
+  );
+  assert.equal(result.status, 0, `--cwd/--writable should be accepted; exit ${result.status}; stderr: ${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /unknown flag/, 'must not report --cwd/--writable as unknown flags');
+  assert.match(result.stdout, /MMT_NATIVE_HANDOFF/, 'native decision still short-circuits');
+});
+
+test('run.mjs --cwd=VALUE (equals form, as the workflow relay emits it): parsed, not an unknown flag', () => {
+  // The workflow builds `--cwd=${JSON.stringify(worktree)}` (equals form). Prove parseArgs's generic
+  // eq-split handles it for --cwd, not just the space form.
+  const result = spawnSync(
+    process.execPath,
+    [join(ROOT, 'src/bin/run.mjs'), `--cwd=${ROOT}`, '--writable', '--decision', '{"backend":"native","native":true}'],
+    { input: 'x', encoding: 'utf8' }
+  );
+  assert.equal(result.status, 0, `--cwd=VALUE should parse; exit ${result.status}; stderr: ${result.stderr}`);
+  assert.doesNotMatch(result.stderr, /unknown flag/, '--cwd=VALUE must not be an unknown flag');
+  assert.match(result.stdout, /MMT_NATIVE_HANDOFF/, 'native short-circuit still works');
+});
+
 test('pluginRootFrom: decodes percent-encoded file:// URLs (space/non-ASCII paths)', async () => {
   // Regression: pluginRootFrom used URL.pathname (percent-ENCODED, never decoded), so a plugin
   // path with a space (C:\Users\First Last\...) — very common on Windows — resolved to a non-

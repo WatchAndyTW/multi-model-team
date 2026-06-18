@@ -1,6 +1,6 @@
 ---
-description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:claude".
-argument-hint: "[N:gemini,M:claude] <task>"
+description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:claude". Add --writable to give each agent its own git worktree and merge into an integration branch.
+argument-hint: "[--writable] [N:gemini,M:claude] <task>"
 allowed-tools: Bash, Write, Task
 ---
 
@@ -51,6 +51,25 @@ MMT_ARGS_EOF
 (`gemini`=agy, `codex`=codex, `claude`=native). **Only pass these as `args.caps` when `.source` is
 `"spec"`** (the user actually typed a spec); on `"default"`, omit caps so the roster `team.caps`
 applies. If `.note` is non-empty, surface it.
+
+### Mode: read-only (default) vs `--writable`
+Before decomposing, detect the mode from the raw input. If the input contains the token **`--writable`**
+(strip it from the task text first — it is a mode flag, not part of the task), run in **writable mode**;
+otherwise **read-only mode** (the default).
+
+- **read-only (DEFAULT):** the CLI agents (agy/codex) stay **read-only** — they return text, not edits.
+  Any file changes are applied by **you (the orchestrator) directly to the CURRENT branch**. Do **NOT**
+  create a branch, a worktree, or a PR in this mode. This is the back-compat behaviour.
+- **writable (`--writable`):** each subtask gets its **own git worktree + branch** off the current HEAD;
+  the assigned agent (CLI **full-auto** via `run.mjs --cwd <worktree> --writable`, or a native solver
+  writing in the worktree) makes **real file changes** there; then the orchestrator **merges every
+  subtask branch into one integration branch `mmt/team-<slug>`** off HEAD, **reports conflicts** (never
+  blind-resolves them), and leaves that branch for you. Your current branch is **untouched** (no
+  auto-merge), and **no GitHub PR is created** — you inspect/merge/PR the integration branch yourself.
+
+In the Ultracode path, pass `writable: true` in the Workflow args for writable mode (the workflow runs
+the Setup → Dispatch → Integrate stages). In the Task-agent path, follow the writable steps marked
+**(writable mode)** below; in read-only mode skip them and apply edits to the current branch directly.
 
 ## 1.5 · Load the team roles config (and honor in-session overrides)
 The pipeline's roles are **config-driven**, not hardcoded. Read the merged team config (roster
@@ -231,6 +250,7 @@ Workflow({
           // optional top-level in-session overrides — these WIN over teamConfig (omit if none):
           caps: <{ gemini, codex, claude } ONLY if the cap spec source=="spec">,
           verifier: "<any backend, or 'native'>",
+          writable: <true ONLY if the user passed --writable; omit/false otherwise>,
           verify: true, maxFixLoops: 1 }
 })
 ```
@@ -242,8 +262,12 @@ back if it's unavailable), runs a bounded fix loop on failures, and synthesizes.
 `args.teamConfig` (the roster `team` section): `dispatch_backends` (the equal set), `verifier`
 (`"native"` = Claude judgment), `caps`, `tier_models`, `verify`, `max_fix_loops`. Per-invocation args
 override (`verifier`, `caps`, `verify`, `maxFixLoops`). With no `teamConfig`, the built-in defaults
-apply (all three backends eligible; codex verify). Read its returned `{ plan, backends, caps,
-counts:{byBackend,…}, verifier, results, final }` and present `final`, noting `counts.failed` if
-non-zero. (`args.task` is passed as a JSON value, not shell — injection-safe.)
+apply (all three backends eligible; codex verify). Read its returned `{ plan, mode, backends, caps,
+counts:{byBackend,…}, verifier, writable, results, final }` and present `final`, noting `counts.failed`
+if non-zero. **In writable mode** (`mode:"writable"`), also surface `writable.integration_branch` and
+`writable.integration` — tell the user the changes are on that branch (their current branch is
+untouched), list any `writable.integration.conflicts` that still need manual resolution, and how to
+inspect it (`git switch <integration_branch>` / `git log <integration_branch>`). (`args.task` is passed
+as a JSON value, not shell — injection-safe.)
 
 A trivial single task needs no fan-out: one subtask reduces this to a plain verified dispatch.

@@ -29,7 +29,7 @@ const COMPACT_PROMPT = (task) => `${COMPACT_CONTRACT}\n\n${task}`;
 
 // ---- arg parsing -----------------------------------------------------------
 function parseArgs(argv) {
-  const o = { preset: '', tags: '', roster: '', decision: '', callFile: '', taskFile: '', decisionFile: '', sandbox: false, addDir: '', task: '' };
+  const o = { preset: '', tags: '', roster: '', decision: '', callFile: '', taskFile: '', decisionFile: '', sandbox: false, addDir: '', cwd: '', writable: false, task: '' };
   let i = 0;
   const positional = [];
   while (i < argv.length) {
@@ -54,6 +54,11 @@ function parseArgs(argv) {
       case '--task-file':     o.taskFile = next() ?? ''; break;
       case '--decision-file': o.decisionFile = next() ?? ''; break;
       case '--add-dir':      o.addDir = next() ?? ''; break;
+      // /team --writable mode: run the backend CLI IN this dir (the subtask's git worktree) and use
+      // the backend's writable_extra (full-auto) so it can actually write files there. Both are inert
+      // when absent — default/read-only runs are unchanged.
+      case '--cwd':          o.cwd = next() ?? ''; break;
+      case '--writable':     o.writable = true; break;
       case '--sandbox':      o.sandbox = true; break;
       case '--':             positional.push(...argv.slice(i + 1)); i = argv.length; break;
       default:
@@ -227,6 +232,11 @@ async function main() {
   if (!task) task = (await readStdin()).trim();
   if (!task) { process.stderr.write('run.mjs: no task text\n'); process.exit(2); }
 
+  // Writable-mode inputs: a --cwd (the subtask's worktree) + --writable (full-auto). The relay may
+  // carry them in the call file too; the explicit flag wins. Both inert when absent (default lane).
+  const cwd = opts.cwd || (callPayload && typeof callPayload.cwd === 'string' ? callPayload.cwd : '');
+  const writable = opts.writable || !!(callPayload && callPayload.writable);
+
   // --roster flag wins; else shared resolver: .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > plugin default.
   const rosterPath = opts.roster || resolveRosterPath(MMT_ROOT);
   const tagsPath = opts.tags || path.join(MMT_ROOT, 'config', 'tags.txt');
@@ -350,7 +360,7 @@ async function main() {
     const stopHeartbeat = startHeartbeat({ callId, statusFile, backend: be, model, tier: D_tier, rule: D_rule, startMs });
     let res;
     try {
-      res = await invoke(invokeCfg, fullPrompt, { model, tier: D_tier, addDir: opts.addDir });
+      res = await invoke(invokeCfg, fullPrompt, { model, tier: D_tier, addDir: opts.addDir, cwd, writable });
     } catch (e) {
       res = { ok: false, stdout: '', stderr: String(e && e.message || e), code: 1, quota: false };
     }

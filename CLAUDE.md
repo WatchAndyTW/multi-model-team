@@ -9,7 +9,7 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **93/93** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **99/99** offline
 (plus live agy + codex smoke tests under `MMT_LIVE=1`). Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
@@ -178,11 +178,24 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 
 ## /team — multi-model team pipeline (v0.3)
 
-`/team [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
+`/team [--writable] [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
 pipeline: **native, agy and codex are equal, configurable tools** — the decomposer assigns each
 subtask to its best-fit backend, native Claude plans/synthesizes, and any backend (default codex)
 verifies. Stages: **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**.
 Flow (in `commands/team.md`):
+
+**Two modes (`--writable`).** *read-only (default):* CLI agents stay read-only (`-s read-only`), return
+text, and the **orchestrator applies edits directly to the CURRENT branch — no branch, no worktree, no
+PR** (back-compat). *writable (`--writable`):* each subtask gets its **own git worktree + branch** off
+HEAD; the agent makes **real changes** there (CLI **full-auto** via `run.mjs --cwd <wt> --writable`,
+selecting the backend's `writable_extra` instead of `extra`); then a deterministic **Setup → Integrate**
+pair of Bash sub-agents (the Workflow runtime has no fs/git) create the worktrees and **merge each into
+one integration branch `mmt/team-<slug>`** off HEAD — **conflicts reported, never auto-resolved**; the
+user's branch is untouched (no auto-merge) and **no `gh` PR** is created. Worktrees live under
+`.mmt/worktrees/<slug>/` (gitignored). Enable per-invocation (`--writable` / Workflow `args.writable`)
+or via roster `team.mode:"writable"`. The full-auto sandbox is config-tunable: each backend's
+`writable_extra` in `roster.json` (codex `--dangerously-bypass-approvals-and-sandbox`; agy keeps its
+`--dangerously-skip-permissions`, differing from read-only only by the worktree cwd).
 
 1. Parse the optional cap spec via `src/lib/team-spec.mjs` → `{gemini, claude}` (caps = max
    agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
@@ -335,7 +348,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 93/93 routing + unit tests (no backend calls)
+npm test                         # offline: 99/99 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test              # + live agy + codex smoke tests (network required)
 ```
 

@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-93%2F93%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-99%2F99%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -73,12 +73,30 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 | Command | What it does |
 |---|---|
 | **`/reasoning [panel] <question>`** | **Fusion pipeline.** Fan one question across a panel of models in parallel → a judge compares them (consensus / contradictions / unique insights / blind spots) → synthesize one unified answer better than any single model's. |
-| **`/team [N:gemini,M:claude,X:codex] <task>`** | **Team pipeline.** Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. |
+| **`/team [--writable] [N:gemini,M:claude,X:codex] <task>`** | **Team pipeline.** Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. Add **`--writable`** to let agents actually edit code in isolated git worktrees (see below). |
 | **`/route-test <task>`** | Dry-run the router: prints `{backend, model, tier}`, detected types, matched rule. No backend call — a tuning tool. |
 
 Both `/team` and `/reasoning` have **two engines**: an **Ultracode** deterministic Workflow path
 (preferred, when the Workflow tool is available) and a parallel `Task`-agent fallback. Either way the
 work runs across parallel agents — never one inline session.
+
+#### `/team` modes — read-only (default) vs `--writable`
+
+`/team` runs in one of two modes:
+
+- **read-only (default):** the CLI agents (agy/codex) stay read-only — they return text, not edits.
+  Any file changes are applied by **Claude (the orchestrator) directly to your current branch**. No
+  branch, no worktree, no PR is created. This is the back-compat behaviour.
+- **writable (`--writable`):** each subtask gets its **own git worktree + branch** off your current
+  `HEAD`; the assigned agent makes **real file changes** there (CLI backends run **full-auto** in the
+  worktree). The orchestrator then **merges every subtask branch into one integration branch
+  `mmt/team-<slug>`** (off `HEAD`), **reports any merge conflicts** instead of guessing at them, and
+  leaves that branch for you. **Your current branch is never touched** (no auto-merge) and **no
+  GitHub PR is created** — you inspect / merge / open a PR for the integration branch yourself
+  (`git log mmt/team-<slug>`). Per-subtask worktrees live under `.mmt/worktrees/` (gitignored);
+  conflicted ones are kept so you can resolve them. The full-auto sandbox per backend is tunable via
+  `writable_extra` in `roster.json`. Enable per-invocation with `--writable`, or set
+  `team.mode: "writable"` in the roster.
 
 ### Agents (Claude spawns these on its own for matching work)
 
@@ -134,10 +152,10 @@ Sections (keys prefixed `_comment`/`_about` are inline docs the parsers ignore):
 
 | Section | Tune to… |
 |---|---|
-| **`backends`** | turn a CLI on/off (`enabled`), pick its invoker (`kind`). Live: `agy` (`gemini`), `codex`. `opencode` is a stub. |
+| **`backends`** | turn a CLI on/off (`enabled`), pick its invoker (`kind`), and set `writable_extra` — the flags used **instead of** `extra` in `/team --writable` mode (full-auto). Live: `agy` (`gemini`), `codex`. `opencode` is a stub. |
 | **`routes`** | change *where* a task type routes (first match wins). |
 | **`agents`** | the delegation subagents (`backend`/`tier`/`dispatch`/`role`). **After editing, run `node src/lib/gen-agents.mjs`** to regenerate `agents/*.md`. |
-| **`team`** | the `/team` pipeline roles + defaults — `dispatch_backends`, `verifier`, `caps`, `tier_models`, `verify`, `max_fix_loops`. |
+| **`team`** | the `/team` pipeline roles + defaults — `dispatch_backends`, `verifier`, `caps`, `tier_models`, `verify`, `max_fix_loops`, and **`mode`** (`"writable"` makes `--writable` the default; per-invocation `--writable` still wins). |
 | **`reasoning`** | the `/reasoning` Fusion defaults — **`panel`** (which models participate), `judge`, `synthesizer`, `cap`. See [docs/REASONING.md](docs/REASONING.md). |
 | **`defaults`** / **`proactive`** | preset + fallback chain, and the proactive-nudge config. |
 | **`config/tags.txt`** | (separate flat file) keyword → task-type classification. |
@@ -276,7 +294,7 @@ docs/REASONING.md            design contract for the /reasoning Fusion pipeline
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 93/93 routing + unit tests (no backend calls)
+npm test                # offline: 99/99 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network required)
 ```
 
