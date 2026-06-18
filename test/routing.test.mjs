@@ -70,6 +70,10 @@ test('regression: OPUS hard-line regexes do NOT false-positive on everyday terms
   assert.equal(D('Implement binary search over the sorted array').tier, 'sonnet');
   // config-logic must stay native (judgment), not leak to agy.
   assert.equal(D('Update the config file parsing logic to handle nested keys').backend, 'native');
+  // tightened guards (P0): these everyday phrasings must NOT trip the Opus hard line.
+  assert.notEqual(D('Read a binary file format and parse the header').tier, 'opus');
+  assert.notEqual(D('Add React hooks into the API client for data fetching').tier, 'opus');
+  assert.notEqual(D('Set up dependency injection with a DI container').tier, 'opus');
 });
 
 test('regression: real RE/injection signals STILL route to Opus', () => {

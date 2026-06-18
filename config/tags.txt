@@ -14,12 +14,12 @@ protobuf-re    (protobuf|proto).{0,20}(reverse|re-?eng|dump|decode|definition)|r
 disasm         disassembl|disasm|x64dbg|\bida\b|ghidra|cutter
 decompile      decompil
 vmprotect      vmprotect|themida|denuvo|virtuali(z|s)ed code|code virtuali
-binary         reverse[- ]?engineer|rever(se|sing).{0,20}(binary|exe|dll|game|app)|\bbinary\b.{0,20}(exe|dll|dump|disassembl|reverse|patch|blob)|(analy(z|s)e|inspect|patch|dump|reverse) the binary
+binary         reverse[- ]?engineer|rever(se|sing).{0,20}(binary|exe|dll|game|app)|(analy(z|s)e|inspect|patch|dump|reverse).{0,20}\bbinary\b.{0,20}(exe|dll|dump|disassembl|reverse|patch|blob)|(analy(z|s)e|inspect|patch|dump|reverse) the binary
 ffi            \bffi\b|foreign function|p/?invoke|pinvoke|extern \"c\"|\bctypes\b|marshal
-unsafe         \bunsafe\b|raw pointer|pointer arithmetic|transmute
+unsafe         raw pointer|pointer arithmetic|transmute|\bunsafe\b\s*(block|pointer|code|rust|\{)|rust\s+unsafe
 exploit        exploit|rop chain|\bcve\b|buffer overflow|use[- ]after[- ]free|heap spray
-hooking        detour|minhook|trampoline|iat hook|inline hook|function hook|hook(ing|ed)? (the |into )?(function|api|render|process|game|call|address|syscall)
-injection      (code|dll|process|shellcode|payload|library|memory|remote) inject(ion|ing|ed)?|inject(ing|ed|ion)?.{0,20}(into (the )?(process|memory|remote|target)|payload|shellcode)
+hooking        detour|minhook|trampoline|iat hook|inline hook|function hook|hook(ing|ed)? (the )?(syscall|address|game (function|process)|process memory)
+injection      (?<!dependency )(?<!constructor )(?<!sql )(?<!spring )(?<!service )(code|dll|process|shellcode|payload|library|memory|remote) inject(ion|ing|ed)?|inject(ing|ed|ion)?.{0,20}(into (the )?(process|memory|remote|target)|payload|shellcode)
 dll-inject     dll inject|inject.{0,15}dll|reflective (dll|load)|loadlibrary inject
 detours        \bdetours\b
 minhook        minhook

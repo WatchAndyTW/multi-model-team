@@ -12,6 +12,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 import { loadRoster, defaults, backend } from '../lib/config.mjs';
 import { decide } from '../lib/router.mjs';
@@ -180,7 +181,7 @@ async function main() {
 
   const fullPrompt = COMPACT_PROMPT(task);
   const inChars = charCount(task);
-  const callId = String(Math.floor(Math.random() * 1e6)).padStart(6, '0').slice(0, 6);
+  const callId = randomUUID().replace(/-/g, '').slice(0, 8);
 
   // ---- 4. Walk the chain -----------------------------------------------------
   let lastErr = ''; // short, sanitized reason from the last backend that actually failed
