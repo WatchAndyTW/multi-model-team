@@ -276,7 +276,7 @@ docs/REASONING.md            design contract for the /reasoning Fusion pipeline
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 87/87 routing + unit tests (no backend calls)
+npm test                # offline: 89/89 routing + unit tests (no backend calls)
 MMT_LIVE=1 npm test     # also run live agy + codex smoke tests (network required)
 ```
 

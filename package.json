@@ -15,7 +15,7 @@
     "mmt-team": "./src/bin/team.mjs"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test",
     "route-test": "node ./src/bin/route.mjs --explain"
   },
   "engines": {
