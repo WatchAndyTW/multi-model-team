@@ -422,11 +422,20 @@ async function main() {
     // non-zero exit OR empty clean output -> surface + sanitize stderr, next hop. Drop this backend's
     // cached health so a later call re-probes it instead of trusting a now-stale "healthy" verdict.
     if (res.code !== 0 || !cleanOut) {
-      lastErr = sanitizeErr(res.stderr) || `exit ${res.code}, empty output`;
-      const kind = res.code !== 0 ? 'nonzero-exit' : 'empty-output';
+      // Surface a hard_timeout SIGKILL as a distinct `timeout` (not a generic nonzero-exit) so a
+      // backend that ran out of time is diagnosable — the relay/operator can tell "the CLI was too
+      // slow" from "the CLI errored". res.timedOut is AUTHORITATIVE (set by runChild/runPty when their
+      // own timer fired); a genuine CLI exit 124 is therefore NOT misclassified as a timeout.
+      const timedOut = res.timedOut === true;
+      const kind = timedOut ? 'timeout' : (res.code !== 0 ? 'nonzero-exit' : 'empty-output');
+      lastErr = timedOut
+        ? `'${be}' timed out after ${Math.round(durMs / 1000)}s (raise backends.${be}.hard_timeout if it needs longer)`
+        : (sanitizeErr(res.stderr) || `exit ${res.code}, empty output`);
       stopHeartbeat({ state: 'failed', kind, code: res.code, elapsed_ms: durMs });
       logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: res.code, durMs,
-        stderr: res.stderr || `no usable output (exit ${res.code})`,
+        stderr: timedOut
+          ? `timed out after ${durMs}ms (hard_timeout exceeded)`
+          : (res.stderr || `no usable output (exit ${res.code})`),
         kind, callId });
       invalidateHealth(beCfg);
       state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });

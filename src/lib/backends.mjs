@@ -79,9 +79,11 @@ function agyCandidates() {
 }
 
 // Parse a hard_timeout that may be a number (ms) or a `coreutils timeout` duration string
-// ("6m", "300s", "90", "1.5h"). Returns ms. Default 6 minutes (parity with backends.sh `6m`).
+// ("15m", "300s", "90", "1.5h"). Returns ms. Default 15 minutes — generous, so a heavy /team
+// --writable job isn't SIGKILLed mid-run (the shipped roster sets 15m explicitly; this covers a
+// roster that omits hard_timeout).
 function timeoutMs(raw) {
-  const DEFAULT = 6 * 60 * 1000;
+  const DEFAULT = 15 * 60 * 1000;
   if (raw == null || raw === '') return DEFAULT;
   if (typeof raw === 'number' && Number.isFinite(raw)) return raw > 0 ? raw : DEFAULT;
   const m = String(raw).trim().match(/^(\d+(?:\.\d+)?)\s*([smhd]?)$/i);
@@ -235,7 +237,7 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env, cwd }) {
 // quota) still loads if the native module is missing; only the agy lane needs it. A pty is ONE merged
 // stream (stdout+stderr); clean() strips the terminal control bytes. Wide cols avoid hard-wrapping the
 // answer. Returns { stdout, stderr:'', code } — the same shape runChild resolves.
-async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, rows = 50, env, cwd } = {}) {
+async function runPty(file, args, { hardTimeout = 15 * 60 * 1000, cols = 200, rows = 50, env, cwd } = {}) {
   let pty;
   try {
     pty = loadPty();
@@ -254,13 +256,16 @@ async function runPty(file, args, { hardTimeout = 6 * 60 * 1000, cols = 200, row
     }
     const chunks = [];
     let settled = false;
+    let timedOut = false;
     const finish = (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout: chunks.join(''), stderr: '', code: typeof code === 'number' ? code : 1 });
+      // timedOut is the AUTHORITATIVE signal (a genuine CLI exit 124 is NOT a timeout); code 124 is
+      // just the conventional sentinel mirrored for parity with runChild / coreutils `timeout`.
+      resolve({ stdout: chunks.join(''), stderr: '', code: typeof code === 'number' ? code : 1, timedOut });
     };
-    const timer = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } finish(124); }, hardTimeout);
+    const timer = setTimeout(() => { timedOut = true; try { proc.kill(); } catch { /* ignore */ } finish(124); }, hardTimeout);
     if (typeof timer.unref === 'function') timer.unref();
     proc.onData((d) => chunks.push(d));
     proc.onExit(({ exitCode }) => finish(exitCode));
@@ -326,7 +331,7 @@ async function invokeGemini(cfg, prompt, opts) {
   // quota is gated on FAILURE (see quotaFromResult): a successful answer is never exhaustion, even
   // if its prose happens to contain "quota"/"429"/… (e.g. agy summarizing a doc about rate limits).
   const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
-  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota };
+  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota, timedOut: !!res.timedOut };
 }
 
 // --- codex (OpenAI Codex CLI) ------------------------------------------------
@@ -366,7 +371,7 @@ async function invokeCodex(cfg, prompt, opts) {
   // answer quotes this repo's roster.json quota_patterns ("quota", "429", "rate limit", …) must NOT
   // be misread as exhaustion and discarded. Only scan when the call did not produce a usable result.
   const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
-  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota };
+  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota, timedOut: !!res.timedOut };
 }
 
 // invoke(backendCfg, prompt, opts) -> { ok, stdout, stderr, code, quota }

@@ -102,7 +102,7 @@ export function backend(roster, name) {
     // absent, backends.mjs falls back to `extra` (i.e. no writable lane = no behaviour change).
     writable_extra: Array.isArray(be.writable_extra) ? be.writable_extra : undefined,
     print_flag: be.oneshot_flag ?? '--print',   // alias consumed by backends.mjs
-    hard_timeout: be.hard_timeout ?? '6m',
+    hard_timeout: be.hard_timeout ?? '15m',
     quota_patterns: Array.isArray(be.quota_patterns) ? be.quota_patterns : [],
     quota_exit_codes: Array.isArray(be.quota_exit_codes) ? be.quota_exit_codes : [],
     // pass-through fields backends.mjs may read

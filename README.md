@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-105%2F105%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-106%2F106%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -302,7 +302,7 @@ docs/INTERFACES.md           module interface contract (Node ESM port signatures
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 105/105 routing + unit tests (no backend calls)
+npm test                # offline: 106/106 routing + unit tests (no backend calls)
 ```
 
 The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a

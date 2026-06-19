@@ -57,6 +57,11 @@ test('team.mjs: relay uses the file transport (--call-file), no heredoc, never `
   //    self-imposed sleep/timeout, retry-and-wait on the relay's own time limit.
   assert.match(SRC, /FOREGROUND and WAIT/, 'team.mjs relay must tell the worker to run foreground and wait');
   assert.ok(SRC.includes('status file') || SRC.includes('.status.json'), 'team.mjs relay must mention the pollable status file');
+  // 6. Anti-thrash (the gemini multi-attempt-timeout bug): on the relay's OWN time limit it must
+  //    poll the status file and keep WAITING on state:"running", NOT blindly re-run (which spawns a
+  //    second CLI process). Re-run at most once.
+  assert.match(SRC, /do NOT immediately re-run/i, 'team.mjs relay must not blindly re-run on its own time limit');
+  assert.match(SRC, /at most ONCE/i, 'team.mjs relay must cap re-runs at once (no loop)');
 });
 
 test('workflows: relay guards against an empty/placeholder payload (the undefined-task bug)', () => {
@@ -173,4 +178,6 @@ test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, ne
   assert.ok(REASON_SRC.includes('function callFilePath'), 'reasoning.mjs missing the deterministic call-file path helper');
   assert.match(REASON_SRC, /FOREGROUND and WAIT/, 'reasoning.mjs relay must tell the worker to run foreground and wait');
   assert.ok(REASON_SRC.includes('status file') || REASON_SRC.includes('.status.json'), 'reasoning.mjs relay must mention the pollable status file');
+  assert.match(REASON_SRC, /do NOT immediately re-run/i, 'reasoning.mjs relay must not blindly re-run on its own time limit');
+  assert.match(REASON_SRC, /at most ONCE/i, 'reasoning.mjs relay must cap re-runs at once (no loop)');
 });

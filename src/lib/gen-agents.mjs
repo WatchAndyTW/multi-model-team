@@ -167,13 +167,16 @@ function _render(name, spec) {
     `   - If the task references a local file/dir the backend should read itself, add\n` +
     `     \`--add-dir "<dir>"\` so the backend reads it on its own quota instead of through Claude.\n` +
     `   - Do NOT inline the task on the command line and do NOT add commentary to the prompt.\n` +
-    `   - **Run it in the FOREGROUND and WAIT.** The ${backend} CLI can take several minutes on a\n` +
-    `     hard task; run.mjs blocks until it finishes (it has its own generous timeout). Do NOT\n` +
-    `     background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own\n` +
+    `   - **Run it in the FOREGROUND and WAIT.** The ${backend} CLI can take MANY MINUTES on a hard\n` +
+    `     task; run.mjs blocks until it finishes (its own generous timeout SIGKILLs the CLI on expiry).\n` +
+    `     Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own\n` +
     `     \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure.\n` +
-    `     If your shell hits its own time limit, run the SAME command again and keep waiting; run.mjs\n` +
-    `     emits a \`[mmt] backend still running (Ns)…\` heartbeat to stderr and writes a\n` +
-    `     \`<call-file>.status.json\` ({state:"running"|"done"|"failed"}) you can read to confirm it's alive.\n` +
+    `   - **If your shell hits ITS OWN time limit before the command returns, do NOT immediately\n` +
+    `     re-run it** — re-running spawns a SECOND ${backend} process while the first is still working.\n` +
+    `     Instead read \`<the call-file>.status.json\` ({state:"running"|"done"|"failed"}, updated ~10s):\n` +
+    `     state:"running" → keep WAITING (re-read the status file, do NOT re-run) UNLESS it is stale\n` +
+    `     (elapsed_ms stops advancing across two ~15s reads → run.mjs died); "done"/"failed" → act on\n` +
+    `     it; status missing or stale → re-run the command at most ONCE. Never loop the command.\n` +
     `4. Interpret the output:\n` +
     `   - ${handoff}\n` +
     `   - Otherwise stdout **is** the delegated result. Return it **verbatim** — no analysis, no\n` +

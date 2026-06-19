@@ -230,7 +230,14 @@ Step 2 — run EXACTLY this with the Bash tool and nothing else. The payload is 
 
 node ${JSON.stringify(RUN)} --call-file=${JSON.stringify(callPath)}
 
-CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI can legitimately take several minutes; run.mjs blocks until it completes (it has its own generous timeout). Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure. If your Bash tool reports its own time limit, simply run the SAME command again and keep waiting; run.mjs prints a "[mmt] backend still running (Ns)…" heartbeat to stderr and writes a status file next to the call file ("<the call-file path>.status.json", {state:"running"|"done"|"failed"}) you can read to confirm it is still alive.
+CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI can legitimately take MANY MINUTES; run.mjs blocks until it completes (it has its own generous timeout and will SIGKILL the CLI on expiry). Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure.
+
+If your Bash tool hits ITS OWN time limit before the command returns, do NOT immediately re-run the command — re-running spawns a SECOND ${be} process while the first is still working. Instead, CHECK the status file "${callPath}.status.json" first:
+  - state:"running" → the ${be} process is still alive. Just keep WAITING: re-read that status file (do NOT re-run the node command). It updates every ~10s; keep checking until it flips to "done" or "failed".
+  - state:"done" → the run already finished. Report the stdout you already captured. (run.mjs does NOT cache — re-running re-dispatches a fresh job, so prefer reporting what you have.)
+  - state:"failed" → report backend_ran:false.
+  - status file missing, or stale (elapsed_ms stopped advancing across two ~15s reads → run.mjs died) → re-run the SAME command ONCE.
+Re-run the node command at most ONCE; never loop it.
 
 Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Panel', model: RELAY_MODEL, schema: RELAY_SCHEMA }

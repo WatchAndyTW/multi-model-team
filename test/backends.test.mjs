@@ -192,6 +192,45 @@ test('run.mjs surfaces a failing backend stderr + carries it into the handoff', 
   assert.ok(typeof st.elapsed_ms === 'number', 'status records elapsed_ms');
 });
 
+// ── a backend that exceeds hard_timeout is logged as kind:"timeout" (the gemini multi-attempt bug) ──
+test('run.mjs: a backend slower than hard_timeout is SIGKILLed and logged as kind:"timeout"', () => {
+  const d = tmp('etimeout-');
+  // Fake CLI: passes --version health, then sleeps ~7s on exec. With a 3s hard_timeout, run.mjs
+  // SIGKILLs it (code 124) -> must surface as a TIMEOUT, not a generic nonzero-exit/empty.
+  const fake = join(d, process.platform === 'win32' ? 'slowcodex.cmd' : 'slowcodex.sh');
+  if (process.platform === 'win32') {
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if "%1"=="--version" ( echo slowcodex 1.0 & exit /b 0 )\r\n' +
+      'ping -n 8 127.0.0.1 >nul\r\n' +
+      'echo LATE\r\n' +
+      'exit /b 0\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'case "${1:-}" in\n' +
+      '  --version) echo "slowcodex 1.0" ;;\n' +
+      '  *) sleep 7; echo "LATE" ;;\n' +
+      'esac\n');
+    chmodSync(fake, 0o755);
+  }
+  const r = writeRosterVariant(d, 'r.json', (c) => {
+    c.backends.agy.enabled = false;
+    c.backends.codex.hard_timeout = '3s';   // force the SIGKILL well before the fake finishes
+    c.defaults.quota_fallback = ['codex', 'native:sonnet'];
+  });
+  const logDir = join(d, 'logs');
+  const { stdout, stderr } = runNode(BIN_RUN, {
+    args: ['--roster', r, '--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team","native":false}', 'do a slow thing'],
+    env: { MMT_BE_BIN: fake, MMT_LOG_DIR: logDir },
+  });
+  assert.match(stderr, /\[mmt\] ERROR: backend 'codex' \(timeout\) failed/, 'timeout shows a distinct (timeout) banner');
+  assert.match(stdout, /timed out after/, 'handoff reason explains the timeout');
+  const rec = JSON.parse(readFileSync(join(logDir, 'failures.log'), 'utf8').trim().split('\n').pop());
+  assert.equal(rec.kind, 'timeout', 'log record kind is "timeout", not "nonzero-exit"');
+  assert.equal(rec.code, 124, 'timeout record carries the 124 sentinel code');
+});
+
 test('run.mjs --call-file: a successful CLI writes a terminal status:"done" file next to the call file', () => {
   const d = tmp('estatus-');
   // Fake CLI that passes health and succeeds with output (uses codex's stdin `-` path on posix; on

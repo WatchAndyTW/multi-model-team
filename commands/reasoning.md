@@ -160,12 +160,17 @@ with no preamble:
 node "<PLUGIN_ROOT>/src/bin/run.mjs" --call-file="<CALL_PATH>"
 
 CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The <BE> CLI can legitimately take
-several minutes; run.mjs blocks until it completes (it has its own generous timeout). Do NOT
-background it (no `&`, no run_in_background), do NOT wrap it in your own sleep/timeout/tail -f, and do
-NOT give up early — a slow response is NOT a failure. If your Bash tool hits its own time limit, run
-the SAME command again and keep waiting; run.mjs prints a "[mmt] backend still running (Ns)…"
-heartbeat to stderr and writes "<CALL_PATH>.status.json" ({state:"running"|"done"|"failed"}) you can
-read to confirm it is still alive.
+MANY MINUTES; run.mjs blocks until it completes (its own generous timeout SIGKILLs the CLI on expiry).
+Do NOT background it (no `&`, no run_in_background), do NOT wrap it in your own sleep/timeout/tail -f,
+and do NOT give up early — a slow response is NOT a failure.
+
+If your Bash tool hits ITS OWN time limit before the command returns, do NOT immediately re-run it —
+re-running spawns a SECOND <BE> process while the first is still working. Instead CHECK
+"<CALL_PATH>.status.json" first: state:"running" → keep WAITING, re-read the status file (do NOT re-run
+the node command), it updates ~every 10s; state:"done" → report the stdout you already captured
+(run.mjs does NOT cache — re-running re-dispatches a fresh job); state:"failed" → return
+backend_ran:false; status missing or stale (elapsed_ms not advancing across two reads) → re-run once.
+Re-run the node command at most ONCE; never loop it.
 
 If stdout begins with "MMT_NATIVE_HANDOFF" (the <BE> CLI was unavailable), return EXACTLY that
 sentinel line and nothing else — do not answer the question yourself.
