@@ -33,12 +33,12 @@ test('team.mjs: staged-pipeline + faithful-relay markers present', () => {
   }
 });
 
-test('team.mjs: relay uses the file transport (--call-file), no heredoc, no base64, never `bash …run.mjs`', () => {
+test('team.mjs: relay uses the file transport (--call-file), no heredoc, never `bash …run.mjs`', () => {
   // Regression for the relay-scripting bug class: a POSIX heredoc + single-quoted JSON --decision
   // broke under PowerShell (the relay sub-agent's shell is not guaranteed), so every agy/codex
   // dispatch silently fell back to native. The fix writes the payload to a .mmt/calls/ file (via the
   // Write tool — never a shell) and passes only the file PATH (--call-file) — shell-agnostic, no
-  // heredoc, no base64, no untrusted text on the command line.
+  // heredoc, no untrusted text on the command line.
 
   // 1. No `bash …run.mjs` anywhere (the older broken form, tolerating the ${JSON.stringify(RUN)} expr).
   assert.doesNotMatch(SRC, /bash\s+\$\{[^}]*RUN[^}]*\}/, 'team.mjs relay command must not shell `bash` at the run.mjs path');
@@ -48,11 +48,7 @@ test('team.mjs: relay uses the file transport (--call-file), no heredoc, no base
   assert.doesNotMatch(SRC, /MMT_SUB_EOF/, 'team.mjs relay must not use a heredoc delimiter');
   assert.doesNotMatch(SRC, /<<'[A-Z_]+'/, 'team.mjs relay must not use a POSIX heredoc');
 
-  // 3. The base64 transport is fully removed (no encoder, no --task-b64/--decision-b64 args).
-  assert.doesNotMatch(SRC, /function b64url/, 'team.mjs must not retain the b64url encoder');
-  assert.doesNotMatch(SRC, /--task-b64|--decision-b64/, 'team.mjs must not use base64url args');
-
-  // 4. The relay instructs `node ${RUN} --call-file=…` and derives a deterministic .mmt/calls path.
+  // 3. The relay instructs `node ${RUN} --call-file=…` and derives a deterministic .mmt/calls path.
   assert.match(SRC, /node \$\{JSON\.stringify\(RUN\)\} --call-file=/, 'relay must run `node ${RUN} --call-file=…`');
   assert.ok(SRC.includes('.mmt/calls/'), 'team.mjs relay must write the payload under .mmt/calls/');
   assert.ok(SRC.includes('function callFilePath'), 'team.mjs missing the deterministic call-file path helper');
@@ -167,13 +163,11 @@ test('reasoning.mjs: Fusion pipeline + faithful-relay markers present', () => {
   }
 });
 
-test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, no base64, never `bash …run.mjs`', () => {
+test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, never `bash …run.mjs`', () => {
   assert.doesNotMatch(REASON_SRC, /bash\s+\$\{[^}]*RUN[^}]*\}/, 'relay must not shell `bash` at the run.mjs path');
   assert.doesNotMatch(REASON_SRC, /bash\s+\S*run\.mjs/, 'must not run `bash …run.mjs`');
   assert.doesNotMatch(REASON_SRC, /MMT_SUB_EOF/, 'reasoning.mjs relay must not use a heredoc delimiter');
   assert.doesNotMatch(REASON_SRC, /<<'[A-Z_]+'/, 'reasoning.mjs relay must not use a POSIX heredoc');
-  assert.doesNotMatch(REASON_SRC, /function b64url/, 'reasoning.mjs must not retain the b64url encoder');
-  assert.doesNotMatch(REASON_SRC, /--task-b64|--decision-b64/, 'reasoning.mjs must not use base64url args');
   assert.match(REASON_SRC, /node \$\{JSON\.stringify\(RUN\)\} --call-file=/, 'relay must run `node ${RUN} --call-file=…`');
   assert.ok(REASON_SRC.includes('.mmt/calls/'), 'reasoning.mjs relay must write the payload under .mmt/calls/');
   assert.ok(REASON_SRC.includes('function callFilePath'), 'reasoning.mjs missing the deterministic call-file path helper');

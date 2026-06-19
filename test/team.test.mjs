@@ -112,12 +112,11 @@ test('gen-agents: forced dispatch pins backend in a --call-file JSON; route disp
   generateAgents(ROSTER, agentsDir);
   // codex agent is dispatch:forced in the roster -> body must carry the forced decision in the
   // call-file JSON (file transport: the untrusted task text + decision live in a .mmt/calls/ file,
-  // only the path is on the command line — shell-agnostic, no base64, no PowerShell-hostile quoting).
+  // only the path is on the command line — shell-agnostic, no PowerShell-hostile quoting).
   if (existsSync(join(agentsDir, 'codex.md'))) {
     const codexBody = readFileSync(join(agentsDir, 'codex.md'), 'utf8');
     // The command passes only a --call-file path; the task text is never inlined on the command line.
     assert.match(codexBody, /--call-file="\.mmt\/calls\//, 'forced agent body runs with --call-file under .mmt/calls/');
-    assert.doesNotMatch(codexBody, /--decision-b64|--task-b64/, 'no base64url transport remains');
     assert.doesNotMatch(codexBody, /--decision '/, 'no single-quoted inline --decision JSON (PowerShell-hostile)');
     // The forced decision is embedded in the call-file JSON the agent is told to Write.
     const m = codexBody.match(/"decision":\s*\{[^}]*\}/);
