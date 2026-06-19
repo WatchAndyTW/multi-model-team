@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Dispatch', detail: 'dependency-ordered waves: each subtask on its assigned backend (CLI relay or native)' },
     { title: 'Verify', detail: 'score each result against its acceptance criterion' },
     { title: 'Fix', detail: 'bounded re-dispatch of failed subtasks with verifier feedback' },
-    { title: 'Integrate', detail: 'writable mode only: merge each worktree into the integration branch, orchestrator resolves any conflicts' },
+    { title: 'Integrate', detail: 'writable mode only: cherry-pick each worktree commit onto the integration branch (no merge commits), orchestrator resolves any conflicts' },
     { title: 'Synthesize', detail: 'merge verified results into one answer' },
   ],
 }
@@ -28,10 +28,11 @@ export const meta = {
 // Modes: read-only (DEFAULT) — CLI agents return text, the orchestrator applies edits to the CURRENT
 // branch, no branch/worktree/PR. writable (A.writable) — each subtask gets its own git worktree+
 // branch off HEAD, the agent writes real changes there (CLI full-auto via run.mjs --cwd --writable),
-// and a deterministic Setup/Integrate pair of Bash sub-agents create the worktrees and merge them
-// into one integration branch `mmt/team-<slug>` off HEAD; the orchestrator RESOLVES any merge
-// conflicts itself and completes the merge, so the user gets one finished, conflict-free branch (the
-// user's branch is untouched; no gh PR). git runs in sub-agents because the Workflow runtime has no
+// and a deterministic Setup/Integrate pair of Bash sub-agents create the worktrees and cherry-pick
+// each subtask commit onto one integration branch `mmt/team-<slug>` off HEAD (NO merge commits — one
+// clean raw commit per subtask); the orchestrator RESOLVES any conflicts itself and folds the fix
+// into that same raw commit, so the user gets one finished, conflict-free branch with a clean linear
+// history (the user's branch is untouched; no gh PR). git runs in sub-agents because the runtime has no
 // fs/git; the workflow only orchestrates them deterministically (slug/labels, no Date/random).
 // =============================================================================
 
@@ -85,9 +86,10 @@ const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? TC.max_fix_loops
 //     edits directly to the CURRENT branch. No branch, no worktree, no PR (back-compat).
 //   writable (A.writable===true / TC.mode==='writable'): each subtask gets its OWN git worktree +
 //     branch off current HEAD; the agent (CLI full-auto, or native) writes real changes there; then
-//     a deterministic integration stage merges every agent branch into ONE integration branch
-//     `mmt/team-<slug>` off current HEAD, the orchestrator RESOLVING any conflicts so the branch is
-//     finished + conflict-free (no auto-merge onto their branch, no gh PR). The Workflow runtime has
+//     a deterministic integration stage cherry-picks every agent's commit onto ONE integration branch
+//     `mmt/team-<slug>` off current HEAD (no merge commits — one clean raw commit per subtask), the
+//     orchestrator RESOLVING any conflicts so the branch is finished + conflict-free (no auto-merge
+//     onto their branch, no gh PR). The Workflow runtime has
 //     no fs/git, so the worktree lifecycle is run by sub-agents (Bash tool); the workflow
 //     orchestrates them deterministically.
 // Accept boolean true OR the strings "true"/"writable"/"1"/"yes" (args/roster values may arrive as
@@ -242,7 +244,7 @@ const SETUP_SCHEMA = {
   required: ['ok'],
 }
 
-// Writable-mode integration: the merge-into-integration-branch report.
+// Writable-mode integration: the cherry-pick-onto-integration-branch report.
 const INTEGRATE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -250,10 +252,10 @@ const INTEGRATE_SCHEMA = {
     ok: { type: 'boolean' },
     integration_branch: { type: 'string' },
     base_sha: { type: 'string' },
-    merged: { type: 'array', items: { type: 'string' }, description: 'labels that merged CLEANLY into the integration branch' },
-    resolved: { type: 'array', items: { type: 'string' }, description: 'labels that hit conflicts which the orchestrator RESOLVED, then completed the merge' },
+    merged: { type: 'array', items: { type: 'string' }, description: 'labels that cherry-picked CLEANLY onto the integration branch (one raw commit each)' },
+    resolved: { type: 'array', items: { type: 'string' }, description: 'labels that hit conflicts which the orchestrator RESOLVED, folded into the same raw commit (cherry-pick --continue)' },
     unresolved: { type: 'array', items: { type: 'string' }, description: 'labels whose conflict could not be safely resolved and were left for the user (rare)' },
-    empty: { type: 'array', items: { type: 'string' }, description: 'labels whose worktree had no changes to merge' },
+    empty: { type: 'array', items: { type: 'string' }, description: 'labels whose worktree had no changes to integrate' },
     summary: { type: 'string', description: 'human-readable summary of the integration outcome + how to inspect/merge the branch' },
     reason: { type: 'string' },
   },
@@ -646,37 +648,43 @@ const usage = {
 }
 if (cliRecords.length) log(`usage: ${cliRecords.length} subtask(s) executed on CLI (off-budget); ${nativeRecords.length} on native Claude`)
 
-// ---- 2.5 · Writable integration: merge worktrees -> integration branch ------
+// ---- 2.5 · Writable integration: replay worktree commits -> integration branch ------
 // A single integration sub-agent (native Claude, Bash + edit tools) commits each subtask's worktree
-// on its branch, then merges every branch into the integration branch (off HEAD). On a CONFLICT it
-// RESOLVES it itself — reading both sides and editing the files to a correct combined result, then
-// completing the merge — so the user ends up with ONE finished, conflict-free integration branch
-// (not a pile of worktrees to merge by hand). Only a conflict it genuinely cannot resolve is left
-// for the user (reported under `unresolved`). The user's current branch is NEVER touched and no gh
-// PR is created — the result sits on `${INT_BRANCH}` for them to merge/PR when they're ready.
+// on its branch with a CLEAN message, then CHERRY-PICKS each subtask commit onto the integration
+// branch (off HEAD) — NO merge commits. Each subtask lands as one raw commit; a conflict is resolved
+// IN-PLACE and folded into that same raw commit (cherry-pick --continue), so the only commits on the
+// branch are the per-subtask ones plus, at most, conflict-resolution work squashed into them. The
+// user ends up with ONE finished, conflict-free integration branch with a clean linear history (not
+// a pile of worktrees, and not noisy `merge <label>` commits). Only a conflict it genuinely cannot
+// resolve is left for the user (reported under `unresolved`). The user's current branch is NEVER
+// touched and no gh PR is created — the result sits on `${INT_BRANCH}` for them to merge/PR.
 let integration = null
 if (WRITABLE) {
   phase('Integrate')
-  const labelLines = kept.map((s) => `  - "${s.label}": worktree "${worktreeFor(s.label)}", branch "${branchFor(s.label)}"`).join('\n')
+  const labelLines = kept.map((s) => `  - "${s.label}": worktree "${worktreeFor(s.label)}", branch "${branchFor(s.label)}", goal: ${JSON.stringify(String(s.task || '').slice(0, 140))}`).join('\n')
   integration = await agent(
-`You are the WRITABLE-MODE INTEGRATION agent for the multi-model-team /team pipeline. Use the Bash tool (plus the Read/Edit/Write tools when resolving a conflict) to merge each subtask's worktree into the integration branch AND to resolve any merge conflicts yourself. The goal is ONE finished, conflict-free integration branch the user can merge as-is — not a pile of worktrees for them to reconcile.
+`You are the WRITABLE-MODE INTEGRATION agent for the multi-model-team /team pipeline. Use the Bash tool (plus the Read/Edit/Write tools when resolving a conflict) to bring each subtask's worktree changes onto the integration branch AND to resolve any conflicts yourself. The goal is ONE finished, conflict-free integration branch with a CLEAN, LINEAR history the user can merge as-is — NO merge commits, just one well-described raw commit per subtask.
 
-CRITICAL SAFETY RULE: all merges + conflict edits happen INSIDE the dedicated integration worktree at "${INT_WORKTREE}" (checked out to "${INT_BRANCH}"). NEVER run \`git switch\`/\`git checkout\` in the main working tree, and NEVER merge the integration branch into the user's current branch. The user's checkout must end exactly as it started.
+CRITICAL SAFETY RULE: all cherry-picks + conflict edits happen INSIDE the dedicated integration worktree at "${INT_WORKTREE}" (checked out to "${INT_BRANCH}"). NEVER run \`git switch\`/\`git checkout\` in the main working tree, and NEVER merge the integration branch into the user's current branch. The user's checkout must end exactly as it started.
 
 Integration branch: "${INT_BRANCH}" (already created off the original HEAD). Integration worktree: "${INT_WORKTREE}".
 Subtasks (each wrote changes into its own worktree):
 ${labelLines}
 
 Do EXACTLY this, in order:
-1. For EACH subtask worktree: \`git -C "<worktree>" add -A\`; if there are staged changes, commit them: \`git -C "<worktree>" commit -m "mmt(${SLUG}): <label>"\`. If the worktree has NO changes (\`git -C "<worktree>" status --porcelain\` empty), record the label under "empty" and skip it.
-2. From the INTEGRATION WORKTREE only, merge each non-empty subtask branch into "${INT_BRANCH}", one at a time, no-fast-forward (visible merge commit):
-   \`git -C ${JSON.stringify(INT_WORKTREE)} merge --no-ff -m "mmt(${SLUG}): merge <label>" "<branch>"\`
-   - If it merges cleanly, record the label under "merged".
-   - If it CONFLICTS: do NOT abort. RESOLVE it. Inspect the conflicted files in "${INT_WORKTREE}" (\`git -C "${INT_WORKTREE}" diff\`, the \`<<<<<<<\`/\`=======\`/\`>>>>>>>\` markers), read BOTH sides, and edit each conflicted file to a correct COMBINED result that preserves the intent of every subtask (don't just pick one side unless that is genuinely correct; remove ALL conflict markers). Then \`git -C "${INT_WORKTREE}" add -A\` and \`git -C "${INT_WORKTREE}" commit --no-edit\` to complete the merge. Record the label under "resolved" (it IS merged — just needed manual conflict work). If a conflict is genuinely beyond safe resolution (e.g. fundamentally contradictory changes you cannot reconcile without guessing at intent), THEN \`git -C "${INT_WORKTREE}" merge --abort\`, record it under "unresolved", keep that subtask's worktree, and continue.
+1. COMMIT each subtask's UNcommitted changes in its OWN worktree with a CLEAN, conventional message — do NOT decide "empty" here (an agent may have already committed its own work, leaving a clean tree but a non-empty branch; emptiness is decided in step 2 by the branch's commit count, never by worktree dirtiness). For EACH subtask worktree: \`git -C "<worktree>" add -A\`; then, ONLY if \`git -C "<worktree>" status --porcelain\` is NON-empty (there are staged changes the agent left uncommitted), commit them as ONE raw commit:
+   \`git -C "<worktree>" commit -m "<message>"\`
+   (If the tree is already clean, the agent committed its own work — that's fine; do NOT mark it empty and do NOT skip it, just move on; step 2 will integrate whatever commits the branch carries.)
+   The <message> MUST be a clean conventional-commit line scoped to the SUBTASK LABEL (NOT the long task slug): \`<type>(<label>): <imperative one-line summary>\` — e.g. \`feat(detail-ui-polish): tighten listing card spacing and hover states\`. Choose <type> from feat/fix/refactor/docs/test/chore by what the subtask actually did; derive the summary from the subtask's stated goal above; keep the subject ≤72 chars, no trailing period. Do NOT use the task slug "${SLUG}" as the scope and do NOT write "merge ..." messages.
+2. From the INTEGRATION WORKTREE only, replay each subtask branch's commit(s) onto "${INT_BRANCH}" as RAW commits with NO merge commit, one branch at a time. FIRST decide emptiness by the BRANCH's commit count (NOT worktree dirtiness): compute the base \`B="$(git -C ${JSON.stringify(INT_WORKTREE)} merge-base ${JSON.stringify(INT_BRANCH)} "<branch>")"\` (the original HEAD), then \`N="$(git -C ${JSON.stringify(INT_WORKTREE)} rev-list --count "$B".."<branch>")"\`. If N is 0 the subtask produced no commits — record the label under "empty" and skip to the next branch. Otherwise the branch carries N≥1 commit(s) (usually 1, but a native solver or a fix re-dispatch may leave several — integrate ALL of them, drop none); cherry-pick the whole RANGE so nothing is lost:
+   \`GIT_EDITOR=true git -C ${JSON.stringify(INT_WORKTREE)} cherry-pick "$B".."<branch>"\`   (the range picks ALL of that branch's commits in order, each as its own raw commit — never a merge commit. \`GIT_EDITOR=true\` so nothing opens an editor; you have no TTY.)
+   - If the whole range applies cleanly, record the label under "merged".
+   - If git reports "The previous cherry-pick is now empty" / "nothing to commit" for an individual commit (its changes were already applied by an earlier subtask), that commit is a redundant no-op: \`git -C "${INT_WORKTREE}" cherry-pick --skip\` and continue the range. (Do NOT count this as a conflict or as unresolved.)
+   - If it CONFLICTS: do NOT abort. RESOLVE it. Inspect the conflicted files in "${INT_WORKTREE}" (\`git -C "${INT_WORKTREE}" status\`, \`git -C "${INT_WORKTREE}" diff\`, the \`<<<<<<<\`/\`=======\`/\`>>>>>>>\` markers), read BOTH sides, and edit each conflicted file to a correct COMBINED result that preserves the intent of every subtask (don't just pick one side unless that is genuinely correct; remove ALL conflict markers). Then \`git -C "${INT_WORKTREE}" add -A\` and \`GIT_EDITOR=true git -C "${INT_WORKTREE}" cherry-pick --continue\` (keeps the existing message, never opens an editor) to land it as ONE raw commit with the resolution folded in — NO separate merge/resolution commit — then let the rest of the range continue. Record the label under "resolved". If a conflict is genuinely beyond safe resolution (fundamentally contradictory changes you cannot reconcile without guessing at intent), THEN \`git -C "${INT_WORKTREE}" cherry-pick --abort\` (this rewinds the WHOLE range for that branch back to its pre-pick state), record it under "unresolved", keep that subtask's worktree, and continue with the next subtask.
 3. After integrating, sanity-check the integration worktree builds/parses if it's quick and obvious (e.g. \`node --check\` a changed .mjs); note any breakage in the summary. Then remove the cleanly-merged + resolved + empty subtask worktrees (\`git worktree remove --force "<path>"\`). Keep ONLY any "unresolved" worktrees AND the integration worktree "${INT_WORKTREE}". Do NOT delete the integration branch and do NOT touch the user's branch.
-4. Report honestly.
+4. Report honestly. The final \`git -C "${INT_WORKTREE}" log --oneline\` should show clean per-subtask commits and ZERO "merge" commits.
 
-Return JSON matching the schema: { ok, integration_branch, base_sha, merged:[label], resolved:[label], unresolved:[label], empty:[label], summary, reason? }. "resolved" = merged after you fixed conflicts; "unresolved" = the rare conflict you left for the user. The summary MUST tell the user the integration branch is ready to merge (e.g. "git log ${INT_BRANCH}"), note any "resolved" conflicts you reconciled (so they can review your resolution), and flag any "unresolved" ones.`,
+Return JSON matching the schema: { ok, integration_branch, base_sha, merged:[label], resolved:[label], unresolved:[label], empty:[label], summary, reason? }. "merged" = cherry-picked cleanly; "resolved" = cherry-picked after you fixed conflicts (folded into the same raw commit); "unresolved" = the rare conflict you left for the user. The summary MUST tell the user the integration branch is ready to merge (e.g. "git log ${INT_BRANCH}"), note any "resolved" conflicts you reconciled (so they can review your resolution), and flag any "unresolved" ones.`,
     { label: 'integrate-worktrees', phase: 'Integrate', model: tierModel('opus'), schema: INTEGRATE_SCHEMA }
   )
   const resolved = (integration && Array.isArray(integration.resolved)) ? integration.resolved : []

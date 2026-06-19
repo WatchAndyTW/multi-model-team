@@ -62,10 +62,12 @@ otherwise **read-only mode** (the default).
   create a branch, a worktree, or a PR in this mode. This is the back-compat behaviour.
 - **writable (`--writable`):** each subtask gets its **own git worktree + branch** off the current HEAD;
   the assigned agent (CLI **full-auto** via `run.mjs --cwd <worktree> --writable`, or a native solver
-  writing in the worktree) makes **real file changes** there; then the orchestrator **merges every
-  subtask branch into one integration branch `mmt/team-<slug>`** off HEAD and **resolves any merge
-  conflicts itself** (reading both sides, editing to a correct combined result, completing the merge) —
-  so you get **one finished, conflict-free branch**, not a pile of worktrees. (Only a conflict it
+  writing in the worktree) makes **real file changes** there; then the orchestrator **cherry-picks every
+  subtask's commit onto one integration branch `mmt/team-<slug>`** off HEAD (**no merge commits — one
+  clean raw commit per subtask**, message scoped to the subtask label) and **resolves any conflicts
+  itself** (reading both sides, editing to a correct combined result, folding the fix into that same raw
+  commit) — so you get **one finished, conflict-free branch with a clean linear history**, not a pile of
+  worktrees and no noisy `merge <label>` commits. (Only a conflict it
   genuinely can't reconcile is left `unresolved` for you.) Your current branch is **untouched** (no
   auto-merge onto it), and **no GitHub PR is created** — you merge/PR the integration branch when ready.
 
