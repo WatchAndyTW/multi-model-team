@@ -5,8 +5,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import { ROOT } from './helpers.mjs';
 
 const SRC = readFileSync(join(ROOT, 'workflows', 'team.mjs'), 'utf8');
@@ -188,8 +190,8 @@ test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, ne
 // state:"done" + usable stdout == success EVEN IF the relay said backend_ran:false. And every native
 // fallback must carry the REAL reason (timeout/quota/…), not a generic "unavailable".
 test('team.mjs: dispatch is status-file-authoritative + surfaces the real fallback reason', () => {
-  // (a) The relay schema must collect the authoritative status-file fields.
-  for (const m of ['status_state', 'out_chars', 'fail_kind', 'relay_note']) {
+  // (a) The relay schema must collect the authoritative status-file fields + the sidecar-recovery field.
+  for (const m of ['status_state', 'out_chars', 'fail_kind', 'relay_note', 'recovered_stdout', 'out_file']) {
     assert.ok(SRC.includes(m), `team.mjs RELAY_SCHEMA missing status field: ${m}`);
   }
   // (b) The deterministic helpers + the relay-timeout pin must exist.
@@ -209,11 +211,20 @@ test('team.mjs: relaySucceeded/relayFailReason behave (status file overrides rel
     assert.ok(m, 'could not extract ' + name);
     return m[0];
   };
-  const helpers = [grab('hasUsableStdout'), grab('relaySucceeded'), grab('relayFailReason')].join('\n') + '\n';
-  const f = new Function(helpers + 'return { hasUsableStdout, relaySucceeded, relayFailReason };')();
+  const helpers = [grab('isUsableText'), grab('relayBody'), grab('hasUsableStdout'), grab('relaySucceeded'), grab('relayFailReason')].join('\n') + '\n';
+  const f = new Function(helpers + 'return { isUsableText, relayBody, hasUsableStdout, relaySucceeded, relayFailReason };')();
 
   // status:"done" + stdout overrides backend_ran:false — the core recovery (slow-but-fine CLI run).
   assert.equal(f.relaySucceeded({ status_state: 'done', out_chars: 10, stdout: 'real answer', backend_ran: false }), true);
+  // SIDECAR RECOVERY: relay lost its live stdout to a tool timeout, but read out_file back into
+  // recovered_stdout — status:"done" + recovered body == success, and relayBody returns the recovered text.
+  const recov = { status_state: 'done', out_chars: 99, stdout: '', recovered_stdout: 'the real long answer', backend_ran: false };
+  assert.equal(f.relaySucceeded(recov), true, 'recovered_stdout on a done run counts as success');
+  assert.equal(f.relayBody(recov), 'the real long answer', 'relayBody returns the recovered sidecar body when stdout is empty');
+  // live stdout wins over recovered when both present:
+  assert.equal(f.relayBody({ stdout: 'live', recovered_stdout: 'sidecar' }), 'live');
+  // a recovered handoff sentinel is still not usable:
+  assert.equal(f.relaySucceeded({ status_state: 'done', stdout: '', recovered_stdout: 'MMT_NATIVE_HANDOFF x', backend_ran: false }), false);
   // status:"failed" is authoritative even if the relay claimed backend_ran:true.
   assert.equal(f.relaySucceeded({ status_state: 'failed', stdout: 'partial', backend_ran: true }), false);
   // a handoff sentinel is never success.
@@ -237,4 +248,100 @@ test('team.mjs: relaySucceeded/relayFailReason behave (status file overrides rel
   assert.equal(f.relayFailReason({ status_state: 'failed', fail_kind: '' }), 'backend reported failed');
   assert.equal(f.relayFailReason({ stdout: 'MMT_NATIVE_HANDOFF x' }), 'native-handoff (CLI unavailable/exhausted)');
   assert.equal(f.relayFailReason(null), 'no relay result');
+});
+
+// ── Regression: writable-mode native fallback resets a half-written worktree before re-implementing ──
+// When a CLI is SIGKILLed at hard_timeout in writable mode it may leave PARTIAL files in its worktree.
+// The native fallback must reset the worktree to clean HEAD first, so it never builds on corrupt state.
+test('team.mjs: writable native fallback resets the worktree to the BASE deterministically (orchestrator, not the solver prompt)', () => {
+  // The cleanup is run by a dedicated git plumbing agent (resetWorktree/RESET_SCHEMA) in deterministic
+  // code whose ok is CHECKED — NOT left to the free-form native solver's prose (which could skip it).
+  // CRITICAL: it resets to INT_BRANCH (the original base), NOT HEAD — a full-auto CLI can leave a PARTIAL
+  // COMMIT, so `reset --hard HEAD` would preserve the bad state (codex caught both of these).
+  assert.match(SRC, /function resetWorktree\(worktree, label, ph\)/, 'must have a deterministic resetWorktree helper');
+  assert.ok(SRC.includes('RESET_SCHEMA'), 'reset agent must report a structured RESET_SCHEMA');
+  assert.match(SRC, /git -C \$\{wtArg\} reset --hard \$\{JSON\.stringify\(INT_BRANCH\)\}/,
+    'reset must target INT_BRANCH (the base), not HEAD — HEAD may be a partial commit');
+  assert.doesNotMatch(SRC, /reset --hard HEAD/, 'must NOT reset to HEAD anywhere (would preserve a partial commit)');
+  assert.match(SRC, /git -C \$\{wtArg\} clean -fd/, 'reset must git clean -fd the worktree');
+  // path quoting is JSON.stringify (cross-shell — relay may be PowerShell, so NO bash single-quote
+  // escaping) AND guarded by a construction-time sanitization assertion (codex-flagged hardening: the
+  // safety comes from the path being sanitized at source, asserted here, not from shell quoting alone).
+  assert.match(SRC, /const wtArg = JSON\.stringify\(worktree\)/, 'worktree path must be JSON.stringify-quoted (cross-shell)');
+  assert.doesNotMatch(SRC, /git -C "\$\{worktree\}"/, 'must not bare-interpolate the worktree path into the shell command');
+  // path guard is an exact-SHAPE assertion (not just char-class) + a `..` traversal reject (codex point).
+  assert.ok(SRC.includes('.mmt[\\/\\\\]worktrees'), 'resetWorktree must assert the exact .mmt/worktrees/<slug>/<label> shape');
+  assert.match(SRC, /\\\.\\\.\(\[/, 'resetWorktree must reject `..` path-traversal segments');
+  assert.match(SRC, /unsafe worktree path/, 'an unsafe path must abort the reset, not run git');
+  // dispatch() runs the reset BEFORE the native fallback, in writable mode, and ABORTS on failure.
+  assert.match(SRC, /if \(WRITABLE && wt\) \{\s*\n\s*const reset = await resetWorktree\(wt, s\.label, ph\)/,
+    'dispatch must reset the worktree before the writable native fallback');
+  assert.match(SRC, /reset\.ok !== true/, 'dispatch must check the reset succeeded and abort otherwise');
+  assert.match(SRC, /MMT_WORKTREE_RESET_FAILED/, 'a failed reset must surface a loud sentinel, not silently continue');
+  // dispatchNative no longer takes a cleanFirst flag (cleanup moved to orchestrator code).
+  assert.doesNotMatch(SRC, /function dispatchNative\([^)]*cleanFirst/, 'dispatchNative must NOT do its own cleanup');
+});
+
+test('team.mjs: reset-to-base actually discards a partial commit + dirty files (real git repo)', () => {
+  // Behavioral test (codex's ask): the reset commands the plumbing agent is told to run must, against a
+  // REAL repo with a partial commit AND dirty/untracked files, return HEAD to the base and wipe the mess.
+  // We run the exact two commands from resetWorktree's prompt (reset --hard <base> ; clean -fd).
+  const pjoin = join;
+  const repo = mkdtempSync(pjoin(os.tmpdir(), 'mmt-reset-'));
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+  try {
+    git('init', '-q');
+    git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+    writeFileSync(pjoin(repo, 'base.txt'), 'base\n');
+    git('add', '-A'); git('commit', '-q', '-m', 'base');
+    const base = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    // a "base" ref mirroring INT_BRANCH (the reset target, NOT advanced)
+    git('branch', 'mmt/base', base);
+    // simulate the killed CLI: a PARTIAL COMMIT on top + dirty + untracked files
+    writeFileSync(pjoin(repo, 'partial.txt'), 'half\n');
+    git('add', '-A'); git('commit', '-q', '-m', 'partial CLI commit');
+    writeFileSync(pjoin(repo, 'base.txt'), 'base-MODIFIED\n');       // dirty tracked
+    writeFileSync(pjoin(repo, 'junk.txt'), 'untracked\n');           // untracked
+    assert.notEqual(execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), base, 'precondition: HEAD moved off base');
+    // the exact reset resetWorktree instructs:
+    git('reset', '--hard', 'mmt/base');
+    git('clean', '-fd');
+    // assertions: HEAD back at base, partial commit gone, dirty reverted, untracked removed
+    assert.equal(execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), base, 'HEAD returned to base (partial commit discarded)');
+    assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }).trim(), '', 'worktree is clean (dirty + untracked gone)');
+    assert.ok(!existsSync(pjoin(repo, 'partial.txt')), 'partial-commit file gone');
+    assert.ok(!existsSync(pjoin(repo, 'junk.txt')), 'untracked file gone');
+  } finally {
+    try { rmSync(repo, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
+
+test('team.mjs: resetWorktree path-safety guard accepts the real shape, rejects metachars + traversal', () => {
+  // Mirror the EXACT guard from resetWorktree: an exact-shape match AND a `..`-segment reject. A path is
+  // SAFE iff it matches the shape and has no `..` segment.
+  const SHAPE = /^\.mmt[\/\\]worktrees[\/\\][A-Za-z0-9._-]+[\/\\][A-Za-z0-9._-]+$/;
+  const TRAVERSE = /(^|[\/\\])\.\.([\/\\]|$)/;
+  const safe = (p) => SHAPE.test(p) && !TRAVERSE.test(p);
+  // real path shapes the workflow constructs (.mmt/worktrees/<slug>/<label>) — must be accepted:
+  for (const ok of ['.mmt/worktrees/fix-the-bug/data-model', '.mmt/worktrees/task/sql-report', '.mmt\\worktrees\\t\\a']) {
+    assert.equal(safe(ok), true, `real worktree path should pass the guard: ${ok}`);
+  }
+  // metacharacters, wrong shape, or traversal — must be rejected:
+  for (const bad of [
+    '.mmt/wt/$(rm -rf x)', '.mmt/worktrees/`id`/x', '.mmt/worktrees/a b/x', ".mmt/worktrees/a'b/x",
+    '.mmt/worktrees/a;b/x', '.mmt/worktrees/a$b/x',
+    '.mmt/worktrees/x/../../other', '.mmt/worktrees/x',            // traversal / wrong depth
+    '/etc/passwd', '.mmt/other/x/y',                               // wrong root
+  ]) {
+    assert.equal(safe(bad), false, `unsafe worktree path should fail the guard: ${bad}`);
+  }
+});
+
+// ── Regression: the relay is told it may poll the status file far longer than its own Bash window ──
+// hard_timeout (up to 30m) can exceed the relay's 10m Bash-tool cap; the relay must POLL (sleep+read),
+// not give up or re-run the node command, for the full hard_timeout window.
+test('team.mjs: relay polls the status file for the full hard_timeout window (long-wait hardening)', () => {
+  assert.match(SRC, /HARD_TIMEOUT_MS \/ 60000/, 'relay prompt must surface the hard_timeout minute budget');
+  assert.match(SRC, /Polling the status file is NOT re-running/, 'relay must distinguish polling from re-running');
+  assert.match(SRC, /sleep 30; cat/, 'relay must be given a concrete sleep-and-read poll command');
 });

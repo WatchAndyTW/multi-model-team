@@ -269,6 +269,12 @@ test('run.mjs --call-file: a successful CLI writes a terminal status:"done" file
   assert.equal(st.state, 'done', 'status is done on success');
   assert.equal(st.backend, 'codex', 'status names the backend');
   assert.equal(st.code, 0, 'status records exit 0');
+  // SIDECAR: the cleaned output is persisted to "<call-file>.out.txt" and its path recorded in the
+  // status, so a relay that lost its live stdout (tool timeout on a long job) can recover the result.
+  const outFile = `${callFile}.out.txt`;
+  assert.ok(existsSync(outFile), 'output sidecar written next to the call file');
+  assert.match(readFileSync(outFile, 'utf8'), /RELAY_OK/, 'sidecar holds the cleaned CLI output');
+  assert.equal(st.out_file, outFile, 'status records the sidecar path (out_file)');
 });
 
 test('run.mjs --cwd --writable: CLI runs IN the worktree cwd and gets the writable sandbox flags', () => {
@@ -467,4 +473,29 @@ test('proactive gate defaults + overrides', () => {
   const ov = proactive(clone);
   assert.equal(ov.guard_spawns, false);
   assert.equal(ov.enforce_spawns, true);
+});
+
+// ── timeout ordering invariant: agy --print-timeout must stay UNDER hard_timeout ──────────────
+// run.mjs SIGKILLs at hard_timeout and discards the CLI's partial output; agy's own --print-timeout
+// must fire FIRST so agy self-terminates and emits its partial answer gracefully (exit 0) instead of
+// being hard-killed. If a retune ever raises --print-timeout to/above hard_timeout, heavy jobs get
+// SIGKILLed mid-write (and in writable mode leave a half-written worktree) — this guards that ordering.
+test('roster: agy --print-timeout < hard_timeout (graceful self-terminate before SIGKILL)', () => {
+  const durMs = (raw) => {
+    if (typeof raw === 'number') return raw;
+    const m = String(raw).trim().match(/^(\d+(?:\.\d+)?)\s*([smhd]?)$/i);
+    assert.ok(m, `unparseable duration: ${raw}`);
+    const mult = { '': 1000, s: 1000, m: 60000, h: 3600000, d: 86400000 };
+    return Math.round(parseFloat(m[1]) * mult[(m[2] || '').toLowerCase()]);
+  };
+  const agy = ROSTER.backends.agy;
+  for (const key of ['extra', 'writable_extra']) {
+    const arr = agy[key] || [];
+    const i = arr.indexOf('--print-timeout');
+    assert.ok(i >= 0 && arr[i + 1], `agy.${key} must carry --print-timeout <value>`);
+    assert.ok(durMs(arr[i + 1]) < durMs(agy.hard_timeout),
+      `agy.${key} --print-timeout (${arr[i + 1]}) must be < hard_timeout (${agy.hard_timeout})`);
+  }
+  // codex has no self-timeout flag; hard_timeout is its only ceiling — just assert it's set + sane.
+  assert.ok(durMs(ROSTER.backends.codex.hard_timeout) >= 60000, 'codex hard_timeout must be >= 60s');
 });

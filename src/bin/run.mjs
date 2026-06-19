@@ -167,6 +167,27 @@ function statusFilePath(callId, callFile) {
   return path.join(base, 'calls', `${callId}.status.json`);
 }
 
+// Sidecar OUTPUT file path (sits next to the status file): "<call-file>.out.txt" (or
+// .mmt/calls/<callId>.out.txt). On a successful dispatch run.mjs persists the cleaned stdout HERE so a
+// relay/orchestrator that LOST the live stdout — e.g. its own Bash-tool window timed out at 10min on a
+// 10-30min CLI job while run.mjs kept running to hard_timeout — can still RECOVER the real result from
+// disk. Without this, a slow-but-successful run reports state:"done" with no recoverable body and the
+// orchestrator wrongly falls back to native (the gap codex caught in the 30m-timeout design).
+function outFilePath(callId, callFile) {
+  if (callFile) return `${callFile}.out.txt`;
+  const base = process.env.MMT_LOG_DIR ? path.dirname(process.env.MMT_LOG_DIR) : path.join(process.cwd(), '.mmt');
+  return path.join(base, 'calls', `${callId}.out.txt`);
+}
+
+function writeOutFile(outFile, data) {
+  if (!outFile) return false;
+  try {
+    fs.mkdirSync(path.dirname(outFile), { recursive: true });
+    fs.writeFileSync(outFile, data, 'utf8');
+    return true;
+  } catch { return false; } // sidecar is recovery-only — never break the run if it can't be written
+}
+
 function writeStatus(statusFile, callId, obj) {
   if (!statusFile) return;
   try {
@@ -352,6 +373,7 @@ async function main() {
   const callId = randomUUID().replace(/-/g, '').slice(0, 8);
   // Predictable status path so the orchestrator can poll it (next to the call file when given).
   const statusFile = statusFilePath(callId, opts.callFile);
+  const outFile = outFilePath(callId, opts.callFile);
 
   // ---- 4. Walk the chain -----------------------------------------------------
   let lastErr = ''; // short, sanitized reason from the last backend that actually failed
@@ -459,7 +481,11 @@ async function main() {
     // note. Missing/zero rate -> 0 cost.
     const rate = Number(beCfg.cost_per_1k_chars) || 0;
     const costMicros = Math.round(rate * (outChars / 1000) * 1e6);
-    stopHeartbeat({ state: 'done', code: 0, elapsed_ms: durMs, out_chars: outChars });
+    // Persist the cleaned output to the sidecar BEFORE writing the terminal status, so a reader that
+    // sees state:"done" can always find the body at out_file (recovery path for a relay that lost its
+    // live stdout to its own tool timeout). Record whether the sidecar was written + its path.
+    const outWritten = writeOutFile(outFile, cleanOut);
+    stopHeartbeat({ state: 'done', code: 0, elapsed_ms: durMs, out_chars: outChars, out_file: outWritten ? outFile : '' });
     state.end({ id: callId, backend: be, model, rule: D_rule, code: 0, durMs, outChars, fallback: fallbackCount, costMicros });
     process.stdout.write(cleanOut + '\n');
     process.exit(0);

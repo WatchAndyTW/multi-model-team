@@ -257,8 +257,29 @@ const RELAY_SCHEMA = {
     out_chars: { type: 'number', description: 'the "out_chars" field from the status file on a done run (0 if absent).' },
     fail_kind: { type: 'string', description: 'on a failed run, the status file\'s "kind" (e.g. "timeout" | "quota" | "health" | "nonzero-exit" | "empty-output"); else "".' },
     relay_note: { type: 'string', description: 'one short phrase on what happened from YOUR side if the command did not cleanly return — e.g. "my bash tool timed out, status showed done", "re-ran once". Empty on a normal clean return.' },
+    // RECOVERY: if your Bash tool timed out and you lost the live stdout, but the status file says
+    // state:"done" and carries an "out_file" path, READ that file and put its FULL contents here. This is
+    // how a 10-30min CLI job (longer than your 10min tool window) still returns its real result — run.mjs
+    // persisted the output to out_file before finishing. Leave empty if you already have stdout.
+    recovered_stdout: { type: 'string', description: 'the FULL contents of the status file\'s "out_file" sidecar, read back ONLY when you lost the live stdout but state:"done". Empty otherwise.' },
   },
   required: ['stdout', 'backend_ran'],
+}
+
+// Writable-mode worktree reset (before a native fallback): a dedicated Bash plumbing agent runs the
+// reset+clean deterministically and reports ok — the cleanup is NOT left to the free-form native
+// solver's prose (an LLM solver could skip/mistype it and then build on a half-written worktree). Same
+// principle as not trusting the relay's backend_ran: a deterministic git op is run by a thin, single-
+// purpose agent and its result is checked in code.
+const RESET_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: { type: 'boolean', description: 'true ONLY if BOTH `git reset --hard <base>` AND `git clean -fd` exited 0' },
+    head_after: { type: 'string', description: 'short SHA of the worktree HEAD after the reset (git rev-parse --short HEAD)' },
+    reason: { type: 'string', description: 'on failure, the git error; else empty' },
+  },
+  required: ['ok'],
 }
 
 // Writable-mode setup: the worktree-creation report.
@@ -430,12 +451,12 @@ CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI c
 
 AUTHORITATIVE TRUTH = THE STATUS FILE, NOT YOUR JUDGMENT. After the command returns (or after any recovery wait), READ "${callPath}.status.json" and copy its fields into your report (status_state, out_chars, fail_kind). Deterministic code trusts that status file over your backend_ran — so even if you are unsure, report the status file faithfully and let the code decide.
 
-If your Bash tool hits ITS OWN time limit before the command returns, do NOT immediately re-run the command — re-running spawns a SECOND ${be} process while the first is still working, which wastes time and corrupts the result. Instead, CHECK the status file "${callPath}.status.json" first:
-  - state:"running" → the ${be} process is still alive. Just keep WAITING: re-read that status file (do NOT re-run the node command). It updates every ~10s with elapsed_ms; keep checking until it flips to "done" or "failed".
-  - state:"done" → the run already finished SUCCESSFULLY. Report status_state:"done" and out_chars from the file, and report backend_ran:true. If you still have the command's stdout, report it verbatim; if your tool timed out and you lost it, report the stdout you can recover (run.mjs does NOT cache — do NOT re-run just to recapture; the status file already proves it succeeded, so set relay_note to say you lost stdout to a tool timeout).
-  - state:"failed" → the ${be} CLI genuinely failed. Report status_state:"failed", fail_kind from the file, and backend_ran:false.
-  - status file missing, or stale (elapsed_ms stopped advancing across two ~15s reads → run.mjs died) → re-run the SAME command ONCE; if it's still wrong after that, report status_state:"" and backend_ran:false.
-Re-run the node command at most ONCE; never loop it.${wtNote}
+If your Bash tool hits ITS OWN time limit before the command returns, do NOT immediately re-run the command — re-running spawns a SECOND ${be} process while the first is still working, which wastes time and corrupts the result. This ${be} job may legitimately run up to ${Math.round(HARD_TIMEOUT_MS / 60000)} MINUTES (run.mjs's hard timeout), which is LONGER than your single Bash-tool window — so a tool timeout here is EXPECTED on big jobs, not a failure. Instead, POLL the status file "${callPath}.status.json" until run.mjs finishes:
+  - state:"running" → the ${be} process is still alive and working. Keep WAITING — do NOT re-run the node command. Poll efficiently: in a NEW Bash call, sleep then read the file, e.g. \`sleep 30; cat ${JSON.stringify(callPath + '.status.json')}\`. Repeat this sleep-and-read as many times as needed (it may take many minutes; that is fine) until "state" flips to "done" or "failed". Each poll is cheap; the elapsed_ms field advances ~every 10s while it's alive.
+  - state:"done" → the run already finished SUCCESSFULLY. Report status_state:"done" and out_chars from the file, and report backend_ran:true. If you still have the command's stdout, report it verbatim. If your tool timed out and you LOST the stdout: the status file has an "out_file" field — READ that file (e.g. \`cat "<out_file>"\`) and put its full contents in recovered_stdout (do NOT re-run the node command — run.mjs already persisted the result there; re-running just dispatches a fresh job). Set relay_note to note you recovered from the sidecar.
+  - state:"failed" → the ${be} CLI genuinely failed (e.g. timeout/quota). Report status_state:"failed", fail_kind from the file, and backend_ran:false.
+  - status file missing, or stale (elapsed_ms NOT advancing across two reads ~30s apart → run.mjs died) → re-run the SAME command ONCE; if it's still wrong after that, report status_state:"" and backend_ran:false.
+Re-run the node command at most ONCE; never loop the node command. (Polling the status file is NOT re-running — poll as long as state stays "running".)${wtNote}
 
 Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false ONLY if the CLI genuinely did not produce a result (stdout empty or starts with "MMT_NATIVE_HANDOFF", OR status_state is "failed"); true if status_state is "done". status_state/out_chars/fail_kind = copied verbatim from the status file. relay_note = a short phrase if anything abnormal happened on your side (else empty). Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL, schema: RELAY_SCHEMA }
@@ -445,10 +466,53 @@ Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = fals
 // Native solver. In writable mode it WRITES its changes into the subtask's worktree (cwd) directly;
 // in read-only mode it just returns a self-contained result (the orchestrator applies any edits).
 function dispatchNative(text, tier, label, ph, worktree) {
+  // The worktree (if any) has ALREADY been reset to a clean base by resetWorktree() in deterministic
+  // orchestrator code before this is called — so the solver just implements; it is NOT asked to clean.
   const body = worktree
-    ? `Implement this subtask by WRITING the actual file changes into the git worktree at "${worktree}". cd into it first, edit/create the real files there (use the Edit/Write tools or shell), and leave the working tree with your changes (do NOT commit — the integration stage commits). Then return a short summary of what you changed (files + rationale).\n\nSUBTASK:\n${text}`
+    ? `Implement this subtask by WRITING the actual file changes into the git worktree at "${worktree}" (it has been reset to a clean base for you). cd into it first, edit/create the real files there (use the Edit/Write tools or shell), and leave the working tree with your changes (do NOT commit — the integration stage commits). Then return a short summary of what you changed (files + rationale).\n\nSUBTASK:\n${text}`
     : `Solve this subtask directly and return a complete, self-contained result:\n\n${text}`
   return agent(body, { label: `native:${label}`, phase: ph || 'Dispatch', model: tierModel(tier) })
+}
+
+// resetWorktree — DETERMINISTIC cleanup before a writable native fallback. The interrupted CLI may have
+// left partial work — either UNCOMMITTED (dirty tree) OR a PARTIAL COMMIT (full-auto CLIs can commit
+// mid-task). A thin Bash plumbing agent (NOT the free-form solver, which could skip/mistype the git op)
+// resets the subtask worktree to the ORIGINAL BASE and cleans untracked files, then reports ok which we
+// CHECK in code. Reset target is INT_BRANCH, NOT HEAD: HEAD may itself be a bad partial commit;
+// INT_BRANCH is created off the original HEAD at Setup and is not advanced until the post-dispatch
+// Integrate stage, so it is the stable base every subtask worktree was forked from. (clean -fd, not
+// -fdx: keep gitignored deps/caches the base legitimately carries — only the CLI's partial output, which
+// is tracked-or-untracked working-tree state, must go.) Returns the RESET_SCHEMA report.
+function resetWorktree(worktree, label, ph) {
+  // Path quoting: JSON.stringify (double-quote), matching every other path arg in this file (RUN,
+  // callPath, --cwd). We deliberately do NOT use POSIX single-quote escaping: the relay/sub-agent shell
+  // is NOT guaranteed to be bash (it may be PowerShell, where `'\''` escaping is wrong) — cross-shell
+  // safety here comes from the path being SANITIZED AT CONSTRUCTION, not from shell quoting. `worktree`
+  // is always `${WT_BASE}/${safeLabel(label)}` where WT_BASE uses slugify ([a-z0-9-]) and safeLabel
+  // strips to [A-Za-z0-9._-] — so no $, backtick, $(), ;, space, or quote can ever reach the command.
+  // Assert that invariant rather than trust it silently: anything other than the expected SHAPE means a
+  // sanitization regression upstream, and we must NOT run a git command on an unexpected path. Beyond the
+  // char-class (no shell-significant chars), require the exact constructed shape `.mmt/worktrees/<a>/<b>`
+  // (forward OR back slashes) and forbid any `..` segment (traversal), so the guard catches structural
+  // regressions, not just metacharacters (codex's path-shape point).
+  const wtStr = String(worktree)
+  const SHAPE = /^\.mmt[\/\\]worktrees[\/\\][A-Za-z0-9._-]+[\/\\][A-Za-z0-9._-]+$/
+  if (!SHAPE.test(wtStr) || /(^|[\/\\])\.\.([\/\\]|$)/.test(wtStr)) {
+    log(`writable: refusing to reset worktree "${wtStr}" for "${label}" — path is not the expected .mmt/worktrees/<slug>/<label> shape (sanitization regression?)`)
+    return Promise.resolve({ ok: false, reason: `unsafe worktree path: ${wtStr}` })
+  }
+  const wtArg = JSON.stringify(worktree)
+  return agent(
+`You are a git PLUMBING agent — run two commands, report, stop. Do NOT solve any task, do NOT edit files, do NOT inspect contents. The previous backend in the worktree at ${wtArg} was interrupted and may have left partial work (dirty files and/or a partial commit). Reset that worktree to the original base and remove untracked files, with the Bash tool, EXACTLY:
+
+  git -C ${wtArg} reset --hard ${JSON.stringify(INT_BRANCH)}
+  git -C ${wtArg} clean -fd
+
+Then read back the worktree HEAD: \`git -C ${wtArg} rev-parse --short HEAD\`.
+
+Report JSON: { ok: true ONLY if BOTH git commands exited 0, head_after: "<the rev-parse short SHA>", reason: "<git error if ok is false, else empty>" }. Do not run any other git command (no checkout/switch/commit/push).`,
+    { label: `reset:${label}`, phase: ph || 'Dispatch', model: tierModel('sonnet'), schema: RESET_SCHEMA }
+  )
 }
 
 // Equal backends: native solves in-context; every other backend is relayed to its CLI through the
@@ -468,19 +532,28 @@ function branchFor(label) { return `${INT_BRANCH}/${safeLabel(label)}` }
 // the relay set backend_ran:false. Conversely a relay backend_ran:true with state:"failed" is NOT
 // trusted. We only fall back to native when the dispatch genuinely failed (state:"failed", or no usable
 // output and no "done" status). This stops a slow-but-fine agy/codex run from being silently dropped.
-// Returns a real BOOLEAN (not the stdout string): stdout is usable if it's non-blank and is NOT a
-// native-handoff sentinel. trimStart() so a whitespace-prefixed sentinel ("\nMMT_NATIVE_HANDOFF…")
-// is still rejected — a byte-0-only check would treat it as a real answer.
+// The usable result BODY of a relay: the live stdout if present, else the recovered_stdout the relay
+// read back from run.mjs's out_file sidecar (the recovery path when the relay's own tool timed out on a
+// long job but run.mjs finished and persisted the output). A body is usable if non-blank and NOT a
+// native-handoff sentinel (trimStart so a whitespace-prefixed sentinel is still rejected).
+function isUsableText(s) {
+  return !!(typeof s === 'string' && s.trim() && s.trimStart().indexOf('MMT_NATIVE_HANDOFF') !== 0)
+}
+function relayBody(relay) {
+  if (!relay) return ''
+  if (isUsableText(relay.stdout)) return relay.stdout
+  if (isUsableText(relay.recovered_stdout)) return relay.recovered_stdout
+  return ''
+}
 function hasUsableStdout(relay) {
-  return !!(relay && typeof relay.stdout === 'string' && relay.stdout.trim() &&
-    relay.stdout.trimStart().indexOf('MMT_NATIVE_HANDOFF') !== 0)
+  return relayBody(relay) !== ''
 }
 function relaySucceeded(relay) {
   if (!relay) return false
   const state = String(relay.status_state || '').toLowerCase()
   if (state === 'failed') return false                 // status file is authoritative on failure
-  if (state === 'done' && hasUsableStdout(relay)) return true   // authoritative success — overrides backend_ran
-  // No decisive status file: fall back to the old contract (relay's own judgment + usable stdout).
+  if (state === 'done' && hasUsableStdout(relay)) return true   // authoritative success — overrides backend_ran (stdout OR recovered sidecar)
+  // No decisive status file: fall back to the old contract (relay's own judgment + usable body).
   return relay.backend_ran === true && hasUsableStdout(relay)
 }
 // The REAL reason a dispatch fell back, surfaced instead of the generic word "unavailable". Reads the
@@ -511,12 +584,26 @@ async function dispatch(s, text, ph) {
       // recover the result instead of discarding a good CLI run. This is the misclassification fix.
       log(`${backendLabel(s.backend)} for "${s.label}": relay reported backend_ran:false but status="done" — recovering the successful result`)
     }
-    return { result: relay.stdout, ranOn: s.backend }
+    return { result: relayBody(relay), ranOn: s.backend }
   }
   const reason = relayFailReason(relay)
   log(`${backendLabel(s.backend)} did not complete "${s.label}" (${reason}) — visible native fallback`)
-  // Fallback native solver still writes into the SAME worktree (the work must land regardless of which
-  // backend produced it), so the integration stage sees one branch per subtask either way.
+  // WRITABLE mode: the killed CLI may have left a half-written worktree (dirty files and/or a partial
+  // commit, esp. on a `timeout`). Reset it to the clean base in DETERMINISTIC code (a thin git plumbing
+  // agent whose ok we check) BEFORE the native solver runs — so the solver never builds on corrupt
+  // partial state, and the cleanup can't be silently skipped by a free-form solver. If the reset fails,
+  // abort the fallback loudly rather than implementing on top of an unknown-state worktree.
+  if (WRITABLE && wt) {
+    const reset = await resetWorktree(wt, s.label, ph)
+    if (!reset || reset.ok !== true) {
+      const why = (reset && reset.reason) || 'reset agent returned no result'
+      log(`writable: could NOT reset worktree for "${s.label}" before native fallback (${why}) — leaving it for manual review`)
+      return { result: `MMT_WORKTREE_RESET_FAILED: ${why}`, ranOn: `native-fallback(${s.backend})`, failReason: `${reason}; worktree reset failed: ${why}` }
+    }
+    log(`writable: reset "${s.label}" worktree to base ${reset.head_after || INT_BRANCH} before native fallback`)
+  }
+  // Native solver writes into the SAME (now clean, in writable mode) worktree, so the integration stage
+  // sees one branch per subtask either way.
   const result = await dispatchNative(text, s.tier === 'opus' ? 'opus' : 'sonnet', `${s.label}-fallback`, ph, wt)
   return { result, ranOn: `native-fallback(${s.backend})`, failReason: reason }
 }
@@ -593,7 +680,7 @@ ${result}`
     if (relaySucceeded(relay)) {
       // A native-handoff in the SUBTASK result is always a failure, regardless of the review verdict.
       if (handoff) return { pass: false, reason: `subtask backend (${s.backend}) was unavailable — native-handoff sentinel`, fix_hint: 'solve the subtask natively' }
-      return parseVerdict(relay.stdout)
+      return parseVerdict(relayBody(relay))
     }
     // Verifier CLI did not complete -> VISIBLE native verify (not hidden behind the CLI's label). Surface
     // the real reason (timeout/quota/…), not a blanket "unavailable".
