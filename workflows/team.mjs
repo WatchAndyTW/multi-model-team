@@ -351,6 +351,14 @@ function tierModel(tier) {
 // parameters, never hardcoded). Label is prefixed with the CLI name; the pipe is cheap (RELAY_MODEL).
 function dispatchRelay(backend, text, tier, rule, label, ph, worktree) {
   const be = backendLabel(backend)
+  // Empty-payload guard: never spawn a relay with a missing/blank task. An empty `text` would be
+  // dropped by JSON.stringify (the call file would have no "task" field) and the CLI would run on
+  // nothing. Short-circuit to a visible native fallback (backend_ran:false) instead — the same
+  // contract as a CLI-unavailable result, decided in deterministic code.
+  if (text == null || !String(text).trim()) {
+    log(`relay for "${label}" had an empty task — skipping ${be}, visible native fallback`)
+    return Promise.resolve({ stdout: '', backend_ran: false })
+  }
   // File-based transport: the relay sub-agent writes the payload (decision + task) to a JSON file
   // under .mmt/calls/ with the Write tool, then runs `node run.mjs --call-file=<path>`. No heredoc,
   // no quoted JSON, no untrusted text on the command line — works verbatim whether the relay runs in
@@ -371,6 +379,8 @@ function dispatchRelay(backend, text, tier, rule, label, ph, worktree) {
 Step 1 — with the Write tool (NOT a shell command), write EXACTLY this content to the file at the relative path "${callPath}" (create the .mmt/calls/ directory if the Write tool requires it — it normally creates parents):
 
 ${callJson}
+
+SELF-CHECK before writing: the "task" value above must be the REAL task text, never a literal placeholder like "<the subtask text>" or "<the question text>". If you see an unsubstituted \`<...>\` placeholder in it, STOP — do NOT write the file or run the command; report backend_ran:false with empty stdout instead.
 
 Step 2 — run EXACTLY this with the Bash tool and nothing else. The payload is in the file you just wrote; only its PATH is on the command line (inert, safe in any shell). Do NOT inline or echo the payload:
 

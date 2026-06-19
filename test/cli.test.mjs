@@ -76,6 +76,40 @@ test('run.mjs --call-file: valid JSON but no "task" field exits 2 (fail loud, no
   assert.match(r.stderr, /has no usable "task" field/, 'stderr names the missing task field');
 });
 
+// Regression: a relay that copies the command/.md template VERBATIM leaves a literal placeholder
+// ("<the question text>") as the task — non-empty, so the no-task guard misses it, and the CLI would
+// run on garbage and "refuse". run.mjs must reject the known placeholder tokens (exit 2) so the relay
+// reports backend_ran:false and the workflow does a visible native fallback.
+for (const ph of ['<the question text>', '<the subtask text, with any Upstream result blocks appended>', '<task stripped>']) {
+  test(`run.mjs --call-file: unsubstituted placeholder task ${JSON.stringify(ph)} exits 2`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mmt-ph-'));
+    const callPath = join(dir, 'ph.json');
+    writeFileSync(callPath, JSON.stringify({ decision: { backend: 'codex', native: false, tier: 'standard', rule: 'reason' }, task: ph }), 'utf8');
+    const r = spawnSync(process.execPath, [join(ROOT, 'src/bin/run.mjs'), `--call-file=${callPath}`], { encoding: 'utf8', input: '' });
+    assert.equal(r.status, 2, 'unsubstituted placeholder must exit 2');
+    assert.match(r.stderr, /unsubstituted template placeholder/, 'stderr names the placeholder failure');
+  });
+}
+
+test('run.mjs --call-file: whitespace-only task exits 2 (not dispatched as blank)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mmt-ws-'));
+  const callPath = join(dir, 'ws.json');
+  writeFileSync(callPath, JSON.stringify({ decision: { backend: 'codex', native: false, tier: 'standard', rule: 'reason' }, task: '   \n  ' }), 'utf8');
+  const r = spawnSync(process.execPath, [join(ROOT, 'src/bin/run.mjs'), `--call-file=${callPath}`], { encoding: 'utf8', input: '' });
+  assert.equal(r.status, 2, 'whitespace-only task must exit 2');
+  assert.match(r.stderr, /has no usable "task" field/, 'stderr names the missing task field');
+});
+
+test('run.mjs --call-file: a real prompt that merely CONTAINS angle brackets is NOT a placeholder (no false positive)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mmt-real-'));
+  const callPath = join(dir, 'real.json');
+  // Real prompt containing "<div>" — must pass the placeholder guard (native decision -> handoff).
+  writeFileSync(callPath, JSON.stringify({ decision: { backend: 'native', native: true, tier: 'sonnet', rule: 'x' }, task: 'Explain how <div> works in HTML5 in one line' }), 'utf8');
+  const r = spawnSync(process.execPath, [join(ROOT, 'src/bin/run.mjs'), `--call-file=${callPath}`], { encoding: 'utf8', input: '' });
+  assert.equal(r.status, 0, `real prompt must not be rejected; exit ${r.status}; stderr: ${r.stderr}`);
+  assert.match(r.stdout, /MMT_NATIVE_HANDOFF/, 'native decision short-circuits as normal');
+});
+
 // ── team-spec.mjs CLI (--split) ──────────────────────────────────────────────
 
 test('team-spec.mjs --split: parses cap spec + task from stdin', () => {

@@ -161,9 +161,16 @@ alone. There are two worker kinds:
   [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve, analyze,
   or answer the task yourself.
 
-  Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>" (the task text
-  goes in the "task" field; the Write tool creates parent dirs):
+  Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>". You MUST replace
+  the `<the subtask text …>` placeholder with the ACTUAL subtask text (JSON-escaped, plus any
+  `Upstream result — <dep>:` blocks) before writing — it is a placeholder, not literal content. The
+  Write tool creates parent dirs:
   {"decision":{"backend":"<BE>","model":"","tier":"<TIER>","rule":"team","native":false},"task":"<the subtask text, with any Upstream result — <dep>: blocks appended>"}
+
+  SELF-CHECK: after substitution the "task" value must be the real subtask text, NOT a `<...>`
+  placeholder and NOT empty/undefined. If you cannot fill in the real task, STOP — do not write the
+  file or run the command; report backend_ran:false with empty stdout. (run.mjs also rejects an
+  unsubstituted placeholder, but never rely on that — substitute correctly.)
 
   Step 2 — run EXACTLY this one command with the Bash tool (only the file path is on the command line;
   the payload stays in the file, read only inside run.mjs by Node), then return its stdout VERBATIM
@@ -211,7 +218,8 @@ the decision + review brief to a call file with the Write tool, then pass only i
 below for the configured verifier:
 
 - `<VERIFY_CALL_PATH>` = a short unique path like `.mmt/calls/verify-<label>.json`, written with the
-  Write tool, containing:
+  Write tool, containing (substitute the REAL `<text>`/`<verify>`/`<result>` — JSON-escaped — never
+  leave the placeholders unfilled):
   ```json
   {"decision":{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false},
    "task":"You are a strict reviewer. Reply with a first line of exactly PASS or FAIL, one sentence why, then (only if FAIL) a one-line fix instruction.\nSUBTASK: <text>   ACCEPTANCE CRITERION: <verify>   RESULT: <result>"}

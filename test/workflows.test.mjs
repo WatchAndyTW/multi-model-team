@@ -63,6 +63,19 @@ test('team.mjs: relay uses the file transport (--call-file), no heredoc, no base
   assert.ok(SRC.includes('status file') || SRC.includes('.status.json'), 'team.mjs relay must mention the pollable status file');
 });
 
+test('workflows: relay guards against an empty/placeholder payload (the undefined-task bug)', () => {
+  // Regression: relays once wrote a call file with a missing/placeholder task (JSON.stringify drops
+  // an undefined task key), so the CLI ran on nothing and "refused". Both workflows must (a) skip the
+  // relay on empty text -> visible native fallback, and (b) tell the relay to SELF-CHECK for an
+  // unsubstituted <...> placeholder before writing.
+  for (const [name, src] of [['team.mjs', SRC], ['reasoning.mjs', REASON_SRC]]) {
+    assert.match(src, /text == null \|\| !String\(text\)\.trim\(\)/, `${name} dispatchRelay must guard empty text`);
+    assert.match(src, /backend_ran: false/, `${name} empty-text guard returns a visible-fallback result`);
+    assert.match(src, /SELF-CHECK/, `${name} relay prompt must include the placeholder self-check`);
+    assert.match(src, /placeholder/i, `${name} self-check must mention the placeholder`);
+  }
+});
+
 test('team.mjs: writable-mode worktree machinery present (Setup/Integrate, --cwd --writable, integration branch)', () => {
   const markers = [
     'WRITABLE',                 // the mode flag

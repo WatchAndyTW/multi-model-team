@@ -143,9 +143,15 @@ then passes only the file PATH to run.mjs — a safe `[A-Za-z0-9_/.-]` token, ve
 [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve,
 analyze, or answer the question yourself.
 
-Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>" (the question
-goes in the "task" field; the Write tool creates parent dirs):
+Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>". You MUST replace
+`<the question text>` with the ACTUAL question text (JSON-escaped) before writing — it is a placeholder,
+not literal content. The Write tool creates parent dirs:
 {"decision":{"backend":"<BE>","model":"","tier":"<TIER>","rule":"reason","native":false},"task":"<the question text>"}
+
+SELF-CHECK: after substitution the "task" value must be the real question, NOT a `<...>` placeholder
+and NOT empty/undefined. If you cannot fill in the real question, STOP — do not write the file or run
+the command; report backend_ran:false with empty stdout. (run.mjs also rejects an unsubstituted
+placeholder, but never rely on that — substitute correctly.)
 
 Step 2 — run EXACTLY this one command with the Bash tool (only the file path is on the command line;
 the payload stays in the file, read only inside run.mjs by Node), then return its stdout VERBATIM

@@ -109,6 +109,30 @@ function nativeSentinel(tier, rule, reason) {
   );
 }
 
+// The literal placeholder tokens our command/.md + workflow relay templates use for the task text.
+// A relay that fails to substitute the real prompt leaves one of these verbatim in the call file.
+// Compared case-insensitively against the FULL trimmed task (a real prompt never equals one of these).
+const TASK_PLACEHOLDERS = new Set([
+  '<the question text>',
+  '<the subtask text>',
+  '<the task text>',
+  '<text>',
+  '<full text>',
+  '<task stripped>',
+  '<question>',
+  '<task>',
+]);
+
+// True when the task is (still) an unsubstituted template placeholder — either an exact known token,
+// or the leading "<the subtask text, with any Upstream result …>" form whose body the relay didn't fill.
+function isUnsubstitutedPlaceholder(task) {
+  const t = String(task || '').trim().toLowerCase();
+  if (TASK_PLACEHOLDERS.has(t)) return true;
+  // The team template's longer placeholder: "<the subtask text, with any Upstream result — <dep>: …>".
+  if (/^<the (subtask|question|task) text[\s,]/.test(t)) return true;
+  return false;
+}
+
 // --- failure logging --------------------------------------------------------
 // When a CLI backend call fails (non-zero exit, empty output, or quota/credit limit) the user
 // previously saw only a terse one-line stderr buried under the eventual native handoff. This makes
@@ -220,13 +244,29 @@ async function main() {
   }
 
   let task = opts.task;
+  const fromFile = opts.callFile || opts.taskFile;   // a relay transport, not an interactive call
   if (!task && opts.taskFile) task = readFileArg(opts.taskFile, '--task-file');
   if (!task && callPayload && typeof callPayload.task === 'string') task = callPayload.task;
-  // A --call-file is a relay transport, not an interactive call: if it carries no usable task, fail
-  // LOUD (exit 2) rather than silently falling through to stdin (which would block on a non-TTY or
-  // emit a confusing "no task text"). A corrupt/empty relay payload must surface as an error.
-  if (opts.callFile && !task) {
-    process.stderr.write(`run.mjs: --call-file '${opts.callFile}' has no usable "task" field\n`);
+  // A --call-file / --task-file is a relay transport: if it carries no usable task, fail LOUD (exit 2)
+  // rather than silently falling through to stdin (which would block on a non-TTY or emit a confusing
+  // "no task text"). A corrupt/empty relay payload must surface as an error. Use .trim() so a
+  // whitespace-only task ("   ") — also non-usable — is rejected, not dispatched as blank.
+  if (fromFile && !String(task ?? '').trim()) {
+    process.stderr.write(`run.mjs: ${opts.callFile ? '--call-file' : '--task-file'} '${fromFile}' has no usable "task" field\n`);
+    process.exit(2);
+  }
+  // Unsubstituted-placeholder guard. A relay agent that copies a command/.md template VERBATIM leaves
+  // the literal placeholder (e.g. "<the question text>") in the call file — non-empty, so the check
+  // above misses it, and the backend would otherwise run on meaningless text and "refuse". Reject the
+  // exact placeholder tokens our own templates use so the relay reports backend_ran:false and the
+  // workflow does a VISIBLE native fallback instead of a silent garbage run. Matched only when the
+  // whole task IS the placeholder (a real prompt never equals "<the question text>").
+  if (fromFile && isUnsubstitutedPlaceholder(task)) {
+    process.stderr.write(
+      `run.mjs: ${opts.callFile ? '--call-file' : '--task-file'} '${fromFile}' still contains an ` +
+      `unsubstituted template placeholder ("${task.trim().slice(0, 60)}") — the relay did not insert the ` +
+      `real task text. Aborting so it is not dispatched as garbage.\n`,
+    );
     process.exit(2);
   }
   if (!task) task = (await readStdin()).trim();
