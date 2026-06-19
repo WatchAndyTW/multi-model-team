@@ -9,7 +9,7 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **106/106** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **108/108** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
 Two live backends: **agy** (Gemini)
 and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
@@ -352,7 +352,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 106/106 routing + unit tests (no backend calls)
+npm test                         # offline: 108/108 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`

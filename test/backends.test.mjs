@@ -317,6 +317,86 @@ test('run.mjs --cwd --writable: CLI runs IN the worktree cwd and gets the writab
   assert.doesNotMatch(body, /read-only/, 'writable mode dropped the read-only sandbox flag');
 });
 
+// ── a backend that FAILS its --version health probe is no longer a SILENT skip ────────────────────
+// This was the "sometimes it just fails" bug: a backend that flunked health was dropped with no
+// lastErr, no failures.log, no status record — just a bare "backend options exhausted" handoff. Now
+// a health skip is LOUD: named in the handoff reason, appended to failures.log (kind:"health"), and
+// recorded as a failed status. Fake CLI exits non-zero on --version (and everything else) twice.
+test('run.mjs: a backend that fails health is logged LOUDLY as kind:"health", not silently skipped', () => {
+  const d = tmp('ehealth-');
+  const fake = join(d, process.platform === 'win32' ? 'deadcodex.cmd' : 'deadcodex.sh');
+  if (process.platform === 'win32') {
+    // Always exit 7 with a stderr line — including on --version, so the health probe (×2) fails.
+    writeFileSync(fake, '@echo off\r\necho DEAD_BINARY not authed 1>&2\r\nexit /b 7\r\n');
+  } else {
+    writeFileSync(fake, '#!/usr/bin/env bash\necho "DEAD_BINARY not authed" >&2\nexit 7\n');
+    chmodSync(fake, 0o755);
+  }
+  const r = writeRosterVariant(d, 'r.json', (c) => {
+    c.backends.agy.enabled = false;                 // only codex in play
+    c.defaults.quota_fallback = ['codex', 'native:sonnet'];
+  });
+  const logDir = join(d, 'logs');
+  const { stdout, stderr } = runNode(BIN_RUN, {
+    args: ['--roster', r, '--decision', '{"backend":"codex","model":"","tier":"standard","rule":"team-verify","native":false}', 'review this'],
+    env: { MMT_BE_BIN: fake, MMT_LOG_DIR: logDir },
+  });
+  // 1. Loud stderr banner naming the backend + the health failure kind.
+  assert.match(stderr, /\[mmt\] ERROR: backend 'codex' \(health\) failed/, 'health skip emits a loud [mmt] ERROR banner');
+  // 2. Handoff still happens, but now CARRIES the cause instead of a bare "exhausted".
+  assert.match(stdout, /MMT_NATIVE_HANDOFF/, 'still hands off to native');
+  assert.match(stdout, /last error:.*codex.*health check failed/i, 'handoff reason names the health failure');
+  // 3. Durable failures.log record with kind:"health".
+  const logFile = join(logDir, 'failures.log');
+  assert.ok(existsSync(logFile), 'failures.log written on a health skip (was silent before)');
+  const rec = JSON.parse(readFileSync(logFile, 'utf8').trim().split('\n').pop());
+  assert.equal(rec.backend, 'codex', 'log record names the backend');
+  assert.equal(rec.kind, 'health', 'log record kind is "health"');
+  // 4. A failed status record exists (callId is random — glob the calls/ dir).
+  const callsDir = join(d, 'calls');
+  assert.ok(existsSync(callsDir), 'status calls/ dir created on a health skip');
+  const statusFiles = readdirSync(callsDir).filter((f) => f.endsWith('.status.json'));
+  const st = JSON.parse(readFileSync(join(callsDir, statusFiles[0]), 'utf8').trim());
+  assert.equal(st.state, 'failed', 'status reflects the failed (health) call');
+  assert.equal(st.kind, 'health', 'status kind is "health"');
+});
+
+// ── health(): a transient probe miss recovers on the NEXT call (negative verdict is never cached) ──
+// + one-shot retry: a SINGLE flaky --version no longer scores the backend down. Fake CLI fails its
+// FIRST --version (cold-start hiccup) then succeeds — within one health() call the retry recovers it.
+test('health(): one-shot retry survives a single flaky --version; negative verdict is not cached', async () => {
+  const { health, _clearHealthCache } = await import('../src/lib/backends.mjs');
+  _clearHealthCache();
+  const d = tmp('hretry-');
+  const counter = join(d, 'n.txt');
+  const fake = join(d, process.platform === 'win32' ? 'flaky.cmd' : 'flaky.sh');
+  if (process.platform === 'win32') {
+    // First --version invocation exits 1 (no output); every later one prints a version + exit 0.
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if not exist "' + counter.replace(/\//g, '\\') + '" ( echo x > "' + counter.replace(/\//g, '\\') + '" & exit /b 1 )\r\n' +
+      'echo flaky 1.0\r\n' +
+      'exit /b 0\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'if [ ! -f "' + counter + '" ]; then echo x > "' + counter + '"; exit 1; fi\n' +
+      'echo "flaky 1.0"\n');
+    chmodSync(fake, 0o755);
+  }
+  // health() resolves the binary for kind:"codex" via resolveBinary('codex', …) which honors MMT_BE_BIN.
+  process.env.MMT_BE_BIN = fake;
+  try {
+    const cfg = { kind: 'codex', enabled: true, health: '--version' };
+    // The first attempt's --version fails (exit 1), the in-probe retry succeeds -> healthy in ONE call.
+    const ok = await health(cfg);
+    assert.equal(ok, true, 'one-shot retry recovers a single flaky --version within one health() call');
+  } finally {
+    delete process.env.MMT_BE_BIN;
+    _clearHealthCache();
+  }
+});
+
 test('run.mjs (no --writable): CLI gets the read-only sandbox flags (default behaviour unchanged)', () => {
   const d = tmp('eread-');
   const wt = join(d, 'here');

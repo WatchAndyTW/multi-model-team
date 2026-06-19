@@ -388,10 +388,22 @@ async function main() {
 
     let model = modelForTier(beCfg, D_tier) || modelForTier(beCfg, 'standard');
 
-    // Health-gate: an unhealthy backend (or a kind with no invoker) is skipped.
+    // Health-gate: an unhealthy backend (or a kind with no invoker) is skipped. This used to be a
+    // SILENT skip — no lastErr, no failures.log, no status record — so a backend that failed its
+    // `--version` probe vanished into a bare "backend options exhausted" handoff with zero
+    // diagnostics. That made transient probe misses look like random "the CLI refused to run"
+    // failures. Now a health skip is LOUD: it names the cause in lastErr (→ handoff reason), appends
+    // to failures.log, and writes a `failed` status record the orchestrator can poll.
     let healthy = false;
-    try { healthy = await health(beCfg); } catch { healthy = false; }
-    if (!healthy) { fallbackCount++; continue; }
+    let healthErr = '';
+    try { healthy = await health(beCfg); } catch (e) { healthy = false; healthErr = String(e && e.message || e); }
+    if (!healthy) {
+      const why = sanitizeErr(healthErr) || `'${be}' version probe failed (binary missing, not authed, or probe timed out)`;
+      lastErr = `'${be}' health check failed${healthErr ? ` (${sanitizeErr(healthErr)})` : ''}`;
+      writeStatus(statusFile, callId, { state: 'failed', backend: be, model, tier: D_tier, rule: D_rule, kind: 'health', code: 127, elapsed_ms: 0 });
+      logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: 127, durMs: 0, stderr: why, kind: 'health', callId });
+      fallbackCount++; continue;
+    }
 
     state.start({ id: callId, backend: be, model, rule: D_rule, inChars });
     const startMs = Date.now();

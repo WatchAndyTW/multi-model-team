@@ -412,24 +412,37 @@ async function _healthUncached(backendCfg) {
   }
 
   const healthFlag = field(backendCfg, 'health') || '--version';
-  const res = await runChild([bin, healthFlag], {
-    hardTimeout: 30_000, // parity with backends.sh `timeout 30`.
-    keepStdinOpen: false, // version probe: stdin closed (= </dev/null).
-  });
-  // Non-empty stdout (CR-stripped) + clean exit. spawnError/ENOENT -> code 127 -> false.
-  const out = res.stdout.replace(/\r/g, '').trim();
-  return res.code === 0 && out.length > 0;
+  // One-shot retry: a SINGLE `--version` probe is flaky on Windows — a cold-start, an AV scan of the
+  // binary, or a momentary ConPTY hiccup can make it time out or return empty even though a real
+  // dispatch seconds later would succeed. A false "unhealthy" verdict silently blackholes the backend
+  // (run.mjs skips it → native handoff). Probe twice before declaring a backend down; a healthy CLI
+  // answers `--version` in well under a second, so the retry cost on the happy path is zero.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await runChild([bin, healthFlag], {
+      hardTimeout: 30_000, // parity with backends.sh `timeout 30`.
+      keepStdinOpen: false, // version probe: stdin closed (= </dev/null).
+    });
+    // Non-empty stdout (CR-stripped) + clean exit. spawnError/ENOENT -> code 127 -> false.
+    const out = res.stdout.replace(/\r/g, '').trim();
+    if (res.code === 0 && out.length > 0) return true;
+  }
+  return false;
 }
 
-// TTL-memoized health check. Returns the cached boolean if checked within HEALTH_TTL_MS, else
-// re-probes and caches. Keeps the per-hop fallback-chain cost down to one probe per backend per TTL.
+// TTL-memoized health check. Caches POSITIVE verdicts only: a healthy backend is trusted for
+// HEALTH_TTL_MS (keeps the per-hop fallback cost to one probe per TTL), but a NEGATIVE verdict is
+// NEVER cached. A transient probe miss (cold start, AV scan, ConPTY hiccup) therefore costs at most
+// one skipped dispatch, not a full TTL window of silent native-handoffs — the very next call
+// re-probes and recovers. Asymmetric on purpose: a stale "healthy" is cheap (one real call fails →
+// invalidateHealth re-probes), a stale "unhealthy" used to blackhole a working backend for 60s.
 export async function health(backendCfg) {
   const key = _healthKey(backendCfg);
   const cached = _healthCache.get(key);
   const now = Date.now();
-  if (cached !== undefined && (now - cached.ts) < HEALTH_TTL_MS) return cached.ok;
+  if (cached !== undefined && cached.ok && (now - cached.ts) < HEALTH_TTL_MS) return true;
   const ok = await _healthUncached(backendCfg);
-  _healthCache.set(key, { ok, ts: now });
+  if (ok) _healthCache.set(key, { ok: true, ts: now });
+  else _healthCache.delete(key); // never cache a negative verdict; re-probe next call
   return ok;
 }
 
