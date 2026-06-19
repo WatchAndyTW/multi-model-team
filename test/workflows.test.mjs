@@ -181,3 +181,60 @@ test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, ne
   assert.match(REASON_SRC, /do NOT immediately re-run/i, 'reasoning.mjs relay must not blindly re-run on its own time limit');
   assert.match(REASON_SRC, /at most ONCE/i, 'reasoning.mjs relay must cap re-runs at once (no loop)');
 });
+
+// ── Regression: status-file-authoritative dispatch (the "fails-without-a-reason" fix) ──
+// The relay's backend_ran is an LLM self-judgment that a cheap relay model misreports when ITS OWN
+// Bash tool times out on a slow-but-successful agy/codex call. run.mjs's status file is authoritative:
+// state:"done" + usable stdout == success EVEN IF the relay said backend_ran:false. And every native
+// fallback must carry the REAL reason (timeout/quota/…), not a generic "unavailable".
+test('team.mjs: dispatch is status-file-authoritative + surfaces the real fallback reason', () => {
+  // (a) The relay schema must collect the authoritative status-file fields.
+  for (const m of ['status_state', 'out_chars', 'fail_kind', 'relay_note']) {
+    assert.ok(SRC.includes(m), `team.mjs RELAY_SCHEMA missing status field: ${m}`);
+  }
+  // (b) The deterministic helpers + the relay-timeout pin must exist.
+  for (const m of ['relaySucceeded', 'relayFailReason', 'hasUsableStdout', 'RELAY_BASH_TIMEOUT_MS', 'fallbackReasons', 'failReason']) {
+    assert.ok(SRC.includes(m), `team.mjs missing marker: ${m}`);
+  }
+  // (c) dispatch() must NOT gate solely on backend_ran any more (the misclassification bug). The old
+  //     `relay.backend_ran === true && ... relay.stdout ... trim()` guard is replaced by relaySucceeded.
+  assert.match(SRC, /if \(relaySucceeded\(relay\)\)/, 'dispatch must decide success via relaySucceeded, not a raw backend_ran check');
+});
+
+test('team.mjs: relaySucceeded/relayFailReason behave (status file overrides relay judgment)', () => {
+  // Extract the three helpers (function NAME(...) up to a lone `}` line) and exercise them in isolation.
+  const grab = (name) => {
+    const re = new RegExp('function ' + name + '\\([\\s\\S]*?\\n}');
+    const m = SRC.match(re);
+    assert.ok(m, 'could not extract ' + name);
+    return m[0];
+  };
+  const helpers = [grab('hasUsableStdout'), grab('relaySucceeded'), grab('relayFailReason')].join('\n') + '\n';
+  const f = new Function(helpers + 'return { hasUsableStdout, relaySucceeded, relayFailReason };')();
+
+  // status:"done" + stdout overrides backend_ran:false — the core recovery (slow-but-fine CLI run).
+  assert.equal(f.relaySucceeded({ status_state: 'done', out_chars: 10, stdout: 'real answer', backend_ran: false }), true);
+  // status:"failed" is authoritative even if the relay claimed backend_ran:true.
+  assert.equal(f.relaySucceeded({ status_state: 'failed', stdout: 'partial', backend_ran: true }), false);
+  // a handoff sentinel is never success.
+  assert.equal(f.relaySucceeded({ status_state: '', stdout: 'MMT_NATIVE_HANDOFF tier=x', backend_ran: true }), false);
+  // no status file -> old contract (backend_ran + usable stdout) still holds — and must be a STRICT
+  // boolean, not the stdout string (codex review caught hasUsableStdout returning a string).
+  assert.strictEqual(f.relaySucceeded({ status_state: '', stdout: 'ans', backend_ran: true }), true);
+  assert.strictEqual(f.hasUsableStdout({ stdout: 'ans' }), true, 'hasUsableStdout returns a real boolean');
+  // "done" with empty stdout is NOT a success.
+  assert.equal(f.relaySucceeded({ status_state: 'done', stdout: '   ', backend_ran: false }), false);
+  assert.equal(f.relaySucceeded(null), false);
+  // a WHITESPACE-PREFIXED handoff sentinel must still be rejected (not a byte-0-only check).
+  assert.equal(f.relaySucceeded({ status_state: 'done', stdout: '\n  MMT_NATIVE_HANDOFF tier=x', backend_ran: true }), false,
+    'leading-whitespace handoff sentinel is not success');
+  assert.equal(f.relayFailReason({ stdout: '\n  MMT_NATIVE_HANDOFF x' }), 'native-handoff (CLI unavailable/exhausted)',
+    'whitespace-prefixed sentinel reports as handoff, not empty output');
+
+  // The real reason is surfaced (no blanket "unavailable").
+  assert.equal(f.relayFailReason({ status_state: 'failed', fail_kind: 'timeout' }), 'timeout');
+  assert.equal(f.relayFailReason({ status_state: 'failed', fail_kind: 'quota' }), 'quota');
+  assert.equal(f.relayFailReason({ status_state: 'failed', fail_kind: '' }), 'backend reported failed');
+  assert.equal(f.relayFailReason({ stdout: 'MMT_NATIVE_HANDOFF x' }), 'native-handoff (CLI unavailable/exhausted)');
+  assert.equal(f.relayFailReason(null), 'no relay result');
+});

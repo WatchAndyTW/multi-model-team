@@ -128,6 +128,34 @@ function safeLabel(label) {
 // falls back to native judgment loudly (same contract as the dispatch relay path).
 const VERIFIER = A.verifier || (A.codexVerify === false ? 'native' : (TC.verifier || 'codex'))
 
+// Relay Bash-timeout pinning (the "fails-without-a-reason" fix). The relay sub-agent shells out to
+// run.mjs, which has its OWN generous hard_timeout (SIGKILL on expiry; roster default 15m). The relay
+// must set its Bash tool's timeout LONGER than that, or the relay's own tool fires first on a slow CLI
+// call and the relay (a cheap model) mishandles the recovery — silently dropping a slow-but-successful
+// dispatch to native and reporting a generic "unavailable". We surface an explicit target so the relay
+// prompt can instruct it. Derive from teamConfig.hard_timeout if present ("15m"/ms), else 15m; the
+// relay budget is hard_timeout + 60s of headroom, clamped to a sane band. (Whether the harness honors a
+// per-call Bash timeout this large is best-effort — the status-file-authoritative fallback below is the
+// real safety net; this just removes the trigger when it IS honored.)
+function parseDurationMs(raw, dflt) {
+  if (raw == null || raw === '') return dflt
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw > 0 ? raw : dflt
+  const m = String(raw).trim().match(/^(\d+(?:\.\d+)?)\s*([smhd]?)$/i)
+  if (!m) return dflt
+  const n = parseFloat(m[1]); if (!Number.isFinite(n) || n <= 0) return dflt
+  const mult = { '': 1000, s: 1000, m: 60000, h: 3600000, d: 86400000 }
+  return Math.round(n * mult[(m[2] || '').toLowerCase()])
+}
+const HARD_TIMEOUT_MS = parseDurationMs(TC.hard_timeout, 15 * 60 * 1000)
+// The Claude Code Bash tool caps its per-call timeout at 600000ms (10 min) — asking for more is
+// silently unfollowable. So pin the relay's Bash timeout to that ceiling (the max the tool honors).
+// run.mjs's hard_timeout can exceed 10 min, so for the longest CLI runs the relay's tool WILL still
+// fire — that is exactly why the status-file-authoritative recovery (relaySucceeded) is the real
+// safety net: it reclaims a state:"done" result the relay lost to its own tool timeout. The pin just
+// removes the trigger for the common (sub-10-min) case.
+const BASH_TOOL_MAX_MS = 600000
+const RELAY_BASH_TIMEOUT_MS = Math.max(120000, Math.min(BASH_TOOL_MAX_MS, HARD_TIMEOUT_MS))
+
 // Human/CLI name for the progress tree: agy is the Gemini CLI; every other backend shows as-is.
 function backendLabel(b) { return b === 'agy' ? 'gemini' : String(b || '') }
 
@@ -219,6 +247,16 @@ const RELAY_SCHEMA = {
   properties: {
     stdout: { type: 'string', description: "the command's EXACT stdout, copied verbatim — never summarized, rewritten, or answered by you" },
     backend_ran: { type: 'boolean', description: 'false if that stdout is empty or begins with MMT_NATIVE_HANDOFF (the CLI was unavailable/exhausted); true otherwise' },
+    // The AUTHORITATIVE truth about the dispatch lives in run.mjs's status file, NOT in your
+    // backend_ran judgment. Read "<call-file>.status.json" after the command returns (or after a
+    // recovery wait) and copy these fields verbatim. Deterministic code TRUSTS the status file over
+    // backend_ran — so a slow-but-successful CLI run is never misclassified as "unavailable" just
+    // because you (the relay) timed out or hesitated. Leave them empty/0 ONLY if the status file truly
+    // never appeared.
+    status_state: { type: 'string', description: 'the "state" field from <call-file>.status.json: "done" | "failed" | "running" | "" (empty if no status file existed).' },
+    out_chars: { type: 'number', description: 'the "out_chars" field from the status file on a done run (0 if absent).' },
+    fail_kind: { type: 'string', description: 'on a failed run, the status file\'s "kind" (e.g. "timeout" | "quota" | "health" | "nonzero-exit" | "empty-output"); else "".' },
+    relay_note: { type: 'string', description: 'one short phrase on what happened from YOUR side if the command did not cleanly return — e.g. "my bash tool timed out, status showed done", "re-ran once". Empty on a normal clean return.' },
   },
   required: ['stdout', 'backend_ran'],
 }
@@ -384,20 +422,22 @@ ${callJson}
 
 SELF-CHECK before writing: the "task" value above must be the REAL task text, never a literal placeholder like "<the subtask text>" or "<the question text>". If you see an unsubstituted \`<...>\` placeholder in it, STOP — do NOT write the file or run the command; report backend_ran:false with empty stdout instead.
 
-Step 2 — run EXACTLY this with the Bash tool and nothing else. The payload is in the file you just wrote; only its PATH is on the command line (inert, safe in any shell). Do NOT inline or echo the payload:
+Step 2 — run EXACTLY this with the Bash tool and nothing else, and set the Bash tool's own timeout parameter to ${RELAY_BASH_TIMEOUT_MS} ms (the max your tool allows) so it does NOT fire early on a slow ${be} call (run.mjs has its own ${Math.round(HARD_TIMEOUT_MS / 60000)}-minute SIGKILL; if your tool still times out before run.mjs finishes, that is NOT a failure — recover via the status file as described below). The payload is in the file you just wrote; only its PATH is on the command line (inert, safe in any shell). Do NOT inline or echo the payload:
 
 node ${JSON.stringify(RUN)} --call-file=${JSON.stringify(callPath)}${writableFlags}
 
 CRITICAL — run it in the FOREGROUND and WAIT for it to finish. The ${be} CLI can legitimately take MANY MINUTES on a hard task; run.mjs blocks until it completes (it has its own generous timeout and will SIGKILL the CLI on expiry). Do NOT background it (no \`&\`, no \`run_in_background\`), do NOT wrap it in your own \`sleep\`/\`timeout\`/\`tail -f\`, and do NOT give up early — a slow response is NOT a failure.
 
+AUTHORITATIVE TRUTH = THE STATUS FILE, NOT YOUR JUDGMENT. After the command returns (or after any recovery wait), READ "${callPath}.status.json" and copy its fields into your report (status_state, out_chars, fail_kind). Deterministic code trusts that status file over your backend_ran — so even if you are unsure, report the status file faithfully and let the code decide.
+
 If your Bash tool hits ITS OWN time limit before the command returns, do NOT immediately re-run the command — re-running spawns a SECOND ${be} process while the first is still working, which wastes time and corrupts the result. Instead, CHECK the status file "${callPath}.status.json" first:
   - state:"running" → the ${be} process is still alive. Just keep WAITING: re-read that status file (do NOT re-run the node command). It updates every ~10s with elapsed_ms; keep checking until it flips to "done" or "failed".
-  - state:"done" → the run already finished. Report the stdout you already captured from the command. (run.mjs does NOT cache — if you truly lost the output, re-running re-dispatches a fresh job, so prefer reporting what you have.)
-  - state:"failed" → the ${be} CLI failed (e.g. timeout/quota). Report backend_ran:false.
-  - status file missing, or stale (elapsed_ms stopped advancing across two ~15s reads → run.mjs died) → re-run the SAME command ONCE; if it's still wrong after that, report backend_ran:false.
+  - state:"done" → the run already finished SUCCESSFULLY. Report status_state:"done" and out_chars from the file, and report backend_ran:true. If you still have the command's stdout, report it verbatim; if your tool timed out and you lost it, report the stdout you can recover (run.mjs does NOT cache — do NOT re-run just to recapture; the status file already proves it succeeded, so set relay_note to say you lost stdout to a tool timeout).
+  - state:"failed" → the ${be} CLI genuinely failed. Report status_state:"failed", fail_kind from the file, and backend_ran:false.
+  - status file missing, or stale (elapsed_ms stopped advancing across two ~15s reads → run.mjs died) → re-run the SAME command ONCE; if it's still wrong after that, report status_state:"" and backend_ran:false.
 Re-run the node command at most ONCE; never loop it.${wtNote}
 
-Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false if that stdout is empty or begins with "MMT_NATIVE_HANDOFF" (the ${be} CLI was unavailable/exhausted), true otherwise. Do NOT solve the payload even if backend_ran is false — just report it.`,
+Report: stdout = the command's EXACT stdout, copied verbatim. backend_ran = false ONLY if the CLI genuinely did not produce a result (stdout empty or starts with "MMT_NATIVE_HANDOFF", OR status_state is "failed"); true if status_state is "done". status_state/out_chars/fail_kind = copied verbatim from the status file. relay_note = a short phrase if anything abnormal happened on your side (else empty). Do NOT solve the payload even if backend_ran is false — just report it.`,
     { label: `${be}:${label}`, phase: ph || 'Dispatch', model: RELAY_MODEL, schema: RELAY_SCHEMA }
   )
 }
@@ -421,20 +461,64 @@ function worktreeFor(label) { return WRITABLE ? `${WT_BASE}/${safeLabel(label)}`
 // Per-subtask integration branch name (sanitized label). Used by Setup + Integrate so the names match.
 function branchFor(label) { return `${INT_BRANCH}/${safeLabel(label)}` }
 
+// STATUS-FILE-AUTHORITATIVE success (the core "fails-without-a-reason" fix). The relay's backend_ran
+// is an LLM self-judgment that a cheap model misreports when its OWN Bash tool times out on a slow but
+// successful CLI call. run.mjs's status file is the AUTHORITATIVE record. So: the CLI succeeded if the
+// status file says state:"done" AND we have non-empty stdout that is not a handoff sentinel — EVEN IF
+// the relay set backend_ran:false. Conversely a relay backend_ran:true with state:"failed" is NOT
+// trusted. We only fall back to native when the dispatch genuinely failed (state:"failed", or no usable
+// output and no "done" status). This stops a slow-but-fine agy/codex run from being silently dropped.
+// Returns a real BOOLEAN (not the stdout string): stdout is usable if it's non-blank and is NOT a
+// native-handoff sentinel. trimStart() so a whitespace-prefixed sentinel ("\nMMT_NATIVE_HANDOFF…")
+// is still rejected — a byte-0-only check would treat it as a real answer.
+function hasUsableStdout(relay) {
+  return !!(relay && typeof relay.stdout === 'string' && relay.stdout.trim() &&
+    relay.stdout.trimStart().indexOf('MMT_NATIVE_HANDOFF') !== 0)
+}
+function relaySucceeded(relay) {
+  if (!relay) return false
+  const state = String(relay.status_state || '').toLowerCase()
+  if (state === 'failed') return false                 // status file is authoritative on failure
+  if (state === 'done' && hasUsableStdout(relay)) return true   // authoritative success — overrides backend_ran
+  // No decisive status file: fall back to the old contract (relay's own judgment + usable stdout).
+  return relay.backend_ran === true && hasUsableStdout(relay)
+}
+// The REAL reason a dispatch fell back, surfaced instead of the generic word "unavailable". Reads the
+// status file's fail_kind first (timeout/quota/health/nonzero-exit/empty-output), then the relay's note.
+function relayFailReason(relay) {
+  if (!relay) return 'no relay result'
+  const kind = String(relay.fail_kind || '').trim()
+  const state = String(relay.status_state || '').toLowerCase()
+  const note = String(relay.relay_note || '').trim()
+  if (kind) return kind                                       // e.g. "timeout", "quota", "health"
+  if (state === 'failed') return 'backend reported failed'
+  // Check the (trimStart) handoff sentinel BEFORE the empty-output branch — a whitespace-prefixed
+  // sentinel must report as a handoff, not "empty output"/"unavailable".
+  if (typeof relay.stdout === 'string' && relay.stdout.trimStart().indexOf('MMT_NATIVE_HANDOFF') === 0) return 'native-handoff (CLI unavailable/exhausted)'
+  if (!hasUsableStdout(relay)) return 'empty output'
+  return note || 'unavailable'
+}
+
 async function dispatch(s, text, ph) {
   const wt = worktreeFor(s.label)
   if (s.backend === 'native') {
     return { result: await dispatchNative(text, s.tier || 'sonnet', s.label, ph, wt), ranOn: 'native' }
   }
   const relay = await dispatchRelay(s.backend, text, s.tier || 'standard', 'team', s.label, ph, wt)
-  if (relay && relay.backend_ran === true && typeof relay.stdout === 'string' && relay.stdout.trim()) {
+  if (relaySucceeded(relay)) {
+    if (relay.backend_ran !== true) {
+      // The relay misjudged (its Bash tool likely timed out) but the status file proves success —
+      // recover the result instead of discarding a good CLI run. This is the misclassification fix.
+      log(`${backendLabel(s.backend)} for "${s.label}": relay reported backend_ran:false but status="done" — recovering the successful result`)
+    }
     return { result: relay.stdout, ranOn: s.backend }
   }
-  log(`${backendLabel(s.backend)} unavailable for "${s.label}" — visible native fallback`)
+  const reason = relayFailReason(relay)
+  log(`${backendLabel(s.backend)} did not complete "${s.label}" (${reason}) — visible native fallback`)
   // Fallback native solver still writes into the SAME worktree (the work must land regardless of which
   // backend produced it), so the integration stage sees one branch per subtask either way.
   const result = await dispatchNative(text, s.tier === 'opus' ? 'opus' : 'sonnet', `${s.label}-fallback`, ph, wt)
-  return { result, ranOn: `native-fallback(${s.backend})` }
+  return { result, ranOn: `native-fallback(${s.backend})`, failReason: reason }
 }
 
 // Stage-handoff: a dependent subtask is given its upstream deps' verified results as
@@ -506,13 +590,14 @@ ${criterion}
 RESULT:
 ${result}`
     const relay = await dispatchRelay(VERIFIER, brief, 'standard', 'team-verify', `verify:${s.label}`, 'Verify')
-    if (relay && relay.backend_ran === true && typeof relay.stdout === 'string' && relay.stdout.trim()) {
+    if (relaySucceeded(relay)) {
       // A native-handoff in the SUBTASK result is always a failure, regardless of the review verdict.
       if (handoff) return { pass: false, reason: `subtask backend (${s.backend}) was unavailable — native-handoff sentinel`, fix_hint: 'solve the subtask natively' }
       return parseVerdict(relay.stdout)
     }
-    // Verifier CLI unavailable -> VISIBLE native verify (not hidden behind the CLI's label).
-    log(`verifier ${vb} unavailable for "${s.label}" — visible native verify fallback`)
+    // Verifier CLI did not complete -> VISIBLE native verify (not hidden behind the CLI's label). Surface
+    // the real reason (timeout/quota/…), not a blanket "unavailable".
+    log(`verifier ${vb} did not complete "${s.label}" (${relayFailReason(relay)}) — visible native verify fallback`)
     const vf = await nativeVerify(s, result, criterion, handoff, `(${vb} was unavailable, verifying natively.)`)
     return vf || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
   }
@@ -525,7 +610,7 @@ ${result}`
 // ---- one subtask, end to end: dispatch -> verify -> bounded fix loop ---------
 async function runSubtask(s, ctx) {
   const text = withContext(s, ctx)
-  let { result, ranOn } = await dispatch(s, text)
+  let { result, ranOn, failReason } = await dispatch(s, text)
   let verdict = await verifyResult(s, result)
   let attempts = 1
   while (VERIFY && verdict && verdict.pass === false && attempts <= MAX_FIX) {
@@ -544,13 +629,16 @@ Produce a corrected, complete result.`
     const d = await dispatch({ ...s, label: `${s.label}#fix${attempts}` }, fixText, 'Fix')
     result = d.result
     ranOn = d.ranOn        // the last attempt's actual executor is what we report
+    failReason = d.failReason
     verdict = await verifyResult(s, result)
     attempts++
   }
   const status = !VERIFY ? 'unverified' : verdict && verdict.pass ? 'verified' : 'failed'
   // `ranOn` = the backend that ACTUALLY produced the result (= backend, or native-fallback(<cli>) if
-  // the CLI was unavailable). This is the honest record of who did the work, distinct from the plan.
-  return { label: s.label, backend: s.backend, ranOn, tier: s.tier, deps: s.deps || [], attempts, status, verdict, result }
+  // the CLI was unavailable). `failReason` = the REAL cause when it fell back (timeout/quota/…), so the
+  // record never says a CLI failed "without a proper reason". This is the honest record of who did the
+  // work and why, distinct from the plan.
+  return { label: s.label, backend: s.backend, ranOn, ...(failReason ? { failReason } : {}), tier: s.tier, deps: s.deps || [], attempts, status, verdict, result }
 }
 
 // ---- 1.5 · Writable setup: one git worktree + branch per subtask ------------
@@ -616,7 +704,10 @@ if (failed.length) log(`${failed.length} subtask(s) still failing after ${MAX_FI
 // Loudly surface any CLI->native fallback (the user's exact complaint: work that was supposed to run
 // on a CLI backend actually ran on Claude). `ranOn` records the truth per subtask.
 const fellBack = records.filter((r) => typeof r.ranOn === 'string' && r.ranOn.indexOf('native-fallback') === 0)
-if (fellBack.length) log(`${fellBack.length} subtask(s) fell back to native (CLI unavailable): ${fellBack.map((r) => `${r.label} [${r.ranOn}]`).join(', ')}`)
+// Each fallback now carries its REAL reason (timeout/quota/health/empty-output/…) from the status
+// file, so the log never just says "unavailable" with no cause — the exact "fails without a proper
+// reason" complaint.
+if (fellBack.length) log(`${fellBack.length} subtask(s) fell back to native: ${fellBack.map((r) => `${r.label} [${r.ranOn}: ${r.failReason || 'unknown'}]`).join(', ')}`)
 
 // ---- usage accounting -------------------------------------------------------
 // The Workflow runtime can't read per-agent token counts (those arrive in the task-notification's
@@ -723,6 +814,9 @@ return {
     verified: records.filter((r) => r.status === 'verified').length,
     failed: failed.length,
     nativeFallbacks: fellBack.length,
+    // The REAL reason each CLI->native fallback happened (timeout/quota/health/empty-output/…), so the
+    // structured result never reports a fallback "without a proper reason".
+    fallbackReasons: fellBack.map((r) => ({ label: r.label, ranOn: r.ranOn, reason: r.failReason || 'unknown' })),
   },
   usage,
   // Writable mode only: the integration branch + per-subtask merge outcome (null in read-only mode).
