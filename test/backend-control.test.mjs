@@ -17,7 +17,7 @@ import {
   backend, backendNames, enabledBackends, disabledBackends, isBackendEnabled,
   isNativeBackend, filterEnabled, backendDisabledByEnv, nativeModels, nativeModelForTier,
 } from '../src/lib/config.mjs';
-import { modelForTier } from '../src/lib/backends.mjs';
+import { modelForTier, chooseModel } from '../src/lib/backends.mjs';
 import { decide } from '../src/lib/router.mjs';
 import { validateRoster } from '../src/lib/validate-config.mjs';
 import {
@@ -196,6 +196,22 @@ test('MMT_MODEL_<BACKEND> overrides the tier map for one shell', () => {
     assert.equal(modelForTier(cfg, 'standard'), 'gemini-3.6-flash-low', 'the override may be an alias');
   });
   assert.equal(modelForTier(cfg, 'standard'), 'gemini-3.1-pro-low', 'override does not leak');
+});
+
+test('an EXPLICIT model goes through the alias map too', () => {
+  // Regression: `--model flash` used to bypass alias expansion and hand agy the literal string
+  // "flash", which it rejected with exit 1 — the call then fell through the entire chain to native.
+  // Caught live, not by the suite, because nothing exercised an explicit model.
+  const cfg = {
+    name: 'agy',
+    model_tiers: { standard: 'gemini-3.1-pro-low' },
+    model_aliases: { flash: 'gemini-3.6-flash-low' },
+  };
+  assert.equal(chooseModel(cfg, { model: 'flash', tier: 'standard' }), 'gemini-3.6-flash-low');
+  // A real id passes through untouched…
+  assert.equal(chooseModel(cfg, { model: 'gemini-3.1-pro-high' }), 'gemini-3.1-pro-high');
+  // …and with no explicit model it falls back to the tier ladder.
+  assert.equal(chooseModel(cfg, { tier: 'standard' }), 'gemini-3.1-pro-low');
 });
 
 test('the shipped agy tiers use the ID form from `agy models`', () => {

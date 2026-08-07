@@ -153,6 +153,18 @@ function resolveAlias(value, aliases) {
   return hit ? String(hit) : v;
 }
 
+// The single entry point every invoker uses to decide which model to pass.
+//
+// An EXPLICIT model (from `--model`, a forced decision, or /team) must go through the alias map
+// too. It previously bypassed it, so `--model flash` handed agy the literal string "flash", which
+// it rejected with exit 1 — the call then fell through the whole chain to native. Aliases are only
+// useful if they work everywhere a model can be named.
+export function chooseModel(cfg, opts) {
+  const aliases = field(cfg, 'model_aliases') || {};
+  if (opts && opts.model) return resolveAlias(opts.model, aliases);
+  return modelForTier(cfg, opts ? opts.tier : undefined);
+}
+
 function asArray(v) {
   return Array.isArray(v) ? v.slice() : [];
 }
@@ -323,7 +335,7 @@ async function invokeGemini(cfg, prompt, opts) {
   const printFlag = field(cfg, 'print_flag', 'oneshot_flag') || '--print';
   const modelFlag = field(cfg, 'model_flag') || '--model';
   const addDirFlag = field(cfg, 'add_dir_flag') || '--add-dir';
-  const model = opts.model || modelForTier(cfg, opts.tier);
+  const model = chooseModel(cfg, opts);
   const addDir = opts.addDir || opts.add_dir || '';
 
   // agy gates output on isatty(stdout). node-pty gives it a REAL pseudo-terminal cross-platform
@@ -385,7 +397,7 @@ async function invokeCodex(cfg, prompt, opts) {
   const oneshot = field(cfg, 'oneshot_flag') || 'exec';
   const modelFlag = field(cfg, 'model_flag') || '-m';
   const addDirFlag = field(cfg, 'add_dir_flag') || '--add-dir';
-  const model = opts.model || modelForTier(cfg, opts.tier);
+  const model = chooseModel(cfg, opts);
   const addDir = opts.addDir || opts.add_dir || '';
 
   // Parity with backends.sh _mmt_invoke_codex, with one cross-platform fix: the PROMPT is delivered
@@ -438,7 +450,7 @@ async function invokeOpencode(cfg, prompt, opts) {
   const modelFlag = field(cfg, 'model_flag') || '--model';
   const agentFlag = field(cfg, 'agent_flag') || '--agent';
   // Empty model is the DESIGNED default here: omit --model entirely -> opencode's own default.
-  const model = opts.model || modelForTier(cfg, opts.tier);
+  const model = chooseModel(cfg, opts);
   // Agent selects the permission profile: writable_agent in --writable mode, else agent.
   const agent = opts.writable
     ? (field(cfg, 'writable_agent') || field(cfg, 'agent') || '')
