@@ -241,6 +241,14 @@ test('opencode ships enabled, with an invoker kind and no model map', () => {
   assert.deepEqual(oc.writable_extra, ['--auto']);
 });
 
+test('opencode declares a cwd_flag — it ignores the spawned process cwd', () => {
+  // Regression guard for a real isolation bug found in live testing: opencode resolves its own
+  // project root and IGNORED the cwd run.mjs spawned it with, so a `/team --writable` subtask
+  // reported success while writing into the PARENT repo instead of its worktree. `--dir` is what
+  // confines it. Dropping this field would silently reintroduce the leak.
+  assert.equal(backend(ROSTER, 'opencode').cwd_flag, '--dir');
+});
+
 test('opencode has a dispatcher agent and a place in team/fallback config', () => {
   assert.equal(ROSTER.agents.opencode.enabled, true);
   assert.equal(ROSTER.agents.opencode.backend, 'opencode');

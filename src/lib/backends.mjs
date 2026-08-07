@@ -447,8 +447,16 @@ async function invokeOpencode(cfg, prompt, opts) {
   const argv = [bin, oneshot, ...invocationExtra(cfg, opts.writable)];
   if (model) argv.push(modelFlag, model);
   if (agent && agentFlag) argv.push(agentFlag, agent);
-  // No trailing positional: the prompt rides on stdin (see the note above).
 
+  // opencode IGNORES the spawned process's cwd — it resolves its own project root instead. Caught
+  // live: a `--writable --cwd <worktree>` dispatch reported success while writing the file into the
+  // PARENT repo, silently defeating the per-subtask worktree isolation /team --writable exists to
+  // provide. Its `--dir` flag is the supported way to say where to run, and confines writes there
+  // (verified). Pass BOTH: --dir for opencode's own resolution, spawn cwd for anything else.
+  const dirFlag = field(cfg, 'cwd_flag') || '--dir';
+  if (opts.cwd && dirFlag) argv.push(dirFlag, opts.cwd);
+
+  // No trailing positional: the prompt rides on stdin (see the note above).
   const res = await runChild(argv, {
     hardTimeout: timeoutMs(field(cfg, 'hard_timeout')),
     stdinData: prompt,

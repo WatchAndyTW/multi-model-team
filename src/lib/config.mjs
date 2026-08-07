@@ -273,6 +273,9 @@ export function backend(roster, name) {
     // Per-invocation agent/profile selection (opencode: `--agent plan` read-only vs `build`
     // writable). Absent for backends that express the same thing through `extra`/`writable_extra`.
     agent_flag: be.agent_flag ?? '',
+    // Flag used to tell a backend which directory to run in, for CLIs that ignore the spawned
+    // process's cwd (opencode does — see its roster note).
+    cwd_flag: be.cwd_flag ?? '',
     agent: be.agent ?? '',
     writable_agent: be.writable_agent ?? '',
     // HUD cost estimate (USD per 1000 output chars). Previously dropped here, which silently

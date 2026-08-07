@@ -126,6 +126,8 @@
       "agent_flag": "--agent",
       "agent": "plan",
       "writable_agent": "build",
+      "_cwd_flag_note": "opencode IGNORES the spawned process's cwd and resolves its own project root — verified live: a --writable dispatch into a worktree wrote the file into the PARENT repo instead. `--dir` is the supported way to point it at a directory and confines writes there, so it is passed whenever /team supplies a --cwd.",
+      "cwd_flag": "--dir",
       "extra": [],
       "writable_extra": ["--auto"],
       "health": "--version",
