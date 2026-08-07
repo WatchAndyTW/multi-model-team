@@ -2,7 +2,12 @@
  * router.mjs — routing decision engine (replaces match.py).
  * Parity: first-match-wins over routes(roster); preset biases; tier->model resolution.
  */
-import { routes as getRosterRoutes, defaults as getRosterDefaults } from './config.mjs';
+import {
+  routes as getRosterRoutes,
+  defaults as getRosterDefaults,
+  isBackendEnabled,
+  nativeModelForTier,
+} from './config.mjs';
 import { charCount, classify } from './score.mjs';
 
 /**
@@ -14,17 +19,34 @@ import { charCount, classify } from './score.mjs';
  */
 function resolveModel(roster, backend, tier) {
   if (backend === 'native') {
-    return { model: `native:${tier}`, native: true };
+    // Keep the `native:<tier>` contract every consumer parses, but validate the tier against the
+    // roster's native_models map so an unknown tier can't leak into a handoff sentinel.
+    const resolved = nativeModelForTier(roster, tier);
+    return { model: `native:${tier}`, native: true, nativeModel: resolved };
   }
   const backends = roster.backends || {};
   const be = backends[backend] || {};
-  const models = be.models || {};
+  const models = (be.models && typeof be.models === 'object') ? be.models : {};
+  const aliases = (be.model_aliases && typeof be.model_aliases === 'object') ? be.model_aliases : {};
+  const alias = (v) => {
+    const s = String(v ?? '').trim();
+    const hit = s && aliases[s.toLowerCase()];
+    return hit ? String(hit) : s;
+  };
+  const dflTier = typeof be.default_tier === 'string' && be.default_tier ? be.default_tier : 'standard';
 
-  if (tier in models && models[tier]) return { model: models[tier], native: false };
-  if ('standard' in models && models.standard) return { model: models.standard, native: false };
-  const first = Object.values(models).find(v => v);
-  if (first) return { model: first, native: false };
-  return { model: `${backend}:${tier}`, native: false };
+  // Same ladder as backends.modelForTier, so the decision JSON reports the model that will
+  // actually be used: exact tier -> default_tier -> standard -> cheap -> first declared.
+  if (models[tier]) return { model: alias(models[tier]), native: false };
+  if (aliases[String(tier).toLowerCase()]) return { model: alias(tier), native: false };
+  if (models[dflTier]) return { model: alias(models[dflTier]), native: false };
+  if (models.standard) return { model: alias(models.standard), native: false };
+  if (models.cheap) return { model: alias(models.cheap), native: false };
+  const first = Object.entries(models).find(([k, v]) => !k.startsWith('_') && v);
+  if (first) return { model: alias(first[1]), native: false };
+  // No model map at all is legitimate (opencode ships one): the invoker omits the model flag and
+  // the CLI uses its own default. Report that explicitly rather than inventing a `<backend>:<tier>`.
+  return { model: '', native: false };
 }
 
 /**
@@ -49,13 +71,25 @@ function applyPreset(preset, ruleName, backend, tier) {
  * @param {string[]} types
  * @returns {{ rule: object|null, nearMisses: object[] }}
  */
-function matchRule(routes, chars, types) {
+function matchRule(routes, chars, types, isEnabled) {
   const tset = new Set(types.filter(Boolean));
   const nearMisses = [];
+  const skippedDisabled = [];
 
   for (const r of routes) {
     // Skip marker objects (no name key)
     if (!r.name) continue;
+
+    // A rule pointing at a DISABLED backend is skipped entirely, so matching continues to the next
+    // rule. Without this the router would happily return a backend that run.mjs then refuses to
+    // use — the decision JSON (and /route-test, and the proactive hooks) would advertise a backend
+    // the user has switched off, and the real destination would only emerge as a silent fallback.
+    // Skipping here means disabling `agy` makes its commodity work fall through to the next
+    // matching rule (codex/opencode/native) as an HONEST, visible decision.
+    if (r.backend && !isEnabled(r.backend)) {
+      skippedDisabled.push({ rule: r.name, backend: r.backend });
+      continue;
+    }
 
     const when = r.when || {};
     let ok = true;
@@ -72,7 +106,7 @@ function matchRule(routes, chars, types) {
       if (chars > Number(when.max_chars)) ok = false;
     }
 
-    if (ok) return { rule: r, nearMisses };
+    if (ok) return { rule: r, nearMisses, skippedDisabled };
 
     // Collect near-misses: rules with type overlap (ignore char constraints)
     if ('type' in when) {
@@ -84,7 +118,7 @@ function matchRule(routes, chars, types) {
     }
   }
 
-  return { rule: null, nearMisses };
+  return { rule: null, nearMisses, skippedDisabled };
 }
 
 /**
@@ -116,7 +150,8 @@ export function decide({ task, roster, tagsPath, preset: presetArg }) {
   const rawRoutes = getRosterRoutes(roster);
   const score = { chars, types };
 
-  const { rule, nearMisses } = matchRule(rawRoutes, chars, types);
+  const isEnabled = (b) => isBackendEnabled(roster, b);
+  const { rule, nearMisses, skippedDisabled } = matchRule(rawRoutes, chars, types, isEnabled);
 
   let backend, tier, ruleName;
   if (rule === null) {
@@ -130,8 +165,20 @@ export function decide({ task, roster, tagsPath, preset: presetArg }) {
   }
 
   [backend, tier] = applyPreset(preset, ruleName, backend, tier);
+  // A preset can bias INTO a disabled backend (budget pushes judgment-coding onto agy). Undo that
+  // rather than emit a decision the executor will refuse — native is always available.
+  if (!isEnabled(backend)) {
+    skippedDisabled.push({ rule: `${ruleName}:preset-${preset}`, backend });
+    backend = 'native';
+    tier = 'sonnet';
+  }
   const { model, native } = resolveModel(roster, backend, tier);
   const confidence = computeConfidence(types, nearMisses);
 
-  return { backend, model, tier, rule: ruleName, native, preset, score, nearMisses, confidence };
+  return {
+    backend, model, tier, rule: ruleName, native, preset, score, nearMisses, confidence,
+    // Rules passed over because their backend is switched off — surfaced so `--explain` and
+    // `/route-test` can say WHY a task landed somewhere unexpected.
+    skippedDisabled,
+  };
 }

@@ -7,7 +7,7 @@ import { writeFileSync, chmodSync, readFileSync, existsSync, readdirSync, mkdirS
 import { join } from 'node:path';
 import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
 import { backend, teamConfig, proactive } from '../src/lib/config.mjs';
-import { ROSTER, ROSTER_PATH, BIN_RUN, tmp, writeRosterVariant, runNode } from './helpers.mjs';
+import { ROSTER, ROSTER_PATH, BIN_RUN, tmp, writeRosterVariant, runNode, disableAllBackends } from './helpers.mjs';
 
 // ── quota detection (uses the real agy patterns from roster, like the oracle sources backend-env) ──
 test('quota detection', () => {
@@ -93,27 +93,29 @@ test('backend config fields', () => {
   assert.equal(backend(ROSTER, 'codex').enabled, true);
   assert.equal(backend(ROSTER, 'codex').kind, 'codex');
   assert.equal(backend(ROSTER, 'codex').oneshot_flag, 'exec');
-  assert.equal(backend(ROSTER, 'opencode').enabled, false);
+  assert.equal(backend(ROSTER, 'opencode').enabled, true);
+  assert.equal(backend(ROSTER, 'opencode').kind, 'opencode');
+  assert.equal(backend(ROSTER, 'opencode').oneshot_flag, 'run');
+  // opencode deliberately ships NO tier->model map: the invoker omits --model so opencode uses
+  // whichever model the user configured in opencode itself.
+  assert.deepEqual(backend(ROSTER, 'opencode').model_tiers, {});
   assert.equal(backend(ROSTER, 'nope').enabled, false); // unknown -> off
 });
 
 test('run.mjs: all backends disabled -> native handoff', () => {
   const d = tmp('be-off-');
-  const off = writeRosterVariant(d, 'off.json', (c) => {
-    c.backends.agy.enabled = false;
-    c.backends.codex.enabled = false;
-  });
+  const off = writeRosterVariant(d, 'off.json', disableAllBackends);
   const { stdout } = runNode(BIN_RUN, { args: ['--roster', off, 'Write a SQL query to list users'] });
   assert.match(stdout, /MMT_NATIVE_HANDOFF/);
 });
 
-test('run.mjs: no-invoker kind (opencode) health-fails -> native handoff', () => {
-  const d = tmp('be-oc-');
-  const oc = writeRosterVariant(d, 'oc.json', (c) => {
-    c.backends.agy.enabled = false;
-    c.backends.codex.enabled = false;
-    c.backends.opencode.enabled = true;
-    c.defaults.quota_fallback = ['agy', 'opencode', 'native:sonnet'];
+test('run.mjs: a kind with no invoker health-fails -> native handoff', () => {
+  const d = tmp('be-noinvoker-');
+  // opencode used to be the stub here; it now has a real invoker, so use a genuinely unknown kind.
+  const oc = writeRosterVariant(d, 'noinvoker.json', (c) => {
+    disableAllBackends(c);
+    c.backends.futurecli = { enabled: true, kind: 'not-a-real-kind', cmd: 'futurecli' };
+    c.defaults.quota_fallback = ['futurecli', 'native:sonnet'];
   });
   const { stdout } = runNode(BIN_RUN, { args: ['--roster', oc, 'Write a SQL query to list users'] });
   assert.match(stdout, /MMT_NATIVE_HANDOFF/);
@@ -123,10 +125,7 @@ test('run.mjs: no-invoker kind (opencode) health-fails -> native handoff', () =>
 test('forced decision bypasses route.sh hard-line; forced rule survives to handoff', () => {
   const reTask = 'Reverse engineer the IL2CPP dump and reconstruct the protobuf schemas via disassembly';
   const d = tmp('force-');
-  const nocli = writeRosterVariant(d, 'nocli.json', (c) => {
-    c.backends.agy.enabled = false;
-    c.backends.codex.enabled = false;
-  });
+  const nocli = writeRosterVariant(d, 'nocli.json', disableAllBackends);
   const { stdout } = runNode(BIN_RUN, {
     args: ['--roster', nocli, '--decision', '{"backend":"agy","model":"","tier":"standard","rule":"delegate-forced","native":false}', reTask],
   });
@@ -440,10 +439,11 @@ test('run.mjs (no --writable): CLI gets the read-only sandbox flags (default beh
 // ── team config (equal, configurable roles) ──────────────────────────────────
 test('teamConfig defaults', () => {
   const tc = teamConfig(ROSTER);
-  assert.deepEqual(tc.dispatch_backends, ['agy', 'codex', 'native']);
+  assert.deepEqual(tc.dispatch_backends, ['agy', 'codex', 'opencode', 'native']);
   assert.equal(tc.verifier, 'codex');
   assert.equal(tc.caps.agy, 4);
   assert.equal(tc.caps.codex, 2);
+  assert.equal(tc.caps.opencode, 2);
 });
 
 test('teamConfig override merges caps key-by-key', () => {

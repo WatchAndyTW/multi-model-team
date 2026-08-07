@@ -11,12 +11,12 @@ import { resolveRosterPath } from './platform.mjs';
 
 // ─── team defaults (mirrors TEAM_DEFAULTS in config.py) ──────────────────────
 const TEAM_DEFAULTS = {
-  dispatch_backends: ['agy', 'codex', 'native'],
+  dispatch_backends: ['agy', 'codex', 'opencode', 'native'],
   verifier: 'codex',
   verify: true,
   max_fix_loops: 1,
-  caps: { agy: 4, codex: 2, native: 2 },
-  tier_models: { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus' },
+  caps: { agy: 4, codex: 2, opencode: 2, native: 2 },
+  tier_models: { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', high: 'opus' },
   relay_model: 'sonnet',
 };
 
@@ -26,8 +26,21 @@ const REASONING_DEFAULTS = {
   judge: 'native:opus',
   synthesizer: 'native:opus',
   cap: 6,
-  tier_models: { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', haiku: 'haiku' },
+  tier_models: { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', haiku: 'haiku', high: 'opus' },
   relay_model: 'sonnet',
+};
+
+// ─── native (Claude) tier -> model map ───────────────────────────────────────
+// The SINGLE place a routing tier becomes a concrete Claude model. Overridable via
+// roster.defaults.native_models. `high` is the alias tier a CLI-style route can use to ask for the
+// strongest model without naming it, mirroring the per-backend `high` tier added for agy/codex.
+const NATIVE_MODEL_DEFAULTS = {
+  cheap: 'haiku',
+  haiku: 'haiku',
+  standard: 'sonnet',
+  sonnet: 'sonnet',
+  high: 'opus',
+  opus: 'opus',
 };
 
 // ─── loadRoster ──────────────────────────────────────────────────────────────
@@ -59,6 +72,133 @@ export function defaults(roster) {
   };
 }
 
+// ─── backend registry / enable-disable ───────────────────────────────────────
+//
+// A backend is DISABLED when either the roster says so (`backends.<name>.enabled:false`) or an env
+// kill switch names it. Two env switches, both CSV, both case-insensitive, evaluated per call so a
+// single shell can flip a backend off without editing config:
+//   MMT_DISABLE_BACKENDS="codex,agy"  — turn these OFF (blocklist)
+//   MMT_ONLY_BACKENDS="agy"           — turn everything EXCEPT these off (allowlist; wins broadly)
+// `native` is never disable-able: it is the guaranteed final fallback, so the chain can always land.
+
+/** Parse a CSV env var into a lowercased list, or null when unset/empty. */
+function envList(name) {
+  const raw = process.env[name];
+  if (!raw || !raw.trim()) return null;
+  const items = raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return items.length ? items : null;
+}
+
+/** True when `name` refers to native Claude (never disable-able). */
+export function isNativeBackend(name) {
+  const n = String(name ?? '');
+  return n === 'native' || n.startsWith('native:');
+}
+
+/**
+ * Is this backend switched off by an env kill switch (independent of roster `enabled`)?
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function backendDisabledByEnv(name) {
+  if (isNativeBackend(name)) return false;
+  const lc = String(name ?? '').toLowerCase();
+  const only = envList('MMT_ONLY_BACKENDS');
+  if (only && !only.includes(lc)) return true;
+  const off = envList('MMT_DISABLE_BACKENDS');
+  if (off && off.includes(lc)) return true;
+  return false;
+}
+
+/**
+ * All backend names declared in the roster (documentation keys like `_comment` excluded).
+ * @param {object} roster
+ * @returns {string[]}
+ */
+export function backendNames(roster) {
+  const b = (roster && roster.backends) || {};
+  return Object.keys(b).filter((k) => !k.startsWith('_') && b[k] && typeof b[k] === 'object');
+}
+
+/**
+ * Is `name` usable right now — declared, roster-enabled, and not env-disabled?
+ * `native` is always true (it is the guaranteed fallback).
+ * @param {object} roster
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isBackendEnabled(roster, name) {
+  if (isNativeBackend(name)) return true;
+  const be = ((roster && roster.backends) || {})[name];
+  if (!be || typeof be !== 'object') return false;
+  if (be.enabled !== true) return false;
+  return !backendDisabledByEnv(name);
+}
+
+/**
+ * Backend names currently usable (roster-enabled AND not env-disabled). Excludes `native`.
+ * @param {object} roster
+ * @returns {string[]}
+ */
+export function enabledBackends(roster) {
+  return backendNames(roster).filter((n) => isBackendEnabled(roster, n));
+}
+
+/**
+ * Backend names currently switched off, each with WHY — so a caller (route --backends, run.mjs's
+ * skip message, /team) can tell "you disabled it" from "the env killed it for this shell".
+ * @param {object} roster
+ * @returns {Array<{name:string, reason:'roster'|'env'}>}
+ */
+export function disabledBackends(roster) {
+  return backendNames(roster)
+    .filter((n) => !isBackendEnabled(roster, n))
+    .map((n) => ({ name: n, reason: backendDisabledByEnv(n) ? 'env' : 'roster' }));
+}
+
+/**
+ * Filter a caller-supplied backend list down to what is actually usable, always preserving
+ * `native`. Used by /team dispatch_backends, /reasoning panels, and the fallback chain so a
+ * disabled backend is never offered as a choice.
+ * @param {object} roster
+ * @param {string[]} names
+ * @returns {string[]}
+ */
+export function filterEnabled(roster, names) {
+  if (!Array.isArray(names)) return [];
+  return names.filter((n) => isBackendEnabled(roster, n));
+}
+
+// ─── native model resolution ─────────────────────────────────────────────────
+
+/**
+ * Tier -> concrete Claude model, from roster.defaults.native_models merged over the built-ins.
+ * @param {object} roster
+ * @returns {Record<string,string>}
+ */
+export function nativeModels(roster) {
+  const out = { ...NATIVE_MODEL_DEFAULTS };
+  const cfg = (roster && roster.defaults && roster.defaults.native_models) || {};
+  for (const [k, v] of Object.entries(cfg)) {
+    if (k.startsWith('_')) continue;
+    if (typeof v === 'string' && v.trim()) out[k] = v.trim();
+  }
+  return out;
+}
+
+/**
+ * Resolve a routing tier to a Claude model name (`sonnet`, `opus`, `haiku`, or a full model id).
+ * Unknown tiers fall back to the `standard` mapping rather than guessing.
+ * @param {object} roster
+ * @param {string} tier
+ * @returns {string}
+ */
+export function nativeModelForTier(roster, tier) {
+  const map = nativeModels(roster);
+  const t = String(tier ?? '').trim();
+  return map[t] || map.standard || 'sonnet';
+}
+
 // ─── backend ─────────────────────────────────────────────────────────────────
 
 /**
@@ -79,18 +219,39 @@ export function backend(roster, name) {
     return { enabled: false };
   }
 
-  const models = be.models ?? {};
+  // Full tier->model map, forwarded verbatim so a roster can declare ANY tier keys it likes
+  // (cheap/standard/high/…), not just the two the original port hardcoded. Non-string values are
+  // dropped so a stray object can never reach a command line.
+  const models = (be.models && typeof be.models === 'object' && !Array.isArray(be.models)) ? be.models : {};
+  const model_tiers = {};
+  for (const [k, v] of Object.entries(models)) {
+    if (k.startsWith('_')) continue;
+    if (typeof v === 'string') model_tiers[k] = v;
+  }
+  // Aliases let a roster (or a --model flag) name a model by a short handle — `flash` ->
+  // `gemini-3.6-flash-low` — instead of repeating a full id at every tier.
+  const aliases = (be.model_aliases && typeof be.model_aliases === 'object' && !Array.isArray(be.model_aliases)) ? be.model_aliases : {};
+  const model_aliases = {};
+  for (const [k, v] of Object.entries(aliases)) {
+    if (k.startsWith('_')) continue;
+    if (typeof v === 'string' && v.trim()) model_aliases[k.toLowerCase()] = v.trim();
+  }
 
   return {
-    enabled: be.enabled ?? false,
+    // `enabled` folds in the env kill switches, so EVERY consumer that checks `.enabled`
+    // (run.mjs's chain walk, the health gate, /team) honours MMT_DISABLE_BACKENDS for free.
+    enabled: (be.enabled ?? false) === true && !backendDisabledByEnv(name),
+    // The raw roster verdict, so a caller can tell "you disabled it" from "the env killed it".
+    roster_enabled: be.enabled ?? false,
+    name,
     kind: be.kind ?? '',
     bin: be.cmd ?? name,
     bin_candidates: Array.isArray(be.bin_candidates) ? be.bin_candidates : [],
     cmd: be.cmd ?? name,
-    model_tiers: {
-      cheap: models.cheap ?? '',
-      standard: models.standard ?? '',
-    },
+    model_tiers,
+    model_aliases,
+    // Tier used when a route asks for one this backend doesn't define. Defaults to `standard`.
+    default_tier: typeof be.default_tier === 'string' && be.default_tier.trim() ? be.default_tier.trim() : 'standard',
     use_winpty: be.use_winpty ?? true,
     winpty_flags: Array.isArray(be.winpty_flags)
       ? be.winpty_flags
@@ -109,6 +270,17 @@ export function backend(roster, name) {
     model_flag: be.model_flag ?? '--model',
     health: be.health ?? '--version',
     add_dir_flag: be.add_dir_flag ?? '--add-dir',
+    // Per-invocation agent/profile selection (opencode: `--agent plan` read-only vs `build`
+    // writable). Absent for backends that express the same thing through `extra`/`writable_extra`.
+    agent_flag: be.agent_flag ?? '',
+    agent: be.agent ?? '',
+    writable_agent: be.writable_agent ?? '',
+    // HUD cost estimate (USD per 1000 output chars). Previously dropped here, which silently
+    // zeroed every cost figure run.mjs wrote to the statusline no matter what the roster declared.
+    cost_per_1k_chars: Number(be.cost_per_1k_chars) || 0,
+    // Auth/credential failures are NOT quota exhaustion; kept separate so the handoff reason says
+    // "not logged in" instead of mislabelling a 401 as a credit limit.
+    auth_patterns: Array.isArray(be.auth_patterns) ? be.auth_patterns : [],
   };
 }
 

@@ -31,6 +31,25 @@ export function tmp(prefix = 'mmt-test-') {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+/**
+ * Turn OFF every CLI backend in a roster clone.
+ *
+ * Tests that mean "no CLI is available, so the run must hand off to native" must disable them ALL,
+ * not just the ones that existed when the test was written. Naming backends individually made the
+ * suite silently spawn a REAL CLI the moment a new backend shipped enabled (opencode did exactly
+ * that: the offline suite hung for minutes waiting on a live model). Iterating the roster keeps
+ * these tests offline no matter how many backends exist.
+ * @param {object} clone a roster object (mutated in place)
+ */
+export function disableAllBackends(clone) {
+  const backends = (clone && clone.backends) || {};
+  for (const [name, be] of Object.entries(backends)) {
+    if (name.startsWith('_') || !be || typeof be !== 'object') continue;
+    be.enabled = false;
+  }
+  return clone;
+}
+
 /** Write a roster variant: deep-clone the real roster, mutate via `fn`, write to `dir/name`. */
 export function writeRosterVariant(dir, name, fn) {
   const clone = JSON.parse(JSON.stringify(ROSTER));

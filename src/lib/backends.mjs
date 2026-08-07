@@ -105,11 +105,52 @@ function field(cfg, ...names) {
   return undefined;
 }
 
-function modelForTier(cfg, tier) {
+// Resolve a routing tier to a concrete model id for one backend.
+//
+// The old rule was "cheap -> models.cheap, everything else -> models.standard", which made any
+// tier beyond those two unreachable: a route asking for `high` silently got the standard model.
+// The ladder below tries, in order:
+//   1. an exact tier key            (models.high)
+//   2. the backend's default_tier   (models[default_tier])
+//   3. `standard`, then `cheap`     (the conventional keys)
+//   4. the first non-empty entry    (a roster that names its tiers something else entirely)
+// An empty result is legitimate and meaningful: it means "pass no model flag", i.e. use whatever
+// the CLI itself defaults to (how opencode is wired).
+//
+// A tier may also name an ALIAS from the backend's model_aliases map (`flash` ->
+// `gemini-3.6-flash-low`), and MMT_MODEL_<BACKEND> overrides everything for one shell.
+export function modelForTier(cfg, tier) {
   const tiers = field(cfg, 'model_tiers', 'models') || {};
-  if (tier === 'cheap' && tiers.cheap) return tiers.cheap;
-  // standard is the default for anything that isn't an explicit 'cheap'.
-  return tiers.standard || '';
+  const aliases = field(cfg, 'model_aliases') || {};
+  const name = String(field(cfg, 'name', 'cmd') || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
+
+  // 0. Per-shell override: MMT_MODEL_AGY / MMT_MODEL_CODEX / MMT_MODEL_OPENCODE.
+  if (name) {
+    const ov = process.env[`MMT_MODEL_${name}`];
+    if (ov && ov.trim()) return resolveAlias(ov.trim(), aliases);
+  }
+
+  const t = String(tier ?? '').trim();
+  if (t && typeof tiers[t] === 'string' && tiers[t]) return resolveAlias(tiers[t], aliases);
+  // A tier that isn't a tier key may still be a model alias ("--model flash").
+  if (t && aliases[t.toLowerCase()]) return aliases[t.toLowerCase()];
+
+  const dflTier = String(field(cfg, 'default_tier') || 'standard');
+  if (typeof tiers[dflTier] === 'string' && tiers[dflTier]) return resolveAlias(tiers[dflTier], aliases);
+  if (typeof tiers.standard === 'string' && tiers.standard) return resolveAlias(tiers.standard, aliases);
+  if (typeof tiers.cheap === 'string' && tiers.cheap) return resolveAlias(tiers.cheap, aliases);
+
+  const first = Object.entries(tiers).find(([k, v]) => !k.startsWith('_') && typeof v === 'string' && v);
+  // No tier resolves -> '' -> the invoker omits the model flag and the CLI picks its own default.
+  return first ? resolveAlias(first[1], aliases) : '';
+}
+
+// Expand a model alias one level (aliases map to real ids, never to other aliases).
+function resolveAlias(value, aliases) {
+  const v = String(value ?? '').trim();
+  if (!v) return '';
+  const hit = aliases && aliases[v.toLowerCase()];
+  return hit ? String(hit) : v;
 }
 
 function asArray(v) {
@@ -374,6 +415,65 @@ async function invokeCodex(cfg, prompt, opts) {
   return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota, timedOut: !!res.timedOut };
 }
 
+// --- opencode (OpenCode CLI) -------------------------------------------------
+//
+// Grounded in a live probe of opencode 1.18.15 on Windows (see PROBES.md):
+//   * `opencode run` is the non-interactive lane; it needs NO pty — piped stdout works, unlike agy.
+//   * With no positional message it READS THE PROMPT FROM STDIN, exactly like codex's `-` sentinel.
+//     We use that: a multi-line prompt as an argv element would be truncated at the first newline by
+//     any cmd.exe wrapper, the same Windows bug codex hit. stdin sidesteps it and is injection-safe.
+//   * The answer goes to STDOUT; the `> build · <model>` session banner and ANSI colour go to STDERR,
+//     so stdout is already clean.
+//   * Read-only vs writable is expressed by AGENT, not a sandbox flag: `--agent plan` is the
+//     read-only lane, `--agent build --auto` is full-auto. Both are roster-configurable.
+//   * NO MODEL FLAG by default: the roster ships `models: {}` so opencode uses whichever model the
+//     user configured in opencode itself. Set a tier in the roster to override.
+async function invokeOpencode(cfg, prompt, opts) {
+  const bin = platform.resolveBinary('opencode', {
+    envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
+    candidates: [...asArray(field(cfg, 'bin_candidates')), ...opencodeCandidates()],
+  });
+
+  const oneshot = field(cfg, 'oneshot_flag') || 'run';
+  const modelFlag = field(cfg, 'model_flag') || '--model';
+  const agentFlag = field(cfg, 'agent_flag') || '--agent';
+  // Empty model is the DESIGNED default here: omit --model entirely -> opencode's own default.
+  const model = opts.model || modelForTier(cfg, opts.tier);
+  // Agent selects the permission profile: writable_agent in --writable mode, else agent.
+  const agent = opts.writable
+    ? (field(cfg, 'writable_agent') || field(cfg, 'agent') || '')
+    : (field(cfg, 'agent') || '');
+
+  const argv = [bin, oneshot, ...invocationExtra(cfg, opts.writable)];
+  if (model) argv.push(modelFlag, model);
+  if (agent && agentFlag) argv.push(agentFlag, agent);
+  // No trailing positional: the prompt rides on stdin (see the note above).
+
+  const res = await runChild(argv, {
+    hardTimeout: timeoutMs(field(cfg, 'hard_timeout')),
+    stdinData: prompt,
+    cwd: opts.cwd || undefined,
+  });
+
+  const cleaned = clean(res.stdout);
+  const ok = res.code === 0 && cleaned.length > 0;
+  const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
+  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota, timedOut: !!res.timedOut };
+}
+
+// opencode default install locations per-OS (bun/npm global installs land in these).
+function opencodeCandidates() {
+  switch (platform.PLATFORM) {
+    case 'win32':
+      return ['$HOME/.bun/bin/opencode.exe', '$LOCALAPPDATA/opencode/bin/opencode.exe'];
+    case 'darwin':
+      return ['~/.bun/bin/opencode', '~/.opencode/bin/opencode', '/opt/homebrew/bin/opencode', '/usr/local/bin/opencode'];
+    case 'linux':
+    default:
+      return ['~/.bun/bin/opencode', '~/.opencode/bin/opencode', '~/.local/bin/opencode', '/usr/local/bin/opencode', '/usr/bin/opencode'];
+  }
+}
+
 // invoke(backendCfg, prompt, opts) -> { ok, stdout, stderr, code, quota }
 //   opts: { model?:string, tier?:'cheap'|'standard', addDir?:string, cwd?:string, writable?:boolean }
 //   cwd      — run the CLI in this directory (the subtask's git worktree in /team --writable mode).
@@ -385,6 +485,8 @@ export async function invoke(backendCfg, prompt, opts = {}) {
       return invokeGemini(backendCfg, prompt, opts);
     case 'codex':
       return invokeCodex(backendCfg, prompt, opts);
+    case 'opencode':
+      return invokeOpencode(backendCfg, prompt, opts);
     default:
       // No invoker for this kind — caller falls through to the next backend / native (parity 127).
       return { ok: false, stdout: '', stderr: '', code: 127, quota: false };
@@ -406,6 +508,11 @@ async function _healthUncached(backendCfg) {
     bin = platform.resolveBinary('codex', {
       envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
       candidates: asArray(field(backendCfg, 'bin_candidates')),
+    });
+  } else if (kind === 'opencode') {
+    bin = platform.resolveBinary('opencode', {
+      envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
+      candidates: [...asArray(field(backendCfg, 'bin_candidates')), ...opencodeCandidates()],
     });
   } else {
     return false;
@@ -520,4 +627,31 @@ export function quotaFromResult(res, cleaned, patterns, exitCodes) {
   const ok = res && res.code === 0 && String(cleaned ?? '').length > 0;
   if (ok) return false;
   return quotaExhausted(`${res ? res.stdout : ''}\n${res ? res.stderr : ''}`, patterns, res ? res.code : 1, exitCodes);
+}
+
+// --- auth detection ----------------------------------------------------------
+// An expired/invalid credential is NOT credit exhaustion, but it fails the same way and trips the
+// same loose patterns — a live codex probe returned `401 … invalid_api_key` and the roster's broad
+// "quota" list reported it as "quota/credit limit on 'codex'", pointing the user at billing when the
+// real fix was `codex login`. Auth is therefore checked FIRST and reported as its own kind.
+// Same failure-gate as quota: a successful answer is never an auth error, however it words itself.
+const DEFAULT_AUTH_PATTERNS = [
+  'invalid_api_key', 'incorrect api key', 'invalid api key', 'api key not valid',
+  'unauthorized', '401', 'authentication failed', 'auth error',
+  'not logged in', 'please log in', 'please login', 'no credentials', 'expired token',
+];
+
+/**
+ * Decide whether a FAILED result is an authentication/credential problem.
+ * @param {{stdout:string,stderr:string,code:number}} res
+ * @param {string} cleaned
+ * @param {string[]} [patterns] roster override; defaults to DEFAULT_AUTH_PATTERNS
+ * @returns {boolean}
+ */
+export function authFromResult(res, cleaned, patterns) {
+  const ok = res && res.code === 0 && String(cleaned ?? '').length > 0;
+  if (ok) return false;
+  const list = Array.isArray(patterns) && patterns.length ? patterns : DEFAULT_AUTH_PATTERNS;
+  const hay = `${res ? res.stdout : ''}\n${res ? res.stderr : ''}`.toLowerCase().slice(0, 16000);
+  return list.some((p) => p && hay.includes(String(p).toLowerCase()));
 }

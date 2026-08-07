@@ -2,20 +2,28 @@
   "_about": "multi-model-team config. Backends (CLIs) and agents are first-class and individually enable/disable-able; routes pick a backend per task (first match wins). Edit this file to add a CLI, flip a backend/agent on or off, or change an agent's role. After editing agents, run node src/lib/gen-agents.mjs to regenerate agents/*.md.",
 
   "defaults": {
-    "_comment": "preset biases tier (budget|balanced|premium). fallback is the final hop. quota_fallback is the ordered backend chain tried when the chosen backend is unavailable/exhausted.",
+    "_comment": "preset biases tier (budget|balanced|premium). fallback is the final hop. quota_fallback is the ordered backend chain tried when the chosen backend is unavailable/exhausted — a DISABLED backend in this chain is simply skipped, so you can turn one off without editing the chain.",
     "preset": "balanced",
     "fallback": "native:sonnet",
-    "quota_fallback": ["agy", "codex", "native:sonnet"]
+    "quota_fallback": ["agy", "codex", "opencode", "native:sonnet"],
+    "_native_models_note": "The SINGLE place a routing tier becomes a concrete Claude model — used by the router, /team and /reasoning so native model choice is configured in one spot instead of three. `high` is the tier a route uses to ask for the strongest model without naming it.",
+    "native_models": {
+      "cheap": "haiku",
+      "standard": "sonnet",
+      "sonnet": "sonnet",
+      "high": "opus",
+      "opus": "opus"
+    }
   },
 
   "team": {
     "_comment": "Roles + defaults for the /team pipeline. native, agy and codex are EQUAL, interchangeable tools — any can be assigned to any subtask and any can be the verifier; nothing is hardcoded. 'dispatch_backends' = the eligible set the decomposer may assign per subtask (native is always available as the judgment/hard-line option; drop a backend here to exclude it). 'verifier' = the backend that reviews each result (any backend name, or 'native' for Claude judgment). 'caps' = default max parallel subtasks per backend (by name). 'tier_models' maps a plan tier to a concrete model so the native model scales with complexity. 'relay_model' = the model the thin relay/verify agents run on. ALL overridable per-invocation (cap spec 'N:gemini,M:codex,K:claude', or in-session 'verify with X' / 'use Y for the front-end'). Precedence: built-in default < this section < per-invocation args.",
-    "dispatch_backends": ["agy", "codex", "native"],
+    "dispatch_backends": ["agy", "codex", "opencode", "native"],
     "verifier": "codex",
     "verify": true,
     "max_fix_loops": 1,
-    "caps": { "agy": 4, "codex": 2, "native": 2 },
-    "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus" },
+    "caps": { "agy": 4, "codex": 2, "opencode": 2, "native": 2 },
+    "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus", "high": "opus" },
     "relay_model": "haiku"
   },
 
@@ -41,7 +49,21 @@
       "extra": ["--dangerously-skip-permissions", "--print-timeout", "29m"],
       "_writable_note": "Flags used INSTEAD of `extra` in /team --writable mode (full-auto: agy may write files + run commands in its worktree cwd). agy's --dangerously-skip-permissions already lets it act; the writable lane only differs by running in the worktree cwd. Same flags here = no sandbox swap needed for agy, just cwd.",
       "writable_extra": ["--dangerously-skip-permissions", "--print-timeout", "29m"],
-      "models": { "cheap": "Gemini 3.5 Flash (Low)", "standard": "Gemini 3.1 Pro (Low)" },
+      "_models_note": "Tier -> model id. These are the ID-form names from the LEFT column of `agy models` (verified live: `--model gemini-3.6-flash-low` works). The right column's display strings (\"Gemini 3.1 Pro (Low)\") are also accepted, but the ids are preferred — no spaces or parens to survive a command line. Any tier key is allowed; a route asking for a tier this map lacks falls back through default_tier -> standard -> cheap. Run `agy models` to see the current list.",
+      "models": {
+        "cheap": "gemini-3.6-flash-low",
+        "standard": "gemini-3.1-pro-low",
+        "high": "gemini-3.1-pro-high"
+      },
+      "default_tier": "standard",
+      "_aliases_note": "Short handles usable anywhere a model is named (roster tiers, --model, MMT_MODEL_AGY).",
+      "model_aliases": {
+        "flash": "gemini-3.6-flash-low",
+        "flash-mid": "gemini-3.6-flash-medium",
+        "flash-hi": "gemini-3.6-flash-high",
+        "pro": "gemini-3.1-pro-low",
+        "pro-hi": "gemini-3.1-pro-high"
+      },
       "health": "--version",
       "list_models": "models",
       "add_dir_flag": "--add-dir",
@@ -73,7 +95,12 @@
       "extra": ["-s", "read-only", "--skip-git-repo-check", "--color", "never"],
       "_writable_note": "Flags used INSTEAD of `extra` in /team --writable mode. Full-auto: `--dangerously-bypass-approvals-and-sandbox` lets codex write files, run commands, and use the network — confined to the worktree cwd the orchestrator passes via --cwd. Drop --skip-git-repo-check since a worktree IS a git repo.",
       "writable_extra": ["--dangerously-bypass-approvals-and-sandbox", "--color", "never"],
+      "_models_note": "Tier -> model id, passed as `-m <id>`. Any tier key is allowed; a tier this map lacks resolves through default_tier -> standard -> cheap, so a `high` route lands on `standard` until you add a `high` entry. Leave the map EMPTY to use whatever ~/.codex/config.toml defaults to. `model_aliases` gives short handles usable in --model / MMT_MODEL_CODEX.",
       "models": { "cheap": "gpt-5.4-mini", "standard": "gpt-5.5" },
+      "default_tier": "standard",
+      "model_aliases": { "mini": "gpt-5.4-mini", "full": "gpt-5.5" },
+      "_auth_note": "Credential failures are matched BEFORE quota patterns so an expired login is reported as an auth error (fix: `codex login`) instead of being mislabelled a credit limit — a live probe returned `401 … invalid_api_key` and the broad quota list swallowed it.",
+      "auth_patterns": ["invalid_api_key", "incorrect api key", "unauthorized", "auth error", "not logged in", "please log in", "expired token"],
       "health": "--version",
       "add_dir_flag": "--add-dir",
       "sandbox_flag": "",
@@ -88,10 +115,34 @@
     },
 
     "opencode": {
-      "enabled": false,
+      "enabled": true,
       "kind": "opencode",
       "cmd": "opencode",
-      "_note": "Future backend. Same as codex — config stub until an invoker exists."
+      "oneshot_flag": "run",
+      "model_flag": "--model",
+      "_models_note": "INTENTIONALLY EMPTY — opencode runs on whichever model the user configured in opencode itself (`opencode models` lists them, the TUI/config picks the default). An empty map makes the invoker omit --model entirely. Add tier keys here ONLY if you want to pin one, e.g. {\"cheap\":\"opencode/deepseek-v4-flash-free\",\"standard\":\"opencode/big-pickle\"}.",
+      "models": {},
+      "_agent_note": "opencode expresses read-only vs full-auto through its AGENT, not a sandbox flag: `plan` is the built-in read-only agent, `build` is the read/write one. `agent` is used in the default lane, `writable_agent` (plus --auto to auto-approve) in /team --writable.",
+      "agent_flag": "--agent",
+      "agent": "plan",
+      "writable_agent": "build",
+      "extra": [],
+      "writable_extra": ["--auto"],
+      "health": "--version",
+      "list_models": "models",
+      "use_winpty": false,
+      "sandbox_flag": "",
+      "bin_candidates": [
+        "$HOME/.bun/bin/opencode.exe",
+        "$LOCALAPPDATA/opencode/bin/opencode.exe"
+      ],
+      "_timeout_note": "Matches agy/codex so a long /team --writable job isn't SIGKILLed mid-run. opencode has no self-timeout flag, so hard_timeout is the only ceiling.",
+      "hard_timeout": "30m",
+      "_cost_note": "tunable estimate, USD per 1000 output chars — for the HUD cost figure only. Left at agy's rate since opencode's default model is user-chosen and often free/local.",
+      "cost_per_1k_chars": 0.0001,
+      "quota_patterns": ["rate limit", "quota", "429", "usage limit", "insufficient_quota", "too many requests"],
+      "quota_exit_codes": [],
+      "_note": "Invoked as `opencode run <flags>` with the PROMPT on STDIN (opencode reads stdin when no positional message is given) — same reason as codex: a multi-line prompt as an argv element is truncated at the first newline by a Windows .cmd wrapper. Needs NO pty (unlike agy): piped stdout works. The answer is on stdout; the `> plan · <model>` banner and ANSI colour go to stderr."
     }
   },
 
@@ -116,6 +167,16 @@
       "model": "haiku",
       "color": "magenta",
       "role": "Dispatcher for the codex (OpenAI Codex CLI) backend — a configurable, equal tool, not a fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and per-subtask /team assignments, not hardcoded here. By the shipped routing config, codex is the default lane for code review, test-writing, and verification — review a diff/file for correctness, bugs, edge cases and regressions; write or extend unit/integration/e2e test suites; verify an implementation meets its spec — and it serves as the default /team verifier. It runs full-auto in its own git worktree under /team --writable, so it can also make real code changes there. The shipped rules keep reverse-engineering, IL2CPP/protobuf-RE, injection and other systems-hard work on native Opus, but that is roster policy you can retune, not a property of this agent. Spawning this agent is an explicit choice to run on codex: it relays the task to the CLI and returns the result verbatim; it does not re-route or refuse based on content."
+    },
+
+    "opencode": {
+      "enabled": true,
+      "backend": "opencode",
+      "tier": "standard",
+      "dispatch": "forced",
+      "model": "haiku",
+      "color": "green",
+      "role": "Dispatcher for the opencode (OpenCode CLI) backend — a configurable, equal tool, not a fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and per-subtask /team assignments, not hardcoded here. opencode runs on WHICHEVER MODEL THE USER CONFIGURED IN OPENCODE ITSELF (the plugin deliberately passes no model flag), so it is the lane for work you want on your own opencode setup — a local or self-hosted model, a provider Claude/agy/codex don't cover, or simply a third independent opinion for /reasoning panels. By default it claims no auto-route lane, so it runs only when you explicitly pick it: spawning this agent, assigning it in /team, listing it in a /reasoning panel, or when it is reached through the quota-fallback chain. It uses opencode's read-only `plan` agent by default and its read/write `build` agent under /team --writable. Spawning this agent is an explicit choice to run on opencode: it relays the task to the CLI and returns the result verbatim; it does not re-route or refuse based on content."
     }
   },
 
