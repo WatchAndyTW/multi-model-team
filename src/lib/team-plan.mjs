@@ -23,20 +23,24 @@ import { join }                     from 'node:path';
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const AGY    = new Set(['agy', 'gemini', 'flash', 'pro', 'google']);
-const CODEX  = new Set(['codex', 'chatgpt', 'openai', 'gpt']);
-const NATIVE = new Set(['native', 'claude', 'sonnet', 'opus', 'anthropic']);
+const AGY      = new Set(['agy', 'gemini', 'flash', 'pro', 'google']);
+const CODEX    = new Set(['codex', 'chatgpt', 'openai', 'gpt']);
+const OPENCODE = new Set(['opencode', 'oc', 'open-code']);
+const NATIVE   = new Set(['native', 'claude', 'sonnet', 'opus', 'anthropic']);
 
-const CLI_TIERS    = new Set(['cheap', 'standard']);
+// `high` joins the CLI tiers so a plan can ask a backend for its strongest model; backends that
+// declare no `high` model resolve it down through default_tier -> standard (backends.modelForTier).
+const CLI_TIERS    = new Set(['cheap', 'standard', 'high']);
 const NATIVE_TIERS = new Set(['sonnet', 'opus']);
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function _normalizeBackend(name) {
   const lc = String(name ?? '').trim().toLowerCase();
-  if (AGY.has(lc))    return 'AGY';
-  if (CODEX.has(lc))  return 'CODEX';
-  if (NATIVE.has(lc)) return 'NATIVE';
+  if (AGY.has(lc))      return 'AGY';
+  if (CODEX.has(lc))    return 'CODEX';
+  if (OPENCODE.has(lc)) return 'OPENCODE';
+  if (NATIVE.has(lc))   return 'NATIVE';
   return '';  // unknown
 }
 

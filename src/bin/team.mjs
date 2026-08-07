@@ -5,7 +5,7 @@
  * Usage:
  *   node team.mjs --plan <plan.json> [--gemini-cap N]
  *
- * Runs CLI-backend subtasks (AGY, CODEX) from plan.json in PARALLEL (bounded by --gemini-cap,
+ * Runs CLI-backend subtasks (AGY, CODEX, OPENCODE) from plan.json in PARALLEL (bounded by --gemini-cap,
  * default 4, ceiling 16) via src/bin/run.mjs subprocesses, each fed its task via stdin with a
  * forced --decision from the manifest. Prints delimited blocks per result.
  * NATIVE subtasks are listed with a "solve in-context" note — NOT executed here.
@@ -40,7 +40,7 @@ function usage(err) {
   process.stderr.write(
     'Usage: node team.mjs --plan <plan.json> [--gemini-cap N]\n' +
     '  --plan <file>     path to plan.json (array of {label,task,backend,tier,...})\n' +
-    '  --gemini-cap N    max parallel CLI processes (default 4, ceiling 16)\n'
+    '  --gemini-cap N    max parallel CLI processes across ALL CLI backends (default 4, ceiling 16)\n'
   );
   process.exit(err ? 2 : 0);
 }
@@ -106,7 +106,9 @@ for (const row of rows) {
   if (!Number.isFinite(idx)) continue;
   if (be === 'NATIVE') {
     nativeTasks.push({ idx, label, tier, taskPath });
-  } else if (be === 'AGY' || be === 'CODEX') {
+  } else if (be === 'AGY' || be === 'CODEX' || be === 'OPENCODE') {
+    // Every non-NATIVE row is a CLI subtask; the row token lowercases to the roster backend name,
+    // so adding a backend to team-plan's alias sets is all that is needed to dispatch it here.
     cliTasks.push({ be, idx, label, tier, taskPath });
   }
   // unknown token -> skip (parity with team.sh)

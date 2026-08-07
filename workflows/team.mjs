@@ -57,18 +57,18 @@ const TIER_MODELS = { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus
 // any subtask by the decompose, and any can be the verifier — none is pinned to "simple work" or
 // "verify only". `dispatch_backends` is the eligible set the decompose chooses from (native is
 // always kept as the judgment/hard-line option). Per-backend caps bound parallelism.
-const KNOWN = ['agy', 'codex', 'native']
+const KNOWN = ['agy', 'codex', 'opencode', 'native']
 let DISPATCH = (Array.isArray(TC.dispatch_backends) && TC.dispatch_backends.length
-  ? TC.dispatch_backends.map(String) : ['agy', 'codex', 'native']).filter((b) => KNOWN.includes(b))
+  ? TC.dispatch_backends.map(String) : ['agy', 'codex', 'opencode', 'native']).filter((b) => KNOWN.includes(b))
 if (!DISPATCH.includes('native')) DISPATCH.push('native')   // native is always available (safe default)
 DISPATCH = [...new Set(DISPATCH)]
 
 // Per-backend caps = max parallel subtasks on that backend. Precedence low->high:
 //   built-in default  <  roster team.caps (by backend name)  <  cap spec (A.caps: gemini/codex/claude).
-const CAP_DEFAULT = { agy: 4, codex: 2, native: 2 }
+const CAP_DEFAULT = { agy: 4, codex: 2, opencode: 2, native: 2 }
 const SPEC_CAPS = A.caps || {}        // from the cap spec: { gemini, codex, claude }
 const ROSTER_CAPS = TC.caps || {}     // by backend name: { agy, codex, native }
-const CAP_ALIAS = { agy: 'gemini', native: 'claude', codex: 'codex' }   // backend -> cap-spec key
+const CAP_ALIAS = { agy: 'gemini', native: 'claude', codex: 'codex', opencode: 'opencode' }   // backend -> cap-spec key
 const CAPS = {}
 for (const b of DISPATCH) {
   const v = SPEC_CAPS[CAP_ALIAS[b]] ?? ROSTER_CAPS[b] ?? CAP_DEFAULT[b] ?? 2
@@ -329,6 +329,7 @@ const plan = await agent(
 The backends are EQUAL, interchangeable tools — pick the BEST-FIT one for each subtask. None is reserved for "only simple work" or "only verifying". Assign ONLY from the eligible backends this run: ${DISPATCH.join(', ')}.
 - "agy" (Gemini CLI): fast & cheap; great for commodity / verifiable work and Gemini's edges — new components, CSS/UI, scaffolding, CRUD, scripts, SQL, regex, configs, unit tests, data transforms, web-research / doc-summary, audio/video. tier "standard" (or "cheap" for tiny/bulk).
 - "codex" (Codex CLI): strong on code review, writing/extending tests, verification, and focused, checkable code units. tier "standard" (or "cheap").
+- "opencode" (OpenCode CLI): runs on whichever model the user configured in opencode itself, so it is the lane for work you want on their own setup — a local/self-hosted model, a provider the others don't cover, or extra independent capacity when agy and codex are saturated. tier "standard".
 - "native" (Claude, in-context): judgment / your-codebase-context / hard-to-verify work, AND the hard line that must NEVER leave native — RE, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design. Pick the tier BY COMPLEXITY, do NOT default to opus: "sonnet" for ordinary analysis / understanding / reviews / standard logic; "opus" ONLY for the hard line, deep cross-system architecture, or subtle concurrency / perf.
 
 For each subtask also provide:
@@ -805,13 +806,13 @@ if (fellBack.length) log(`${fellBack.length} subtask(s) fell back to native: ${f
 // concrete size proxy (the workflow has the text; it does NOT have token numbers). The orchestrator
 // folds the notification's `subagent_tokens` total into this split when reporting to the user.
 function approxChars(r) { return typeof r.result === 'string' ? [...r.result].length : 0 }
-const cliRecords = records.filter((r) => r.ranOn === 'agy' || r.ranOn === 'codex')
+const cliRecords = records.filter((r) => r.ranOn && r.ranOn !== 'native')
 const nativeRecords = records.filter((r) => r.ranOn === 'native' || (typeof r.ranOn === 'string' && r.ranOn.indexOf('native-fallback') === 0))
 const usage = {
   note: 'Per-agent token counts are not visible inside the workflow; see the run notification\'s aggregate subagent_tokens. This is the executor split + output-size proxy.',
   cli: {
     subtasks: cliRecords.length,
-    byBackend: Object.fromEntries(['agy', 'codex'].map((b) => [b, records.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
+    byBackend: Object.fromEntries(KNOWN.filter((b) => b !== 'native').map((b) => [b, records.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
     output_chars: cliRecords.reduce((n, r) => n + approxChars(r), 0),
     comment: 'ran on the CLI backend — off Claude\'s token budget (only the relay agent spent native tokens)',
   },

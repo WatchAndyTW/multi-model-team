@@ -11,7 +11,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { proactive as rosterProactive } from './config.mjs';
+import {
+  proactive as rosterProactive,
+  isBackendEnabled,
+  isNativeBackend,
+  agents as rosterAgents,
+} from './config.mjs';
 import { decide } from './router.mjs';
 import { stateDir, resolveRosterPath } from './platform.mjs';
 
@@ -146,6 +151,44 @@ export function decideTask(task, { roster, tagsPath, preset } = {}) {
   } catch {
     return { backend: 'native', model: 'native:sonnet', tier: 'sonnet', rule: 'no-decision', native: true };
   }
+}
+
+/**
+ * Is this decision's backend a CLI backend the hooks should nudge about?
+ *
+ * Both hooks used to hardcode `backend === 'agy' || backend === 'codex'`, which meant every
+ * backend added later was invisible to them — opencode would route, dispatch and run fine, but
+ * neither the prompt nudge nor the spawn guard would ever mention it. Deriving the answer from the
+ * roster keeps the hooks correct for any backend, and the `isBackendEnabled` check means a backend
+ * the user switched off is never advertised.
+ *
+ * @param {object} roster
+ * @param {string} backendName
+ * @returns {boolean}
+ */
+export function isCliBackend(roster, backendName) {
+  const b = String(backendName ?? '');
+  if (!b || isNativeBackend(b)) return false;   // native stays a Claude agent — nothing to nudge
+  return isBackendEnabled(roster, b);
+}
+
+/**
+ * The `multi-model-team:<name>` subagent that dispatches to `backendName`, or '' when the roster
+ * declares no enabled agent for it. Looked up by the agent's `backend` field so renaming or adding
+ * an agent in roster.json is picked up without touching hook code.
+ *
+ * @param {object} roster
+ * @param {string} backendName
+ * @returns {string} e.g. "multi-model-team:codex", or '' when none is available
+ */
+export function agentForBackend(roster, backendName) {
+  let map;
+  try { map = rosterAgents(roster) || {}; } catch { return ''; }
+  for (const [name, spec] of Object.entries(map)) {
+    if (name.startsWith('_') || !spec || typeof spec !== 'object') continue;
+    if (spec.enabled === true && spec.backend === backendName) return `multi-model-team:${name}`;
+  }
+  return '';
 }
 
 /**

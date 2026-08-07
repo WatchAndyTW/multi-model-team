@@ -41,6 +41,11 @@ const CAP = clampCap(A.cap ?? RC.cap ?? 6)
 
 // ---- inlined panel-token vocabulary (canonical; mirror docs/REASONING.md) ----
 // token (incl. aliases) -> { backend, tier }. Unknown tokens are skipped with a note.
+// CLI backends a panelist may name. Kept in sync with TOKEN_MAP below; a token resolving to
+// anything outside this set falls back to native rather than silently dropping the panelist.
+// (Workflow scripts have no fs access, so this cannot be read from the roster at runtime.)
+const KNOWN_CLI = new Set(['agy', 'codex', 'opencode'])
+
 const TOKEN_MAP = {
   opus:      { backend: 'native', tier: 'opus' },
   sonnet:    { backend: 'native', tier: 'sonnet' },
@@ -57,6 +62,8 @@ const TOKEN_MAP = {
   openai:    { backend: 'codex', tier: 'standard' },
   gpt:       { backend: 'codex', tier: 'standard' },
   chatgpt:   { backend: 'codex', tier: 'standard' },
+  opencode:  { backend: 'opencode', tier: 'standard' },
+  oc:        { backend: 'opencode', tier: 'standard' },
 }
 
 function clampCap(v) {
@@ -107,7 +114,7 @@ function resolvePanel() {
   let panelists = []
   if (src.length && typeof src[0] === 'object' && src[0] && src[0].backend) {
     panelists = src.map((p) => ({
-      backend: p.backend === 'agy' || p.backend === 'codex' ? p.backend : 'native',
+      backend: KNOWN_CLI.has(p.backend) ? p.backend : 'native',
       tier: String(p.tier || (p.backend === 'native' ? 'sonnet' : 'standard')),
       token: p.token != null ? String(p.token) : '',
     }))
@@ -286,13 +293,13 @@ if (fellBack.length) log(`${fellBack.length} panelist(s) fell back to native (CL
 // Answer char counts are a concrete size proxy. The orchestrator folds the notification's
 // `subagent_tokens` total into this split when reporting to the user.
 function approxChars(r) { return typeof r.answer === 'string' ? [...r.answer].length : 0 }
-const cliPanelists = panelists.filter((r) => r.ranOn === 'agy' || r.ranOn === 'codex')
+const cliPanelists = panelists.filter((r) => r.ranOn && r.ranOn !== 'native')
 const nativePanelists = panelists.filter((r) => r.ranOn === 'native' || (typeof r.ranOn === 'string' && r.ranOn.indexOf('native-fallback') === 0))
 const usage = {
   note: 'Per-agent token counts are not visible inside the workflow; see the run notification\'s aggregate subagent_tokens. This is the executor split + output-size proxy.',
   cli: {
     panelists: cliPanelists.length,
-    byBackend: Object.fromEntries(['agy', 'codex'].map((b) => [b, panelists.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
+    byBackend: Object.fromEntries([...KNOWN_CLI].map((b) => [b, panelists.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
     output_chars: cliPanelists.reduce((n, r) => n + approxChars(r), 0),
     comment: 'ran on the CLI backend — off Claude\'s token budget (only the relay agent spent native tokens)',
   },

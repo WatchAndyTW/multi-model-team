@@ -32,6 +32,10 @@ const TOKEN_MAP = {
   openai:    { backend: 'codex', tier: 'standard' },
   gpt:       { backend: 'codex', tier: 'standard' },
   chatgpt:   { backend: 'codex', tier: 'standard' },
+  // opencode runs on whichever model the user configured in opencode itself, which makes it a
+  // genuinely independent panelist rather than a third view from the same two vendors.
+  opencode:  { backend: 'opencode', tier: 'standard' },
+  oc:        { backend: 'opencode', tier: 'standard' },
 };
 
 // ─── constants ───────────────────────────────────────────────────────────────

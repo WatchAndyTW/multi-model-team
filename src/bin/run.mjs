@@ -15,9 +15,9 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-import { loadRoster, defaults, backend } from '../lib/config.mjs';
+import { loadRoster, defaults, backend, backendDisabledByEnv } from '../lib/config.mjs';
 import { decide } from '../lib/router.mjs';
-import { invoke, health, clean, invalidateHealth } from '../lib/backends.mjs';
+import { invoke, health, clean, invalidateHealth, modelForTier, authFromResult } from '../lib/backends.mjs';
 import * as state from '../lib/state.mjs';
 import { resolveRosterPath } from '../lib/platform.mjs';
 
@@ -29,7 +29,7 @@ const COMPACT_PROMPT = (task) => `${COMPACT_CONTRACT}\n\n${task}`;
 
 // ---- arg parsing -----------------------------------------------------------
 function parseArgs(argv) {
-  const o = { preset: '', tags: '', roster: '', decision: '', callFile: '', taskFile: '', decisionFile: '', sandbox: false, addDir: '', cwd: '', writable: false, task: '' };
+  const o = { preset: '', tags: '', roster: '', decision: '', callFile: '', taskFile: '', decisionFile: '', sandbox: false, addDir: '', cwd: '', writable: false, model: '', task: '' };
   let i = 0;
   const positional = [];
   while (i < argv.length) {
@@ -54,6 +54,9 @@ function parseArgs(argv) {
       case '--task-file':     o.taskFile = next() ?? ''; break;
       case '--decision-file': o.decisionFile = next() ?? ''; break;
       case '--add-dir':      o.addDir = next() ?? ''; break;
+      // Per-call model override: wins over the tier->model map for whichever backend actually runs.
+      // Accepts a real model id OR one of that backend's model_aliases ("--model flash").
+      case '--model':        o.model = next() ?? ''; break;
       // /team --writable mode: run the backend CLI IN this dir (the subtask's git worktree) and use
       // the backend's writable_extra (full-auto) so it can actually write files there. Both are inert
       // when absent — default/read-only runs are unchanged.
@@ -239,14 +242,6 @@ function logFailure({ backend: be, model, tier, rule, code, durMs, stderr, kind,
   } catch { /* logging is non-critical — never break the run */ }
 }
 
-// Resolve tier -> concrete model from a backend cfg's model_tiers.
-function modelForTier(beCfg, tier) {
-  const tiers = beCfg.model_tiers || {};
-  // 'cheap'/'standard' are the canonical keys; a tier label maps to standard unless it's the cheap one.
-  const m = tiers[tier] || tiers.standard || tiers.cheap || '';
-  return m;
-}
-
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -397,7 +392,15 @@ async function main() {
       fallbackCount++; continue;
     }
     if (!beCfg || !beCfg.enabled) {
-      process.stderr.write(`run.mjs: backend '${be}' disabled or unknown (skipped)\n`);
+      // Name WHY it was skipped so a disabled backend is diagnosable rather than a silent hop:
+      // an env kill switch for this shell, a roster `enabled:false`, or simply not declared.
+      const why = backendDisabledByEnv(be)
+        ? 'disabled for this shell by MMT_DISABLE_BACKENDS/MMT_ONLY_BACKENDS'
+        : (beCfg && beCfg.kind ? "disabled in the roster (backends." + be + ".enabled = false)" : 'not declared in the roster');
+      process.stderr.write(`run.mjs: backend '${be}' skipped — ${why}\n`);
+      // Carry it into the handoff reason too: without this, disabling every CLI produced a bare
+      // "backend options exhausted" with no hint that the user had switched them off.
+      lastErr = `'${be}' ${why}`;
       fallbackCount++; continue;
     }
 
@@ -408,7 +411,12 @@ async function main() {
       invokeCfg = { ...beCfg, extra: [...(beCfg.extra || []), beCfg.sandbox_flag] };
     }
 
-    let model = modelForTier(beCfg, D_tier) || modelForTier(beCfg, 'standard');
+    // Model precedence: --model flag > the decision's own model (a forced dispatch may pin one) >
+    // the backend's tier map. An empty result is legitimate — it means "pass no model flag", which
+    // is how opencode is wired (run on whatever the user configured in opencode itself).
+    const decisionModel = (!decision.native && typeof decision.model === 'string'
+      && decision.model && !decision.model.startsWith('native:')) ? decision.model : '';
+    let model = opts.model || decisionModel || modelForTier(beCfg, D_tier);
 
     // Health-gate: an unhealthy backend (or a kind with no invoker) is skipped. This used to be a
     // SILENT skip — no lastErr, no failures.log, no status record — so a backend that failed its
@@ -444,6 +452,20 @@ async function main() {
 
     // quota/credit exhaustion -> next hop. A FAILED hop passes fallback:0 (it is not itself a
     // fallback); the single fallback tally is counted once on the success hop via fallbackCount.
+    // Auth is checked FIRST: an expired credential fails the same way as exhaustion and trips the
+    // same loose patterns, so a live codex `401 invalid_api_key` was being reported as a credit
+    // limit — sending the user to billing when the fix was `codex login`. Distinguish them.
+    const authFailed = !res.ok && authFromResult(res, cleanOut, beCfg.auth_patterns);
+    if (authFailed) {
+      lastErr = `'${be}' authentication failed — the CLI is not logged in or its credential expired (try: ${be} login)`;
+      stopHeartbeat({ state: 'failed', kind: 'auth', code: res.code, elapsed_ms: durMs });
+      logFailure({ backend: be, model, tier: D_tier, rule: D_rule, code: res.code, durMs,
+        stderr: res.stderr || 'authentication failed', kind: 'auth', callId });
+      invalidateHealth(beCfg);
+      state.end({ id: callId, backend: be, model, rule: D_rule, code: res.code, durMs, outChars, fallback: 0 });
+      fallbackCount++; continue;
+    }
+
     if (res.quota) {
       lastErr = `quota/credit limit on '${be}'`;
       stopHeartbeat({ state: 'failed', kind: 'quota', code: res.code, elapsed_ms: durMs });

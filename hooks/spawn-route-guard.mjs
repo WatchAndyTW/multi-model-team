@@ -24,6 +24,7 @@ import {
   readPayload, allow, deny, decideTask, debugMark,
   proactiveGate, proactiveDisabled, hookDisabled,
   rosterPath, tagsPath, pluginRootFrom, withinWindow, ruleAllowed,
+  isCliBackend, agentForBackend,
 } from '../src/lib/hook-common.mjs';
 import { loadRoster } from '../src/lib/config.mjs';
 import { charCount } from '../src/lib/score.mjs';
@@ -78,20 +79,22 @@ async function main() {
   const d = decideTask(task, { roster, tagsPath: tagsPath(root) });
   if (!d) return;
 
-  // Only CLI backends. native stays a Claude agent — leave it.
-  if (d.backend !== 'agy' && d.backend !== 'codex') return;
+  // Only ENABLED CLI backends. native stays a Claude agent — leave it. Derived from the roster so
+  // a backend added later (opencode) is covered and one switched off is never advertised.
+  if (!isCliBackend(roster, d.backend)) return;
 
-  // Optional rule allowlist (CSV). Empty = any agy/codex rule.
+  // Optional rule allowlist (CSV). Empty = any CLI rule.
   if (!ruleAllowed(p.rules, d.rule)) return;
 
-  const beDisp = d.backend === 'agy' ? 'agy (Gemini)' : d.backend === 'codex' ? 'codex (Codex)' : d.backend;
-  const beAgent = d.backend === 'codex' ? 'multi-model-team:codex' : 'multi-model-team:agy';
+  const DISPLAY = { agy: 'agy (Gemini)', codex: 'codex (Codex)', opencode: 'opencode (OpenCode)' };
+  const beDisp = DISPLAY[d.backend] || d.backend;
+  const beAgent = agentForBackend(roster, d.backend);
   const rule = d.rule || '?';
   const tier = d.tier || '?';
   const runMjs = path.join(root, 'src', 'bin', 'run.mjs');
   const how =
     `run \`node src/bin/run.mjs\` with a forced {"backend":"${d.backend}"} decision (subtask via stdin / ` +
-    `a single-quoted heredoc), or spawn the \`${beAgent}\` agent`;
+    `a single-quoted heredoc)` + (beAgent ? `, or spawn the \`${beAgent}\` agent` : '');
 
   // OMC team workers are NEVER hard-denied — always a nudge, even under enforce_spawns.
   const enforce = p.enforce_spawns && !isOmc;

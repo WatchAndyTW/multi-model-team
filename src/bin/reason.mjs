@@ -22,6 +22,7 @@
  */
 
 import { spawn }                    from 'node:child_process';
+import { readFileSync }             from 'node:fs';
 import { dirname, resolve }         from 'node:path';
 import { fileURLToPath }            from 'node:url';
 import { resolveRosterPath }        from '../lib/platform.mjs';
@@ -78,11 +79,27 @@ async function readStdin() {
 
 // ─── resolve the panel ────────────────────────────────────────────────────────
 
+// Backend names the roster declares, read once at startup. Used to validate panelists without
+// hardcoding a backend list here. Falls back to the shipped set if the roster can't be read — a
+// panel must still resolve when config is unavailable.
+const KNOWN_BACKENDS = (() => {
+  try {
+    const rosterPath = resolveRosterPath(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+    const roster = JSON.parse(readFileSync(rosterPath, 'utf8'));
+    const names = Object.keys(roster.backends || {}).filter((k) => !k.startsWith('_'));
+    if (names.length) return new Set(names.map((n) => n.toLowerCase()));
+  } catch { /* fall through */ }
+  return new Set(['agy', 'codex', 'opencode']);
+})();
+
 // Coerce a raw panelist object into a sane { backend, tier, label }. Unknown backends -> native.
 function coercePanelist(p, i) {
   const o = (p && typeof p === 'object') ? p : {};
   let backend = String(o.backend || '').toLowerCase();
-  if (backend !== 'agy' && backend !== 'codex' && backend !== 'native') backend = 'native';
+  // Any backend the roster declares is a valid panelist; anything else falls back to native.
+  // Previously this was a hardcoded agy/codex/native allowlist, which silently rewrote an
+  // `opencode` panelist into a native one — the panel would look right and quietly lose a model.
+  if (backend !== 'native' && !KNOWN_BACKENDS.has(backend)) backend = 'native';
   const tier = String(o.tier || (backend === 'native' ? 'sonnet' : 'standard')) || 'sonnet';
   const label = String(o.label || o.token || `${backend}-${i + 1}`)
     .replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || `${backend}-${i + 1}`;
@@ -237,8 +254,8 @@ async function main() {
   if (!Number.isFinite(useCap) || useCap < 1) useCap = 1;
   if (useCap > 16) useCap = 16;
 
-  // Partition: CLI (agy/codex) vs native.
-  const cliPanelists    = panel.filter(p => p.backend === 'agy' || p.backend === 'codex');
+  // Partition: CLI (any roster backend) vs native.
+  const cliPanelists    = panel.filter(p => p.backend !== 'native');
   const nativePanelists = panel.filter(p => p.backend === 'native');
 
   // Run every CLI panelist in parallel (same question to each).

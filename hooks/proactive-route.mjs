@@ -15,6 +15,7 @@ import {
   readPayload, promptContext, decideTask, debugMark,
   proactiveGate, proactiveDisabled, hookDisabled,
   rosterPath, tagsPath, pluginRootFrom, withinWindow, ruleAllowed,
+  isCliBackend, agentForBackend,
 } from '../src/lib/hook-common.mjs';
 import { loadRoster } from '../src/lib/config.mjs';
 import { charCount } from '../src/lib/score.mjs';
@@ -48,7 +49,9 @@ async function main() {
 
   // Route in-process (no route.sh fork). Feed the prompt as data only — never echoed back.
   const d = decideTask(prompt, { roster, tagsPath: tagsPath(root) });
-  if (!d || (d.backend !== 'agy' && d.backend !== 'codex')) return; // only nudge for CLI-routable work
+  // Only nudge for work that routes to an ENABLED CLI backend. Derived from the roster, so a
+  // backend added later (opencode) is covered and one switched off is never advertised.
+  if (!d || !isCliBackend(roster, d.backend)) return;
 
   // Optional rule allowlist (CSV). Empty = any CLI rule.
   if (!ruleAllowed(p.rules, d.rule)) return;
@@ -56,11 +59,15 @@ async function main() {
   const rule = d.rule || '?';
   const tier = d.tier || '?';
   const backend = d.backend;
-  const agent = backend === 'codex' ? 'multi-model-team:codex' : 'multi-model-team:agy';
+  const agent = agentForBackend(roster, backend);
+  // No dedicated agent for this backend -> point at /team, which can dispatch to any backend.
+  const how = agent
+    ? `spawn the \`${agent}\` agent (or run \`/team\`)`
+    : 'run `/team` and assign the subtask to it';
   const ctx =
     `multi-model-team: this request routes to ${backend} [rule=${rule}, tier=${tier}]. ` +
-    `If it is a standalone, verifiable task, prefer delegating it — spawn the \`${agent}\` ` +
-    `agent (or run \`/team\`) so it runs on ${backend} and saves Claude tokens — instead of solving it inline. ` +
+    `If it is a standalone, verifiable task, prefer delegating it — ${how} ` +
+    `so it runs on ${backend} and saves Claude tokens — instead of solving it inline. ` +
     'This is a configurable nudge, not a rule: ignore it if the task needs your in-context judgment, ' +
     'codebase awareness, or is part of a larger change you are already making.';
 
