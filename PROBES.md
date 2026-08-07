@@ -177,3 +177,101 @@ stdout = clean assistant response; stderr = diagnostics (discard or log).
 ## P2 — quota/limit error text + exit code (OPEN)
 Not yet hit a real limit. `quota_patterns` for codex are unvalidated defaults; harden
 on the first real exhaustion event (same open item as agy P2).
+
+---
+
+# opencode (OpenCode CLI) — grounded findings
+
+Probed live against **opencode 1.18.15** on Windows 11 (bun install, `~/.bun/bin/opencode.exe`).
+Everything below was executed, not inferred.
+
+## P1 — no TTY gate (unlike agy)
+
+`opencode run` works through a plain pipe: piped stdout returns the answer, exit 0, no pty needed.
+This is the codex-shaped lane, **not** the agy one — no `node-pty`, no winpty, no `script` shim.
+
+## P2 — the prompt goes on STDIN
+
+`opencode run [message..]` takes a positional message, but with **no positional it reads the
+message from stdin** — verified with both a single-line and a multi-line prompt. The plugin uses
+stdin for the same reason codex does: a multi-line prompt passed as an argv element is truncated at
+the first newline by any `cmd.exe` wrapper. There is no `-` sentinel; simply omit the positional.
+
+On Windows the binary is a real `opencode.exe` (not an npm `.cmd` shim), so `winCmdWrap` does not
+engage and argv passes through untouched.
+
+## P3 — stream split
+
+- **stdout** — the answer only (already clean).
+- **stderr** — the session banner (`> plan · <model>`) and ANSI colour (`ESC[0m`).
+
+`clean()` strips the control bytes regardless.
+
+## P4 — read-only vs writable is an AGENT, not a sandbox flag
+
+`opencode agent list` reports `build (primary)`, `plan (primary)`, `explore (subagent)`,
+`general (subagent)`, plus `compaction`/`summary`/`title`.
+
+- `--agent plan` — the read-only lane (verified: answers normally).
+- `--agent build --auto` — the read/write lane (verified: wrote a file).
+
+`--auto` auto-approves permissions. The shipped `build` agent already carries `permission: * ->
+allow` with `question -> deny`, so a headless run does not stall on a prompt.
+
+## P5 — **opencode IGNORES the spawned process's cwd** (the isolation bug)
+
+The important finding. Spawning `opencode run` with `{ cwd: <target> }` and asking it to create a
+file produced **DONE plus the file in the PARENT repo**, not in `<target>`. opencode resolves its
+own project root and disregards the cwd it inherits.
+
+Left unfixed this silently defeats `/team --writable`: each subtask gets its own git worktree, and
+an opencode subtask would have written into the shared checkout while reporting success.
+
+`--dir <path>` is the supported way to point it at a directory and **does** confine writes there
+(verified: file in the target dir, repo root untouched). The plugin passes `--dir` whenever a
+`--cwd` is supplied, alongside the spawn cwd, via the roster-tunable `cwd_flag`.
+
+## P6 — models: user-configured, and the default can be VERY slow
+
+`opencode models` lists what the user's own config exposes; on this machine, eight `opencode/*`
+entries and three `nixabe/*` ones. The plugin deliberately passes **no `--model`**, so opencode uses
+whichever model its own config selects.
+
+Caveat worth knowing: this machine's default (`nixabe/qwen3.6-27b-q4-mtp`) answered a one-word
+prompt correctly but took **roughly 40 minutes**, which is beyond the shipped `hard_timeout: 30m`.
+A fast model (`opencode/deepseek-v4-flash-free`) answered the same prompt in ~10 s. If your default
+model is slow, either pin a faster one in `backends.opencode.models` / `MMT_MODEL_OPENCODE`, or
+raise `backends.opencode.hard_timeout`.
+
+## Invocation recipe (live)
+
+```bash
+printf '<PROMPT>' | opencode run \
+  [--auto] \
+  --agent {plan|build} \
+  [--model "<PROVIDER/MODEL>"] \
+  [--dir "<WORKDIR>"]
+```
+
+## P7 — quota/limit error text (OPEN)
+
+Not yet hit a real limit; `quota_patterns` for opencode are unvalidated defaults, same open item as
+agy and codex.
+
+---
+
+# codex — auth failure text (RESOLVED into a distinct failure kind)
+
+A live `codex exec` on this machine returned:
+
+```
+ERROR: unexpected status 401 Unauthorized: Incorrect API key provided: sk-QZpqv***…
+       auth error: 401, auth error code: invalid_api_key
+```
+
+`~/.codex/auth.json` held a stale API key. The plugin's broad `quota_patterns` matched this and
+reported **"quota/credit limit on 'codex'"** — pointing at billing when the fix was `codex login`.
+
+Auth is now detected **before** quota (`backends.authFromResult`, roster `auth_patterns`) and
+surfaces as its own `auth` failure kind, with the handoff reason naming the login fix. Same
+failure-gate as quota: a successful answer is never an auth error however it words itself.

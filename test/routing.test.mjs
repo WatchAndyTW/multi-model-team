@@ -113,3 +113,31 @@ test('e2e route.mjs: no task -> non-zero exit', () => {
   const { code } = runNode(BIN_ROUTE, { input: '' });
   assert.notEqual(code, 0);
 });
+
+test('review requests classify — including the wordings the old pattern missed', () => {
+  // The pattern only accepted "review (this|the|my) (code|pr|change|diff)", so ordinary phrasings
+  // like "review the pull request diff" classified as NOTHING and fell to catch-all-safe/native,
+  // quietly bypassing the codex lane they belong in.
+  for (const task of [
+    'review the pull request diff',
+    'review my patch',
+    'review this commit',
+    'code review please',
+  ]) {
+    const d = decide({ task, roster: ROSTER, tagsPath: TAGS_PATH });
+    assert.ok(d.score.types.includes('review'), `"${task}" should classify as review`);
+    assert.equal(d.backend, 'codex', `"${task}" should land on the codex lane`);
+  }
+});
+
+test('the broadened review pattern does not steal judgment or non-code work', () => {
+  // Guard the ordering invariant + the "keep regexes specific" rule: an architecture review is
+  // still Opus, and a non-code "review" must not be pulled into the codex lane at all.
+  const arch = decide({ task: 'review the architecture decision', roster: ROSTER, tagsPath: TAGS_PATH });
+  assert.equal(arch.backend, 'native');
+  assert.equal(arch.tier, 'opus');
+
+  const nonCode = decide({ task: 'review the quarterly numbers', roster: ROSTER, tagsPath: TAGS_PATH });
+  assert.deepEqual(nonCode.score.types, []);
+  assert.equal(nonCode.rule, 'catch-all-safe');
+});

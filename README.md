@@ -2,13 +2,13 @@
 
 # 🧩 multi-model-team
 
-**Let Claude Code delegate the grunt work to Gemini & Codex — and keep the hard thinking for itself.**
+**Let Claude Code delegate the grunt work to Gemini, Codex & OpenCode — and keep the hard thinking for itself.**
 
 Multi-model orchestration for Claude Code. Route by task, fan out in parallel, fall back gracefully.
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-108%2F108%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-149%2F149%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -17,9 +17,9 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 ---
 
 A Claude Code **plugin** that offloads token-heavy, self-contained tasks to local pre-authed CLI
-backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI) — picking the backend and model by
-task size and type, with credit-exhaustion fallback through the chain to native Claude, and a
-glanceable statusline HUD.
+backends — **`agy`** (Gemini), **`codex`** (OpenAI Codex CLI) and **`opencode`** (OpenCode CLI) —
+picking the backend and model by task size and type, with credit-exhaustion fallback through the
+chain to native Claude, and a glanceable statusline HUD.
 
 The core idea:
 
@@ -110,6 +110,7 @@ assignments, so the "default lane" below is tunable roster policy, not a hard li
 |---|---|---|
 | **`agy`** | Commodity, easily-verifiable work + Gemini's edges — UI/CSS, scaffolding, CRUD, scripts, SQL, regex, configs, tests, data transforms, web-research/summarization, audio/video | agy |
 | **`codex`** | Code review, test-writing, verification (and the default `/team` verifier; writes code full-auto under `--writable`) | codex |
+| **`opencode`** | Whatever you want on **your own** opencode model — a local/self-hosted model, a provider the others don't cover, or a third independent opinion. No auto-route lane: it runs only when you pick it | opencode |
 
 The shipped routing keeps RE/injection/systems-hard work **native by default** — that's roster policy
 you can retune, not a property of the agents (there's intentionally no RE/injection agent). An explicit
@@ -159,7 +160,7 @@ Sections (keys prefixed `_comment`/`_about` are inline docs the parsers ignore):
 
 | Section | Tune to… |
 |---|---|
-| **`backends`** | turn a CLI on/off (`enabled`), pick its invoker (`kind`), and set `writable_extra` — the flags used **instead of** `extra` in `/team --writable` mode (full-auto). Live: `agy` (`gemini`), `codex`. `opencode` is a stub. |
+| **`backends`** | turn a CLI on/off (`enabled`), pick its invoker (`kind`), map tiers to models (`models`, `model_aliases`, `default_tier`), and set `writable_extra` — the flags used **instead of** `extra` in `/team --writable` mode (full-auto). All three are live: `agy` (`gemini`), `codex`, `opencode`. |
 | **`routes`** | change *where* a task type routes (first match wins). |
 | **`agents`** | the delegation subagents (`backend`/`tier`/`dispatch`/`role`). **After editing, run `node src/lib/gen-agents.mjs`** to regenerate `agents/*.md`. |
 | **`team`** | the `/team` pipeline roles + defaults — `dispatch_backends`, `verifier`, `caps`, `tier_models`, `verify`, `max_fix_loops`, and **`mode`** (`"writable"` makes `--writable` the default; per-invocation `--writable` still wins). |
@@ -245,6 +246,67 @@ rides as a real argv element (no shell — injection-safe).
 bug where the npm `.cmd` shim truncated multi-line prompts at the first newline). `resolveBinary`
 prefers a PATHEXT match (`codex.cmd`) over the extensionless shim. No pty needed.
 
+### opencode runs on **your** model — and ignores cwd
+
+`opencode run` also takes its **prompt on stdin** and needs no pty. Two things to know:
+
+- **The plugin never picks a model for it.** `backends.opencode.models` ships empty, so no `--model`
+  flag is passed and opencode uses whichever model *you* configured (`opencode models` to see them).
+  If your default is slow, pin a faster one or raise `hard_timeout` — a local 27B default took ~40
+  minutes for a one-word answer on the dev machine, past the shipped 30 m ceiling.
+- **It ignores the directory it is launched in** and resolves its own project root, so the plugin
+  passes `--dir` explicitly. Without that, a `/team --writable` subtask writes into your main
+  checkout instead of its worktree while reporting success.
+
+Read-only vs writable is an *agent*, not a sandbox flag: `--agent plan` normally, `--agent build
+--auto` under `/team --writable`.
+
+opencode claims **no auto-route lane** — it never quietly takes work from agy or codex. It runs when
+you pick it: its agent, a `/team` assignment, a `/reasoning` panel, or the quota-fallback chain.
+
+---
+
+## 🔀 Turning backends on and off
+
+`node src/bin/route.mjs --backends` shows every backend, whether it is on, what turned it off, and
+each tier's model:
+
+```
+agy       enabled           kind=gemini    cheap=gemini-3.6-flash-low standard=gemini-3.1-pro-low high=gemini-3.1-pro-high
+codex     DISABLED (env)    kind=codex     cheap=gpt-5.4-mini standard=gpt-5.5
+opencode  enabled           kind=opencode  <no model map — the CLI uses its own default>
+native    always on         kind=claude    cheap=haiku standard=sonnet high=opus
+```
+
+Three switches:
+
+| how | scope | example |
+|---|---|---|
+| `backends.<name>.enabled: false` | permanent | edit the roster |
+| `MMT_DISABLE_BACKENDS` | one shell | `MMT_DISABLE_BACKENDS=codex,agy` |
+| `MMT_ONLY_BACKENDS` | one shell | `MMT_ONLY_BACKENDS=agy` |
+
+Turning a backend off is honoured **at routing time**, not just at dispatch: rules targeting it are
+skipped so matching continues to the next rule, and the decision names where the work really goes.
+`native` can never be disabled — it is the guaranteed fallback.
+
+## 🎚️ Choosing models
+
+Per backend, `models` maps a tier to a model and accepts **any** tier keys (`cheap`, `standard`,
+`high`, or your own). Resolution order:
+
+```
+--model flag  >  MMT_MODEL_<BACKEND>  >  exact tier  >  default_tier  >  standard  >  cheap  >  no flag
+```
+
+`model_aliases` give short handles — `--model flash` instead of `gemini-3.6-flash-low`. An empty
+`models` map means "pass no flag, let the CLI decide" (how opencode is wired).
+`defaults.native_models` is the one place a tier becomes a Claude model.
+
+```bash
+node src/bin/run.mjs --model flash "summarize this changelog"
+```
+
 ---
 
 ## 📋 Requirements
@@ -302,7 +364,7 @@ docs/INTERFACES.md           module interface contract (Node ESM port signatures
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 108/108 routing + unit tests (no backend calls)
+npm test                # offline: 149/149 routing + unit tests (no backend calls)
 ```
 
 The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a
@@ -319,6 +381,9 @@ real `node src/bin/run.mjs --call-file=…` against the installed CLIs), not by 
 | Var | Purpose |
 |---|---|
 | `MMT_AGY_BIN` / `MMT_CODEX_BIN` | explicit path to the agy / codex binary |
+| `MMT_DISABLE_BACKENDS` | CSV blocklist — `=codex,agy` turns those off for this shell |
+| `MMT_ONLY_BACKENDS` | CSV allowlist — `=agy` turns everything else off |
+| `MMT_MODEL_AGY` / `MMT_MODEL_CODEX` / `MMT_MODEL_OPENCODE` | override that backend's model (a real id, or a `model_aliases` handle) |
 | `MMT_TAGS` | alternate `tags.txt` |
 | `MMT_STATE_DIR` / `MMT_STATE_FILE` | HUD state location |
 | `MMT_PROACTIVE_DISABLE` | `=1` hard-disables both proactive hooks |

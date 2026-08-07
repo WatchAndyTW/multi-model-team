@@ -109,6 +109,6 @@ api-design       api design|design (the |an |a )?api|endpoint design|interface d
 state-management state management|\bredux\b|\bzustand\b|global state|state machine
 data-model       data model|schema design|model the (domain|data)|entity (model|design)|\ber diagram\b
 migration        migrat(e|ion)|port (the |from )|upgrade the (version|dependency)
-review           review (this|the|my) (code|pr|change|diff)|code review
+review           review (this|the|my|our) (code|pr|pull request|patch|commit|change|changes|diff|implementation)|code review|review the following (code|diff|patch)
 production-logic production (logic|code|path)|business logic|critical (path|logic)
 edge-cases       edge case|corner case|boundary condition|handle all (cases|inputs)

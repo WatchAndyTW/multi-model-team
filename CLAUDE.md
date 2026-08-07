@@ -1,7 +1,7 @@
 # multi-model-team — project guide for Claude
 
 A Claude Code **plugin** that delegates token-heavy, self-contained tasks to local
-pre-authed CLI backends — **`agy`** (Gemini) and **`codex`** (OpenAI Codex CLI) — choosing
+pre-authed CLI backends — **`agy`** (Gemini), **`codex`** (OpenAI Codex CLI) and **`opencode`** (OpenCode CLI) — choosing
 backend/model by task size and type, with credit-exhaustion fallback to native Claude and a
 glanceable statusline HUD.
 
@@ -9,10 +9,9 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **108/108** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **149/149** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
-Two live backends: **agy** (Gemini)
-and **codex** (OpenAI Codex CLI); opencode remains a config-only stub. codex also serves as the
+Three live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI) and **opencode** (OpenCode CLI). codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
 `docs/REASONING.md` (the `/reasoning` design contract).
 
@@ -47,11 +46,36 @@ replacement). winpty needs a real Windows console, which a headless parent can't
 and fell through to codex/native. node-pty (ConPTY) removes that constraint entirely; `ptyWrap`
 (winpty/script) in `platform.mjs` is retained but no longer on the agy path. Full detail in `PROBES.md`.
 
-Real model names (exact `agy models` display strings): `Gemini 3.1 Pro (Low)` (standard),
-`Gemini 3.5 Flash (Low)` (cheap). Binary auto-resolves via `platform.resolveBinary`: `$MMT_AGY_BIN`
+Real model names come from `agy models`; the roster uses the **ID form** (left column) —
+`gemini-3.1-pro-low` (standard), `gemini-3.6-flash-low` (cheap), `gemini-3.1-pro-high` (high).
+The display strings (`Gemini 3.1 Pro (Low)`) also work but carry spaces and parens. Binary auto-resolves via `platform.resolveBinary`: `$MMT_AGY_BIN`
 → PATH scan → default candidates (`$LOCALAPPDATA/agy/bin/agy.exe` on Windows;
 `~/.local/bin/agy`, `/usr/local/bin/agy`, `/usr/bin/agy` on Linux; same + `/opt/homebrew/bin/agy`
 on macOS).
+
+### opencode — no TTY, prompt on stdin, and it IGNORES cwd
+
+`opencode run` is the non-interactive lane. Like codex (and unlike agy) it needs **no pty** — piped
+stdout works headlessly — and the **prompt rides on stdin**: `opencode run` with no positional
+message reads the message from stdin, which sidesteps the same Windows `.cmd` newline-truncation
+bug codex hit. On Windows the binary is a real `opencode.exe`, so no `cmd.exe` wrapping occurs.
+
+Read-only vs writable is expressed through opencode's **agent**, not a sandbox flag:
+`--agent plan` (read-only, default lane) vs `--agent build --auto` (full-auto, `/team --writable`).
+
+**The one real trap:** opencode **ignores the cwd it is spawned with** and resolves its own project
+root. A `--writable --cwd <worktree>` dispatch reported success while writing into the PARENT repo —
+silently defeating the per-subtask worktree isolation. Its `--dir` flag is the fix and confines
+writes correctly; the plugin passes it whenever a `--cwd` is given, via the roster-tunable
+`cwd_flag`. Full detail in `PROBES.md`.
+
+**No model is chosen for opencode by design** — `models: {}` in the roster means the invoker omits
+`--model`, so opencode runs on whichever model the user configured in opencode itself. Note that a
+slow default model can exceed `hard_timeout` (a local 27B model took ~40 min for a one-word answer
+on the dev machine); pin a faster model or raise the timeout if that bites.
+
+opencode claims **no auto-route lane** by default: it never silently takes work from agy/codex, and
+runs only when explicitly chosen (its agent, `/team`, a `/reasoning` panel, or the fallback chain).
 
 ### codex — no TTY needed
 
@@ -75,7 +99,7 @@ task text (stdin — injection-safe boundary)
    │
    ▼  src/bin/run.mjs            executor
         ├─ src/lib/config.mjs    roster.json → plain JS objects (no bash eval, real JSON.parse)
-        ├─ src/lib/backends.mjs  backend invoke (by kind: gemini/codex) + clean() + quota
+        ├─ src/lib/backends.mjs  backend invoke (by kind: gemini/codex/opencode) + clean() + quota
         ├─ src/lib/platform.mjs  ptyWrap (winpty/script), resolveBinary, stateDir
         ├─ src/lib/state.mjs     HUD state → stateDir()/state.json
         └─ on backend success: cleaned stdout;  else: MMT_NATIVE_HANDOFF sentinel
@@ -84,7 +108,8 @@ task text (stdin — injection-safe boundary)
 ```
 
 `run.mjs` walks a fallback chain = chosen backend + `quota_fallback` (deduped). Default:
-`["agy","codex","native:sonnet"]` — agy quota exhaustion falls through to codex, then to native
+`["agy","codex","opencode","native:sonnet"]` — agy quota exhaustion falls through to codex, then
+opencode, then to native
 Claude (`MMT_NATIVE_HANDOFF` sentinel). When a backend fails (non-zero or empty output), `run.mjs`
 captures stderr into `last error` and carries it into the handoff `reason=` — so the cause is
 visible instead of a silent empty result.
@@ -120,7 +145,7 @@ hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard: nudge/deny CLI-rou
 hooks/command-fanout-guard.mjs  UserPromptSubmit guard: force /reasoning and /team into the engine
 hooks/hooks.json                hook registrations (all commands: `node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`)
 statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
-agents/{agy,codex}.md   GENERATED from roster.json (gen-agents.mjs)
+agents/{agy,codex,opencode}.md   GENERATED from roster.json (gen-agents.mjs)
 commands/{team,route-test,reasoning,mmt-setup}.md   /team = multi-agent fan-out; /route-test = dry-run router; /reasoning = Fusion pipeline; /mmt-setup = durable personal roster setup
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
@@ -175,6 +200,39 @@ refactor/judgment work. Add a regression test in `test/*.test.mjs` for any routi
 
 Presets (`[defaults].preset` or `--preset`): `budget` pushes borderline judgment-coding to
 agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical edges).
+
+**Disabling a backend is a first-class operation.** Three switches, in precedence order:
+
+| switch | scope | effect |
+|---|---|---|
+| `backends.<name>.enabled: false` | permanent (roster) | backend is off everywhere |
+| `MMT_DISABLE_BACKENDS=codex,agy` | one shell | blocklist |
+| `MMT_ONLY_BACKENDS=agy` | one shell | allowlist — everything else off |
+
+`native` is **never** disable-able; it is the guaranteed final fallback. A disabled backend is
+honoured *at routing time*, not just at dispatch: `router.matchRule` **skips** any rule whose
+backend is off, so matching continues to the next rule and the decision is honest. (Previously the
+router returned a backend `run.mjs` would then refuse, so the decision JSON, `/route-test` and the
+proactive hooks all advertised a destination the user had switched off.) A preset that biases *into*
+a disabled backend is undone rather than emitted. `skippedDisabled` in the decision reports what was
+passed over and why. Inspect it all with `node src/bin/route.mjs --backends`.
+
+**Model selection** resolves through an explicit ladder, so any tier keys are usable — not just
+`cheap`/`standard`:
+
+```
+--model flag  >  a forced decision's pinned model  >  MMT_MODEL_<BACKEND>  >
+exact tier  >  backend default_tier  >  standard  >  cheap  >  first declared  >  '' (no flag)
+```
+
+An empty result is meaningful: **pass no model flag**, letting the CLI use its own default (how
+opencode is wired). `model_aliases` give short handles (`flash` → `gemini-3.6-flash-low`) usable in
+a tier, `--model`, or the env override. The `high` tier asks a backend for its strongest model and
+falls back safely when it declares none. `defaults.native_models` is the **single** place a tier
+becomes a Claude model (previously duplicated across `team.tier_models` and `reasoning.tier_models`).
+
+agy's shipped models use the **ID form** from the left column of `agy models`
+(`gemini-3.1-pro-low`), not the display strings — both work, but ids carry no spaces or parens.
 
 ---
 
@@ -352,7 +410,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 108/108 routing + unit tests (no backend calls)
+npm test                         # offline: 149/149 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`
@@ -369,7 +427,7 @@ agy/codex behaviour by hand against the installed CLIs.
   pattern word (e.g. codex reading this repo's `quota_patterns`) is no longer discarded. Real
   exhaustion still relies on the heuristic patterns + `quota_exit_codes` — harden those on the
   first real agy/codex credit-exhaustion error.
-- **Backends:** opencode is config-only (stub, `enabled:false`); codex is live. Health-gate
+- **Backends:** agy, codex and opencode are all live. Health-gate
   ensures an unavailable CLI falls through to the next fallback hop.
 - **Linux/macOS:** POSIX PTY shim (`script`) and XDG state dir in `platform.mjs` are exercised and
   tested on a real POSIX box.
