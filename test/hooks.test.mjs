@@ -28,6 +28,39 @@ test('proactive hook: off->silent, on+agy->nudge, opus/slash/cap/env->silent', (
   assert.equal(run(sql, onDir, { MMT_PROACTIVE_DISABLE: '1' }), '', 'env DISABLE -> silent');
 });
 
+test('proactive hook: a DISABLED backend is never advertised', () => {
+  // The hook used to gate on a hardcoded agy/codex list and never consulted `enabled`, so it would
+  // cheerfully tell Claude to delegate to a backend the user had switched off.
+  const sql = JSON.stringify({ prompt: 'Write a SQL query to join users and orders tables' });
+  const onDir = makeProjectRoster('pr-on2-', (c) => { c.proactive.enabled = true; });
+  const agyOff = makeProjectRoster('pr-agyoff-', (c) => {
+    c.proactive.enabled = true;
+    c.backends.agy.enabled = false;
+  });
+  assert.match(runNode(HOOK_PROACTIVE, { input: sql, cwd: onDir }).stdout, /routes to agy/);
+  assert.equal(runNode(HOOK_PROACTIVE, { input: sql, cwd: agyOff }).stdout, '', 'roster-disabled -> silent');
+  assert.equal(
+    runNode(HOOK_PROACTIVE, { input: sql, cwd: onDir, env: { MMT_DISABLE_BACKENDS: 'agy' } }).stdout,
+    '', 'env-disabled -> silent',
+  );
+});
+
+test('proactive hook: names the agent belonging to the routed backend, from the roster', () => {
+  // The agent was previously chosen by `backend === 'codex' ? codex : agy`, so ANY third backend
+  // got the agy agent named at it. It is now looked up by the agent's `backend` field.
+  const dir = makeProjectRoster('pr-agent-', (c) => {
+    c.proactive.enabled = true;
+    // Point the commodity lane at opencode to prove the lookup is not hardcoded.
+    c.routes.find((r) => r.name === 'standard-coding').backend = 'opencode';
+  });
+  const out = runNode(HOOK_PROACTIVE, {
+    input: JSON.stringify({ prompt: 'Write a SQL query to join users and orders tables' }),
+    cwd: dir,
+  }).stdout;
+  assert.match(out, /routes to opencode/);
+  assert.match(out, /multi-model-team:opencode/, 'names the opencode agent, not agy');
+});
+
 // ── spawn-route guard (PreToolUse Task/Agent) ────────────────────────────────
 function mkspawn(sub, desc, prompt) {
   return JSON.stringify({ tool_name: 'Task', tool_input: { subagent_type: sub, description: desc, prompt } });

@@ -12,6 +12,9 @@ import { decide } from '../lib/router.mjs';
 import { validateRoster } from '../lib/validate-config.mjs';
 import { knownTypes } from '../lib/score.mjs';
 import { resolveRosterPath } from '../lib/platform.mjs';
+import {
+  backendNames, backend as backendCfg, backendDisabledByEnv, nativeModels,
+} from '../lib/config.mjs';
 
 // Resolve project root from this file's location (src/bin/route.mjs -> root).
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -22,6 +25,7 @@ const args = process.argv.slice(2);
 let preset = '';
 let explain = false;
 let validate = false;
+let listBackends = false;
 let tagsPath = process.env.MMT_TAGS || join(MMT_ROOT, 'config', 'tags.txt');
 // Default via shared resolver: .mmt/roster.json (cwd) > ~/.claude/mmt-roster.json > plugin default.
 // An explicit --roster flag (below) still overrides this.
@@ -34,6 +38,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a.startsWith('--preset=')) { preset = a.slice('--preset='.length); }
   else if (a === '--explain') { explain = true; }
   else if (a === '--validate') { validate = true; }
+  else if (a === '--backends') { listBackends = true; }
   else if (a === '--tags' && i + 1 < args.length) { tagsPath = args[++i]; }
   else if (a.startsWith('--tags=')) { tagsPath = a.slice('--tags='.length); }
   else if (a === '--roster' && i + 1 < args.length) { rosterPath = args[++i]; }
@@ -78,6 +83,37 @@ async function main() {
       confidence: 'low',
     };
     process.stdout.write(JSON.stringify(fallback) + '\n');
+    process.exit(0);
+  }
+
+  // --backends mode: show which backends are on/off and where each tier points. This is the
+  // discoverability surface for enabling/disabling a backend — without it the only way to see the
+  // effect of MMT_DISABLE_BACKENDS or an `enabled:false` was to route a task and infer it.
+  if (listBackends) {
+    const names = backendNames(roster);
+    const rows = names.map((n) => {
+      const cfg = backendCfg(roster, n);
+      const envOff = backendDisabledByEnv(n);
+      const status = cfg.enabled ? 'enabled' : (envOff ? 'DISABLED (env)' : 'DISABLED (roster)');
+      const tiers = Object.entries(cfg.model_tiers || {});
+      const models = tiers.length
+        ? tiers.map(([t, m]) => `${t}=${m}`).join(' ')
+        : '<no model map — the CLI uses its own default>';
+      return { name: n, status, kind: cfg.kind, models };
+    });
+    const width = Math.max(7, ...rows.map((r) => r.name.length));
+    process.stdout.write(`roster: ${rosterPath}\n\n`);
+    for (const r of rows) {
+      process.stdout.write(`${r.name.padEnd(width)}  ${r.status.padEnd(17)} kind=${(r.kind || '?').padEnd(9)} ${r.models}\n`);
+    }
+    process.stdout.write(`${'native'.padEnd(width)}  ${'always on'.padEnd(17)} kind=${'claude'.padEnd(9)} ` +
+      Object.entries(nativeModels(roster)).map(([t, m]) => `${t}=${m}`).join(' ') + '\n');
+    process.stdout.write(
+      '\nTurn a backend off permanently: set backends.<name>.enabled = false in the roster.\n' +
+      'Turn one off for this shell only:  MMT_DISABLE_BACKENDS=codex,agy\n' +
+      'Run only one backend:              MMT_ONLY_BACKENDS=agy\n' +
+      'Override a model for this shell:   MMT_MODEL_AGY=gemini-3.6-flash-high\n',
+    );
     process.exit(0);
   }
 
