@@ -15,6 +15,8 @@
  * added here — `/team 2:opencode <task>` silently lost both the cap and the spec boundary.
  */
 
+import { splitRoleSpec } from './roles.mjs';
+
 // ─── alias sets ──────────────────────────────────────────────────────────────
 
 const GEMINI_ALIASES   = new Set(['gemini', 'agy', 'flash', 'pro', 'google']);
@@ -137,7 +139,23 @@ function _defaults(note) {
  * @param {string} rawText
  * @returns {{ caps: object, task: string, source: string, flags: string[], writable: boolean }}
  */
-export function splitSpec(rawText) {
+export function splitSpec(rawText, opts = {}) {
+  // ROLE spec first. The two grammars are unambiguous — a role spec starts with a known role word,
+  // a cap spec starts with a number or a backend word — so this is a check, not a guess. When the
+  // input is a role spec the caps are DERIVED from it, so callers that only understand caps keep
+  // working unchanged.
+  const asRoles = splitRoleSpec(rawText, opts);
+  if (asRoles) {
+    return {
+      caps: _capsFromRoleCounts(asRoles.counts),
+      roles: asRoles,
+      task: asRoles.task,
+      source: 'roles',
+      flags: asRoles.flags,
+      writable: asRoles.writable,
+    };
+  }
+
   let text = String(rawText ?? '').trim();
 
   // Peel leading `--flag` tokens (before AND after a spec, so both documented orders work).
@@ -184,6 +202,28 @@ export function splitSpec(rawText) {
   return _withFlags({ caps: _defaults(''), task: text, source: 'default' }, flags);
 }
 
+/**
+ * Project a role spec's per-backend worker counts onto the cap-spec shape, so every existing
+ * consumer of `.caps` (the workflow's CAPS ladder, `--gemini-cap`) keeps working when the user
+ * types a role spec instead. Backend names come back as the CAP vocabulary (`gemini`/`claude`),
+ * not roster names, because that is what `.caps` has always meant.
+ * @param {Record<string,number>} counts  by roster backend name
+ */
+function _capsFromRoleCounts(counts) {
+  const CAP_KEY = { agy: 'gemini', codex: 'codex', opencode: 'opencode', native: 'claude' };
+  const caps = { gemini: 0, codex: 0, opencode: 0, claude: 0 };
+  for (const [backend, n] of Object.entries(counts || {})) {
+    const key = CAP_KEY[backend];
+    if (key) caps[key] = _clamp(n);
+  }
+  return {
+    ...caps,
+    total: caps.gemini + caps.codex + caps.opencode + caps.claude,
+    source: 'spec',   // the user DID specify — a role spec is an explicit assignment
+    note: '',
+  };
+}
+
 /** Attach the consumed mode flags (and the `--writable` convenience boolean) to a split result. */
 function _withFlags(result, flags) {
   return { ...result, flags, writable: flags.includes('--writable') };
@@ -198,13 +238,24 @@ function _reEscape(s) {
 import { pathToFileURL } from 'node:url';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // The role vocabulary lives in the roster, so --split needs it to recognise a role spec. A roster
+  // that won't load is not fatal: roles.mjs falls back to a built-in catalog and the cap grammar is
+  // roster-independent, so parsing still works.
+  const { loadRoster } = await import('./config.mjs');
+  const { resolveRosterPath } = await import('./platform.mjs');
+  const { dirname, resolve } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  let roster = {};
+  try { roster = loadRoster(resolveRosterPath(root)); } catch { /* built-in catalog applies */ }
+
   const chunks = [];
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (c) => chunks.push(c));
   process.stdin.on('end', () => {
     const raw = chunks.join('');
     const useSplit = process.argv.includes('--split');
-    const result = useSplit ? splitSpec(raw) : parseCaps(raw.trim());
+    const result = useSplit ? splitSpec(raw, { roster }) : parseCaps(raw.trim());
     process.stdout.write(JSON.stringify(result) + '\n');
   });
 }

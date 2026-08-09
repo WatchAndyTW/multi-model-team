@@ -27,6 +27,41 @@
     "relay_model": "haiku"
   },
 
+  "roles": {
+    "_comment": "The /team ROLE system — deliberately mirrors oh-my-claudecode's staged pipeline so the vocabulary is the same one you already know. A role says WHAT a worker is for; the backend says WHICH model runs it. They are independent: any role can run on any backend (`impl:opencode:2` and `impl:claude:1` are both fine), which is the whole point — you pick the model per job, not per stage.",
+    "_spec_note": "Role spec syntax for /team: `role:backend:count` groups, comma-separated inside a role, semicolon-separated between roles. Example: `orch:claude:2;impl:opencode:1,claude:2;review:codex:2`. `backend:count` and `count:backend` are both accepted. The older cap spec (`5:gemini,2:claude`) still works unchanged — a spec is read as a ROLE spec only when its first token names a known role.",
+    "_stages_note": "Stages run in this order; every role belongs to exactly one. A stage with no assigned workers is skipped entirely, so `impl:opencode:2` alone runs just the exec stage. This is OMC's `team-plan -> team-prd -> team-exec -> team-verify -> team-fix`.",
+    "stages": ["plan", "prd", "exec", "verify", "fix"],
+
+    "_defaults_note": "Used when a role is named with no backend, or a backend with no count.",
+    "default_backend": "native",
+    "default_count": 1,
+
+    "_catalog_note": "One entry per OMC agent, plus `fixer` for the fix stage (OMC staffs team-fix with executor/debugger; naming it lets you assign that stage directly). `tier` is the DEFAULT tier for the role and matches OMC's model choice for that agent (opus->high, sonnet->standard, haiku->cheap); it resolves per-backend through the normal model ladder, so `high` on agy means agy's strongest model, not Opus. Aliases are what a user may type; the canonical name is the key.",
+    "catalog": {
+      "explore":             { "stage": "plan",   "tier": "cheap",    "aliases": ["scout", "search", "survey"],                          "desc": "Scan the codebase and report what exists, where, and how it fits together." },
+      "planner":             { "stage": "plan",   "tier": "high",     "aliases": ["orch", "orchestrator", "plan", "planning"],           "desc": "Decompose the task into an ordered, runnable task graph." },
+      "architect":           { "stage": "plan",   "tier": "high",     "aliases": ["arch", "architecture"],                               "desc": "Decide system boundaries, interfaces and structural trade-offs." },
+      "analyst":             { "stage": "prd",    "tier": "high",     "aliases": ["prd", "requirements", "req"],                         "desc": "Turn a vague ask into explicit requirements and acceptance criteria." },
+      "critic":              { "stage": "prd",    "tier": "high",     "aliases": ["challenge", "redteam", "red-team"],                   "desc": "Challenge the scope and plan; surface what was assumed or missed." },
+      "executor":            { "stage": "exec",   "tier": "standard", "aliases": ["impl", "exec", "implement", "build", "worker", "dev"], "desc": "Do the actual implementation work." },
+      "designer":            { "stage": "exec",   "tier": "standard", "aliases": ["design", "ui", "ux", "frontend"],                     "desc": "Build or restyle UI — components, layout, visual polish." },
+      "debugger":            { "stage": "exec",   "tier": "standard", "aliases": ["debug", "rootcause", "root-cause"],                   "desc": "Isolate a failure to its root cause and fix it." },
+      "tracer":              { "stage": "exec",   "tier": "standard", "aliases": ["trace"],                                              "desc": "Trace causality through a system with competing hypotheses and evidence." },
+      "test-engineer":       { "stage": "exec",   "tier": "standard", "aliases": ["test", "tests", "testing", "test-eng"],               "desc": "Write and harden tests — unit, integration, e2e, regression." },
+      "code-simplifier":     { "stage": "exec",   "tier": "high",     "aliases": ["simplify", "simplifier", "cleanup", "refactor"],      "desc": "Simplify and tighten code without changing behaviour." },
+      "writer":              { "stage": "exec",   "tier": "cheap",    "aliases": ["docs", "doc", "write"],                               "desc": "Write user-facing docs, READMEs and comments." },
+      "document-specialist": { "stage": "exec",   "tier": "standard", "aliases": ["research-docs", "reference", "docspec"],              "desc": "Pull in and digest external documentation and references." },
+      "scientist":           { "stage": "exec",   "tier": "standard", "aliases": ["data", "analysis", "experiment"],                     "desc": "Run data analysis and empirical investigation." },
+      "git-master":          { "stage": "exec",   "tier": "standard", "aliases": ["git", "vcs", "commits"],                              "desc": "Handle git surgery — atomic commits, rebases, history repair." },
+      "verifier":            { "stage": "verify", "tier": "standard", "aliases": ["verify", "check"],                                    "desc": "Check each result against its acceptance criterion with evidence." },
+      "code-reviewer":       { "stage": "verify", "tier": "high",     "aliases": ["review", "reviewer", "cr", "code-review"],            "desc": "Review the change for correctness, edge cases and quality." },
+      "security-reviewer":   { "stage": "verify", "tier": "high",     "aliases": ["security", "sec", "secreview", "audit"],              "desc": "Audit for vulnerabilities, unsafe patterns and leaked secrets." },
+      "qa-tester":           { "stage": "verify", "tier": "standard", "aliases": ["qa", "manual-test", "e2e"],                           "desc": "Exercise the running software the way a user would." },
+      "fixer":               { "stage": "fix",    "tier": "standard", "aliases": ["fix", "repair", "patch"],                             "desc": "Apply bounded fixes for defects verification found." }
+    }
+  },
+
   "reasoning": {
     "_comment": "Roles + defaults for the /reasoning Fusion pipeline. 'panel' is YOUR configurable list of reasoning models — editing it changes which models participate in /reasoning by default (e.g. add a 4th model: ['opus','sonnet','gemini','codex']; or go CLI-only: ['gemini','codex']). Each token runs the SAME question in parallel; see docs/REASONING.md for the full token vocabulary (opus/sonnet/haiku/gemini/flash/codex and their aliases). 'judge' compares the panel into structured analysis; 'synthesizer' writes the unified answer (both 'native:<tier>' or a bare tier/backend token). 'cap' bounds total panelists. 'tier_models' maps a tier to a concrete native model; 'relay_model' is the model the thin CLI-relay agents run on. The panel (and judge/synthesizer) are user-configurable here; overridable further per-invocation via a panel spec like '2:gemini,opus,codex', or in-session 'judge with sonnet'. Precedence: built-in default < this section < per-invocation.",
     "panel": ["opus", "sonnet", "gemini"],
