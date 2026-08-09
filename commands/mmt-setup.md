@@ -63,7 +63,19 @@ expand it.)
 
 ## 4 · Point them at the knobs
 
-Briefly note what they can edit in the roster: `backends` (enable/disable agy/codex), `routes`
-(where a task type goes), `team` (the `/team` pipeline roles), `reasoning.panel` (which models
-`/reasoning` fans out to), `defaults.preset` (`budget`/`balanced`/`premium`). Routing changes can be
-verified with `/route-test`.
+Briefly note what they can edit in the roster: `backends` (enable/disable agy/codex/opencode, and
+map each one's tiers to models via `models` / `model_aliases`), `routes` (where a task type goes),
+`team` (the `/team` pipeline roles), `reasoning.panel` (which models `/reasoning` fans out to),
+`defaults.native_models` (which Claude model each tier means), `defaults.preset`
+(`budget`/`balanced`/`premium`). Routing changes can be verified with `/route-test`.
+
+Also mention the two inspection/override shortcuts, which need no roster edit:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/src/bin/route.mjs" --backends
+```
+
+shows every backend, whether it is on, what turned it off, and each tier's model. For a one-shell
+change there are `MMT_DISABLE_BACKENDS=codex,agy` (blocklist), `MMT_ONLY_BACKENDS=agy` (allowlist)
+and `MMT_MODEL_AGY=<id>` (model override). `native` can never be disabled — it is the guaranteed
+fallback.

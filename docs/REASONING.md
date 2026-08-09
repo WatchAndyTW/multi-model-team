@@ -52,6 +52,7 @@ A **panel token** is a short name a user types. It expands to a panelist `{ back
 | `gemini`, `agy`, `pro`, `google` | `agy` | `standard` |
 | `flash` | `agy` | `cheap` |
 | `codex`, `openai`, `gpt`, `chatgpt` | `codex` | `standard` |
+| `opencode`, `oc` | `opencode` | `standard` |
 
 A token may be repeated for self-consistency, and a **count prefix** adds N copies:
 `3:gemini` = three Gemini panelists; `gemini:3` is also accepted. Unknown tokens are ignored
@@ -109,7 +110,7 @@ Exports:
 
 - **`expandPanel(tokens, opts?)`** → `{ panel: Panelist[], note: string }`
   Expand an array of panel tokens (strings, each possibly `N:token` / `token:N`) into resolved
-  panelists. `Panelist = { backend: 'native'|'agy'|'codex', tier: string, label: string, token: string }`.
+  panelists. `Panelist = { backend: 'native'|'agy'|'codex'|'opencode', tier: string, label: string, token: string }`.
   Labels are unique (`gemini`, `gemini-2`, …). Clamp the total to `opts.cap` (default 8, ceiling 16).
   Unknown tokens are skipped and described in `note`. If nothing valid expands, return an empty
   panel (caller falls back to its default).

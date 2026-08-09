@@ -1,5 +1,5 @@
 ---
-description: Run a question through the multi-model Fusion pipeline — fan it out to a configurable panel of models in parallel (default panel is the user-configurable set from `reasoning.panel` in roster.json, defaulting to Opus+Sonnet+Gemini; override per-invocation with a spec like "2:gemini,opus,codex"), have a judge compare their answers into structured analysis (consensus / contradictions / unique insights / blind spots), then synthesize one unified answer that is better than any single model's.
+description: Run a question through the multi-model Fusion pipeline — fan it out to a configurable panel of models in parallel (default panel is the user-configurable set from `reasoning.panel` in roster.json, defaulting to Opus+Sonnet+Gemini; override per-invocation with a spec like "2:gemini,opus,codex,opencode"), have a judge compare their answers into structured analysis (consensus / contradictions / unique insights / blind spots), then synthesize one unified answer that is better than any single model's.
 argument-hint: "[panel-spec] <question>"
 allowed-tools: Bash, Task
 ---
@@ -14,7 +14,7 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 > load the reasoning config with the Bash command in step 1, then run the deterministic Fusion
 > engine: use the Workflow tool path if available, otherwise use the scripted `reason.mjs` path or
 > explicit faithful-relay `Task` panelists. Do **not** answer with Claude's native analysis or with
-> plain native `Task` agents in place of CLI panelists. Every `gemini`/`codex` panelist must actually
+> plain native `Task` agents in place of CLI panelists. Every `gemini`/`codex`/`opencode` panelist must actually
 > run through `node src/bin/run.mjs --call-file=<path>` (a `.mmt/calls/` file holding a forced `"native":false` decision + the question, written by the relay with the Write tool — no base64, no question text on the command line); a `gemini:`/`codex:` result
 > must come from that CLI, never from Claude dressing up an answer under that label.
 
@@ -48,7 +48,7 @@ built-in default < roster `reasoning` < this invocation.**
 ## 2 · Parse the optional panel spec + split off the question
 
 The input may *start* with a panel spec — a comma list of panel tokens / `N:token` pairs such as
-`2:gemini,opus,codex` (each token expands to a `{backend, tier}` panelist; a count prefix adds N
+`2:gemini,opus,codex,opencode` (each token expands to a `{backend, tier}` panelist; a count prefix adds N
 copies). Let the parser split it off **deterministically**, passing the **user's configured panel**
 (from step 1) as the default. Feed the **whole raw input** on a single-quoted heredoc (the
 injection-safe boundary — never put the input on the command line). The `--default` value is the
@@ -124,13 +124,13 @@ QUESTION:
 <question text>
 ```
 
-**CLI panelist** (backend `agy` or `codex`) — spawn a FAITHFUL RELAY agent (`subagent_type:
+**CLI panelist** (backend `agy`, `codex` or `opencode`) — spawn a FAITHFUL RELAY agent (`subagent_type:
 "general-purpose"`, and **set `model` to the `relay_model` from step 1 — resolved from merged roster
 config; the shipped roster value is `haiku`, and the built-in fallback is `sonnet`**). A
 relay does ZERO reasoning (one Bash call, return stdout verbatim), so pin it to the cheap relay
 model — do NOT let it inherit the orchestrator's model (e.g. Opus). It does NOT solve the question;
 it runs the one dispatch command and returns stdout verbatim. Substitute the real plugin root for
-`<PLUGIN_ROOT>`, the backend `<BE>` (agy|codex), `<TIER>`, a short unique `<CALL_PATH>` like
+`<PLUGIN_ROOT>`, the backend `<BE>` (agy|codex|opencode), `<TIER>`, a short unique `<CALL_PATH>` like
 `.mmt/calls/<label>.json`, and the question text into the call file's `"task"` field — never the raw
 question on the command line:
 

@@ -27,6 +27,20 @@ test('expandPanel: every alias maps to the right backend/tier', () => {
   assert.equal(one('openai').backend, 'codex');
   assert.equal(one('gpt').backend, 'codex');
   assert.equal(one('chatgpt').backend, 'codex');
+  assert.equal(one('opencode').backend, 'opencode'); assert.equal(one('opencode').tier, 'standard');
+  assert.equal(one('oc').backend, 'opencode', 'oc alias');
+});
+
+test('a panel spec naming opencode survives into the panel', () => {
+  // coercePanelist-style allowlists elsewhere used to rewrite an unknown backend to native, which
+  // would silently drop a panelist while the panel still LOOKED right. Guard the whole path here.
+  const { panel } = parsePanel('gemini,opencode,opus', { defaultPanel: ['opus'] });
+  assert.deepEqual(panel.map((p) => p.backend), ['agy', 'opencode', 'native']);
+
+  const split = splitPanel('2:opencode what is the best caching strategy?', { defaultPanel: ['opus'] });
+  assert.equal(split.panel.length, 2);
+  assert.ok(split.panel.every((p) => p.backend === 'opencode'));
+  assert.equal(split.question, 'what is the best caching strategy?', 'spec must not leak into the question');
 });
 
 test('expandPanel: count prefix 3:gemini -> three panelists, unique labels', () => {

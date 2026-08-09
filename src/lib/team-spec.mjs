@@ -3,21 +3,31 @@
  * Node ESM port of scripts/lib/team_spec.py. Zero runtime dependencies.
  *
  * Exports:
- *   parseCaps(spec)      — "N:gemini,M:claude" -> { gemini, codex, claude, total, source, note }
- *   splitSpec(rawText)   — peel a LEADING cap spec; return { caps, task, source }
+ *   parseCaps(spec)      — "N:gemini,M:claude" -> { gemini, codex, opencode, claude, total, source, note }
+ *   splitSpec(rawText)   — peel leading mode flags + a LEADING cap spec;
+ *                          return { caps, task, source, flags, writable }
+ *
+ * Cap keys are the /team SPEC vocabulary, not roster backend names:
+ *   gemini -> agy,  codex -> codex,  opencode -> opencode,  claude -> native.
+ * A backend missing from these alias sets is invisible to the spec: `_normalize` returns null, the
+ * pair is dropped as "unparseable" AND `splitSpec`'s alternation never matches it, so the whole
+ * spec is swallowed into the task text. That is exactly what happened to opencode before it was
+ * added here — `/team 2:opencode <task>` silently lost both the cap and the spec boundary.
  */
 
 // ─── alias sets ──────────────────────────────────────────────────────────────
 
-const GEMINI_ALIASES = new Set(['gemini', 'agy', 'flash', 'pro', 'google']);
-const CODEX_ALIASES  = new Set(['codex', 'chatgpt', 'openai', 'gpt']);
-const CLAUDE_ALIASES = new Set(['claude', 'native', 'sonnet', 'opus', 'anthropic']);
+const GEMINI_ALIASES   = new Set(['gemini', 'agy', 'flash', 'pro', 'google']);
+const CODEX_ALIASES    = new Set(['codex', 'chatgpt', 'openai', 'gpt']);
+const OPENCODE_ALIASES = new Set(['opencode', 'oc']);
+const CLAUDE_ALIASES   = new Set(['claude', 'native', 'sonnet', 'opus', 'anthropic']);
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const DEFAULT_GEMINI = _envInt('MMT_TEAM_GEMINI_DEFAULT', 4);
-const DEFAULT_CODEX  = _envInt('MMT_TEAM_CODEX_DEFAULT',  2);
-const DEFAULT_CLAUDE = _envInt('MMT_TEAM_CLAUDE_DEFAULT', 2);
+const DEFAULT_GEMINI   = _envInt('MMT_TEAM_GEMINI_DEFAULT',   4);
+const DEFAULT_CODEX    = _envInt('MMT_TEAM_CODEX_DEFAULT',    2);
+const DEFAULT_OPENCODE = _envInt('MMT_TEAM_OPENCODE_DEFAULT', 2);
+const DEFAULT_CLAUDE   = _envInt('MMT_TEAM_CLAUDE_DEFAULT',   2);
 const MAX_PER_BACKEND = 16;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -37,9 +47,10 @@ function _clamp(n) {
 
 function _normalize(name) {
   const lc = String(name ?? '').trim().toLowerCase();
-  if (GEMINI_ALIASES.has(lc)) return 'gemini';
-  if (CODEX_ALIASES.has(lc))  return 'codex';
-  if (CLAUDE_ALIASES.has(lc)) return 'claude';
+  if (GEMINI_ALIASES.has(lc))   return 'gemini';
+  if (CODEX_ALIASES.has(lc))    return 'codex';
+  if (OPENCODE_ALIASES.has(lc)) return 'opencode';
+  if (CLAUDE_ALIASES.has(lc))   return 'claude';
   return null;
 }
 
@@ -90,17 +101,20 @@ export function parseCaps(spec) {
     return _defaults(notes.join('; ') || 'no usable pairs in spec');
   }
 
-  const gemini = _clamp(caps.gemini ?? 0);
-  const codex  = _clamp(caps.codex  ?? 0);
-  const claude = _clamp(caps.claude  ?? 0);
-  return { gemini, codex, claude, total: gemini + codex + claude,
+  const gemini   = _clamp(caps.gemini   ?? 0);
+  const codex    = _clamp(caps.codex    ?? 0);
+  const opencode = _clamp(caps.opencode ?? 0);
+  const claude   = _clamp(caps.claude   ?? 0);
+  return { gemini, codex, opencode, claude,
+           total: gemini + codex + opencode + claude,
            source: 'spec', note: notes.join('; ') };
 }
 
 function _defaults(note) {
   return {
-    gemini: DEFAULT_GEMINI, codex: DEFAULT_CODEX, claude: DEFAULT_CLAUDE,
-    total:  DEFAULT_GEMINI + DEFAULT_CODEX + DEFAULT_CLAUDE,
+    gemini: DEFAULT_GEMINI, codex: DEFAULT_CODEX,
+    opencode: DEFAULT_OPENCODE, claude: DEFAULT_CLAUDE,
+    total:  DEFAULT_GEMINI + DEFAULT_CODEX + DEFAULT_OPENCODE + DEFAULT_CLAUDE,
     source: 'default', note,
   };
 }
@@ -108,18 +122,37 @@ function _defaults(note) {
 // ─── splitSpec ───────────────────────────────────────────────────────────────
 
 /**
- * Deterministically peel a LEADING cap spec off rawText.
+ * Deterministically peel any LEADING mode flags and a LEADING cap spec off rawText.
+ *
  * "3 things: a b c" is NOT misread as a spec — a leading token is only treated as a spec
  * if it consists of N:backend or backend:N pairs with KNOWN aliases.
  *
+ * MODE FLAGS FIRST: `/team`'s documented argument order is `[--writable] [caps] <task>`, but the
+ * spec matcher only ever looked at the very start of the text — so a leading `--writable` pushed
+ * the spec out of position and the caps were silently lost (source:'default') AND the spec text
+ * leaked into the task. Leading `--flag` tokens are therefore consumed first, in either order
+ * relative to the spec, and reported back so the caller still sees them. They are kept OUT of the
+ * task text, which is what the command doc already asks the caller to do by hand.
+ *
  * @param {string} rawText
- * @returns {{ caps: object, task: string, source: string }}
+ * @returns {{ caps: object, task: string, source: string, flags: string[], writable: boolean }}
  */
 export function splitSpec(rawText) {
-  const text = String(rawText ?? '').trim();
+  let text = String(rawText ?? '').trim();
+
+  // Peel leading `--flag` tokens (before AND after a spec, so both documented orders work).
+  const flags = [];
+  const peelFlags = () => {
+    let m;
+    while ((m = /^\s*(--[A-Za-z][A-Za-z0-9-]*)(?=\s|$)/.exec(text))) {
+      flags.push(m[1].toLowerCase());
+      text = text.slice(m[0].length).trim();
+    }
+  };
+  peelFlags();
 
   // Build alternation of all known aliases, longest-first (mirrors Python's re.escape sort).
-  const allAliases = [...GEMINI_ALIASES, ...CODEX_ALIASES, ...CLAUDE_ALIASES];
+  const allAliases = [...GEMINI_ALIASES, ...CODEX_ALIASES, ...OPENCODE_ALIASES, ...CLAUDE_ALIASES];
   allAliases.sort((a, b) => b.length - a.length);
   const aliasAlt = allAliases.map(_reEscape).join('|');
 
@@ -133,9 +166,10 @@ export function splitSpec(rawText) {
   let m = reFull.exec(text);
   if (m) {
     const specStr = m[1].trim();
-    const task    = m[2].trim();
     const caps    = parseCaps(specStr);
-    return { caps, task, source: caps.source };
+    text = m[2].trim();
+    peelFlags();   // `caps --writable task` — the flag may also trail the spec
+    return _withFlags({ caps, task: text, source: caps.source }, flags);
   }
 
   // Attempt: the whole string is just a spec.
@@ -143,11 +177,16 @@ export function splitSpec(rawText) {
   m = reOnly.exec(text);
   if (m) {
     const caps = parseCaps(m[1].trim());
-    return { caps, task: '', source: caps.source };
+    return _withFlags({ caps, task: '', source: caps.source }, flags);
   }
 
-  // No spec found — return defaults + full text as task.
-  return { caps: _defaults(''), task: text, source: 'default' };
+  // No spec found — return defaults + remaining text as task.
+  return _withFlags({ caps: _defaults(''), task: text, source: 'default' }, flags);
+}
+
+/** Attach the consumed mode flags (and the `--writable` convenience boolean) to a split result. */
+function _withFlags(result, flags) {
+  return { ...result, flags, writable: flags.includes('--writable') };
 }
 
 function _reEscape(s) {

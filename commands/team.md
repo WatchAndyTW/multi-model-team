@@ -1,6 +1,6 @@
 ---
-description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:claude". Add --writable to give each agent its own git worktree and merge into an integration branch.
-argument-hint: "[--writable] [N:gemini,M:claude] <task>"
+description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, code review/tests → codex, your own opencode model → opencode, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:codex,1:opencode,2:claude". Add --writable to give each agent its own git worktree and merge into an integration branch.
+argument-hint: "[--writable] [N:gemini,M:codex,P:opencode,Q:claude] <task>"
 allowed-tools: Bash, Write, Task
 ---
 
@@ -14,7 +14,7 @@ Plugin root: `${CLAUDE_PLUGIN_ROOT}`
 > spec, load the team config with the Bash command in step 1.5, then run the deterministic team
 > engine: use the Workflow tool path if available, otherwise use the scripted `team.mjs` path or
 > explicit faithful-relay `Task` subtasks. Do **not** solve with Claude's native analysis or with
-> plain native `Task` agents in place of CLI subtasks. Every `gemini`/`codex` subtask must actually
+> plain native `Task` agents in place of CLI subtasks. Every `gemini`/`codex`/`opencode` subtask must actually
 > run through `node src/bin/run.mjs --call-file=<path>` (a `.mmt/calls/` file holding a forced
 > `"native":false` decision + the task, written by the relay with the Write tool — no base64, no
 > task text on the command line); a `gemini:`/`codex:` result must come from that CLI, never from
@@ -36,8 +36,9 @@ reaches a script as a file (step 3) or via a single-quoted heredoc.
 
 ## 1 · Parse the optional agent-cap spec + split off the task
 The input may *start* with a cap spec — a comma list of `N:<backend>` pairs such as
-`5:gemini,2:codex,1:claude` (order-agnostic; `gemini`=agy, `codex`=codex, `claude`=native — all
-equal). Let the parser split it off **deterministically**. Feed the **whole raw input** on a
+`5:gemini,2:codex,1:opencode,2:claude` (order-agnostic; `gemini`=agy, `codex`=codex,
+`opencode`=opencode (alias `oc`), `claude`=native — all equal). Let the parser split it off
+**deterministically**. Feed the **whole raw input** on a
 single-quoted heredoc (the injection-safe boundary — never put the input on the command line):
 
 ```
@@ -46,18 +47,23 @@ node "${CLAUDE_PLUGIN_ROOT}/src/lib/team-spec.mjs" --split <<'MMT_ARGS_EOF'
 MMT_ARGS_EOF
 ```
 
-→ `{ "gemini": G, "codex": K, "claude": C, "source": "spec|default", "task": "<task stripped>",
-"note": "..." }`. Use **`.task`** as the task. The caps bound parallel agents per backend
-(`gemini`=agy, `codex`=codex, `claude`=native). **Only pass these as `args.caps` when `.source` is
+→ `{ "caps": { "gemini": G, "codex": K, "opencode": P, "claude": C, "source": "spec|default",
+"note": "..." }, "task": "<task stripped>", "flags": ["--writable"], "writable": true|false }`.
+Use **`.task`** as the task — it already has the cap spec **and** any leading `--flag` removed.
+The caps bound parallel agents per backend (`gemini`=agy, `codex`=codex, `opencode`=opencode,
+`claude`=native).
+**Only pass these as `args.caps` when `.caps.source` is
 `"spec"`** (the user actually typed a spec); on `"default"`, omit caps so the roster `team.caps`
 applies. If `.note` is non-empty, surface it.
 
 ### Mode: read-only (default) vs `--writable`
-Before decomposing, detect the mode from the raw input. If the input contains the token **`--writable`**
-(strip it from the task text first — it is a mode flag, not part of the task), run in **writable mode**;
-otherwise **read-only mode** (the default).
+The same parse decides the mode: use **`.writable`** from the step-1 output (true when the input
+carried a leading `--writable`). Do **not** re-scan the raw input for the token — the parser already
+consumed it and removed it from `.task`, and it accepts the flag on either side of the cap spec
+(`--writable 3:gemini …` and `3:gemini --writable …` both work). `.writable` true → **writable
+mode**; otherwise **read-only mode** (the default).
 
-- **read-only (DEFAULT):** the CLI agents (agy/codex) stay **read-only** — they return text, not edits.
+- **read-only (DEFAULT):** the CLI agents (agy/codex/opencode) stay **read-only** — they return text, not edits.
   Any file changes are applied by **you (the orchestrator) directly to the CURRENT branch**. Do **NOT**
   create a branch, a worktree, or a PR in this mode. This is the back-compat behaviour.
 - **writable (`--writable`):** each subtask gets its **own git worktree + branch** off the current HEAD;
@@ -84,8 +90,8 @@ node "${CLAUDE_PLUGIN_ROOT}/src/lib/config.mjs" team-config
 ```
 
 → `{ dispatch_backends, verifier, verify, max_fix_loops, caps, tier_models, relay_model }` — the
-**defaults**. **native, agy and codex are EQUAL** — any can be assigned to any subtask and any can be
-the verifier. If the user *describes* a role override in-session — e.g. "verify with gemini", "only
+**defaults**. **native, agy, codex and opencode are EQUAL** — any can be assigned to any subtask and
+any can be the verifier. If the user *describes* a role override in-session — e.g. "verify with gemini", "only
 use codex and native", "no verification", "verify on opus" — apply it on top. **Precedence: built-in
 default < roster `team` < this invocation.** Pass the config straight into the workflow as
 `args.teamConfig`, and any in-session override as the matching top-level arg (`verifier`, `caps`, …)
@@ -94,19 +100,24 @@ which wins. `verifier:"native"` = review on Claude (no CLI).
 ## 2 · Decompose the task
 Split the task into subtasks. For **each** subtask decide four things:
 - **backend** — pick the **best-fit** from the eligible set (`dispatch_backends`, default
-  `agy`/`codex`/`native` — all equal options):
+  `agy`/`codex`/`opencode`/`native` — all equal options). **Assign ONLY from `dispatch_backends`**:
+  a backend the user has disabled is absent from that list, and assigning it anyway wastes a wave.
   - **agy** (Gemini CLI) — fast/cheap commodity & verifiable work and Gemini's edges: new
     components/CSS/UI, scaffolding, CRUD, scripts, SQL, regex, configs, unit tests, data
     transforms, web-research/doc-summary, audio/video.
   - **codex** (Codex CLI) — code review, writing/extending tests, verification, focused checkable
     code units.
+  - **opencode** (OpenCode CLI) — runs on **whichever model the user configured in opencode
+    itself** (the plugin passes no model flag). Use it for work the user wants on their own setup —
+    a local/self-hosted model, a provider the others don't cover — or as extra independent capacity
+    when agy and codex are saturated. It has no auto-route lane, so it only runs when assigned here.
   - **native** (Claude) — judgment / your-codebase context / hard-to-verify, **and the hard line**:
     RE, IL2CPP/protobuf-RE, disasm, FFI/unsafe, injection, concurrency, protocol design. The hard
     line **must stay native**.
 - **deps** — the labels of any other subtasks whose output this one needs (it runs *after* them
   and gets their results as context). `[]` if independent. Keep the graph acyclic.
 - **verify** — one short, checkable acceptance criterion (what makes the result correct).
-- **tier** — CLI backends (agy/codex) → `standard`/`cheap`; native → **by complexity**: `sonnet`
+- **tier** — CLI backends (agy/codex/opencode) → `standard`/`cheap` (or `high` for a backend's strongest model); native → **by complexity**: `sonnet`
   for ordinary codebase analysis / understanding / reviews / standard logic (the default), `opus`
   ONLY for the hard line or deep architecture / subtle concurrency. Do NOT default analysis to
   `opus`. (In the Ultracode path the tier maps to the actual model, so this keeps the native model
@@ -149,7 +160,7 @@ alone. There are two worker kinds:
   from merged roster config; the shipped roster value is `haiku`, and the built-in fallback is `sonnet`**). A relay does ZERO reasoning (one Bash call, return stdout verbatim), so it must be
   pinned to the cheap relay model — do NOT let it inherit the orchestrator's model (e.g. Opus), or
   you pay Opus rates to shell out to a CLI. Use this prompt — substitute the real plugin root for
-  `<PLUGIN_ROOT>`, the subtask's `<BE>` (agy|codex) and `<TIER>`, a short unique `<CALL_PATH>` like
+  `<PLUGIN_ROOT>`, the subtask's `<BE>` (agy|codex|opencode) and `<TIER>`, a short unique `<CALL_PATH>` like
   `.mmt/calls/<label>.json`, and the subtask text into the call file's `"task"` field — never the
   raw text on the command line:
 
