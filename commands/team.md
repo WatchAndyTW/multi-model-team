@@ -1,6 +1,6 @@
 ---
-description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, code review/tests → codex, your own opencode model → opencode, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Optional caps like "5:gemini,2:codex,1:opencode,2:claude". Add --writable to give each agent its own git worktree and merge into an integration branch.
-argument-hint: "[--writable] [N:gemini,M:codex,P:opencode,Q:claude] <task>"
+description: Run a task through the multi-model team pipeline — decompose into backend-assigned subtasks (commodity → parallel agy/Gemini, code review/tests → codex, your own opencode model → opencode, judgment/hard-line → native Claude), dispatch dependency-aware, verify each result, fix failures in a bounded loop, then synthesize. Staff it by ROLE (oh-my-claudecode vocabulary) with a spec like "orch:claude:2;impl:opencode:1,claude:2;review:codex:2" — roles run in stage order plan/prd/exec/verify/fix — or just cap counts like "5:gemini,2:claude". Add --writable to give each agent its own git worktree and merge into an integration branch.
+argument-hint: "[--writable] [orch:claude:2;impl:opencode:1,claude:2;review:codex:2 | N:gemini,M:claude] <task>"
 allowed-tools: Bash, Write, Task
 ---
 
@@ -34,12 +34,44 @@ reaches a script as a file (step 3) or via a single-quoted heredoc.
 > steps 3–7, which fan out **parallel `Task` sub-agents** (one per subtask). Either way the work runs
 > in parallel across agents — never single-session. Steps 1–2 (cap parsing + decomposition) always apply.
 
-## 1 · Parse the optional agent-cap spec + split off the task
-The input may *start* with a cap spec — a comma list of `N:<backend>` pairs such as
+## 1 · Parse the optional ROLE spec (or cap spec) + split off the task
+
+The input may *start* with either kind of spec. **The parser tells them apart deterministically —
+you never have to guess.**
+
+**A · ROLE spec (preferred)** — staffs the run by *job*, not just by count:
+
+```
+orch:claude:2;impl:opencode:1,claude:2;review:codex:2
+```
+
+`role:backend:count`, comma-separated **within** a role, semicolon-separated **between** roles.
+`backend:count` and `count:backend` both work; a bare `role:backend` means one worker. Roles and
+backends are **independent** — any role can run on any backend, and one role can be staffed across
+several (`impl:opencode:1,claude:2` = three implementers, one on opencode and two on Claude).
+
+Every role belongs to a **stage**, and stages run in order
+`plan → prd → exec → verify → fix`. A stage with no workers is **skipped**, so
+`impl:opencode:2` alone runs only the exec stage. Later stages automatically receive earlier
+stages' results.
+
+The vocabulary is oh-my-claudecode's. `orch`/`impl`/`review` are aliases for
+`planner`/`executor`/`code-reviewer`; the full catalog is also directly nameable —
+`explore`, `architect`, `analyst`, `critic`, `designer`, `debugger`, `tracer`, `test-engineer`,
+`code-simplifier`, `writer`, `document-specialist`, `scientist`, `git-master`, `verifier`,
+`security-reviewer`, `qa-tester`, `fixer`. Run this to print the catalog with aliases and stages:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/src/lib/roles.mjs" --list
+```
+
+**B · cap spec (still supported)** — counts only, no roles:
 `5:gemini,2:codex,1:opencode,2:claude` (order-agnostic; `gemini`=agy, `codex`=codex,
-`opencode`=opencode (alias `oc`), `claude`=native — all equal). Let the parser split it off
-**deterministically**. Feed the **whole raw input** on a
-single-quoted heredoc (the injection-safe boundary — never put the input on the command line):
+`opencode`=opencode (alias `oc`), `claude`=native — all equal).
+
+Let the parser split whichever was given off the task **deterministically**. Feed the **whole raw
+input** on a single-quoted heredoc (the injection-safe boundary — never put the input on the
+command line):
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/src/lib/team-spec.mjs" --split <<'MMT_ARGS_EOF'
@@ -47,14 +79,22 @@ node "${CLAUDE_PLUGIN_ROOT}/src/lib/team-spec.mjs" --split <<'MMT_ARGS_EOF'
 MMT_ARGS_EOF
 ```
 
-→ `{ "caps": { "gemini": G, "codex": K, "opencode": P, "claude": C, "source": "spec|default",
-"note": "..." }, "task": "<task stripped>", "flags": ["--writable"], "writable": true|false }`.
-Use **`.task`** as the task — it already has the cap spec **and** any leading `--flag` removed.
-The caps bound parallel agents per backend (`gemini`=agy, `codex`=codex, `opencode`=opencode,
-`claude`=native).
-**Only pass these as `args.caps` when `.caps.source` is
-`"spec"`** (the user actually typed a spec); on `"default"`, omit caps so the roster `team.caps`
-applies. If `.note` is non-empty, surface it.
+→ `{ "caps": {...}, "roles": {...}|absent, "task": "<task stripped>", "source":
+"roles|spec|default", "flags": ["--writable"], "writable": true|false }`.
+
+Use **`.task`** as the task — it already has the spec **and** any leading `--flag` removed.
+
+- **`.source == "roles"`** — a role spec was given. Pass the whole **`.roles`** object through as
+  `args.roles`; it carries `assignments` (`{role, stage, backend, count, tier, desc}`), the active
+  `stages`, and per-backend `counts`. The workflow then staffs exactly those workers, runs the
+  stages in order, and **drops** any subtask naming a (role, backend) pair that was not staffed.
+  `.caps` is derived from the same counts, so also pass it as `args.caps`.
+- **`.source == "spec"`** — a cap spec was given. Pass `.caps` as `args.caps` (no roles).
+- **`.source == "default"`** — nothing was specified. Omit both so the roster `team.caps` applies.
+
+Caps bound parallel agents per backend (`gemini`=agy, `codex`=codex, `opencode`=opencode,
+`claude`=native). If `.caps.note` or `.roles.note` is non-empty, surface it — that is where an
+unknown role or backend is reported.
 
 ### Mode: read-only (default) vs `--writable`
 The same parse decides the mode: use **`.writable`** from the step-1 output (true when the input
@@ -277,7 +317,9 @@ Workflow({
           pluginRoot: "${CLAUDE_PLUGIN_ROOT}",
           teamConfig: <team-config JSON from step 1.5 — edit .dispatch_backends/.verifier/.caps to override roles>,
           // optional top-level in-session overrides — these WIN over teamConfig (omit if none):
-          caps: <{ gemini, codex, claude } ONLY if the cap spec source=="spec">,
+          caps: <{ gemini, codex, opencode, claude } — pass whenever step 1 source is "spec" OR "roles">,
+          roles: <the WHOLE .roles object from step 1, ONLY when source=="roles"; staffs the run by
+                  role and makes the stages run in order. Omit entirely otherwise>,
           verifier: "<any backend, or 'native'>",
           writable: <true ONLY if the user passed --writable; omit/false otherwise>,
           verify: true, maxFixLoops: 1 }

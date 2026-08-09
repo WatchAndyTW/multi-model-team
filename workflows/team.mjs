@@ -76,6 +76,53 @@ for (const b of DISPATCH) {
 }
 const CAP_SUM = DISPATCH.reduce((n, b) => n + CAPS[b], 0)
 
+// ─── role assignments (optional) ─────────────────────────────────────────────
+//
+// A role spec (`orch:claude:2;impl:opencode:1,claude:2;review:codex:2`) staffs the run explicitly:
+// it says WHICH role runs on WHICH backend and how many workers each gets. When present it is
+// authoritative — the decompose may only assign a (role, backend) pair the user actually staffed,
+// and stage order (plan -> prd -> exec -> verify -> fix) drives execution order on top of the
+// normal dependency waves. Absent, everything below is inert and the run behaves exactly as before.
+const ROLE_SPEC = (A.roles && typeof A.roles === 'object') ? A.roles : null
+const ROLE_ASSIGNMENTS = (ROLE_SPEC && Array.isArray(ROLE_SPEC.assignments))
+  ? ROLE_SPEC.assignments.filter((a) => a && a.role && DISPATCH.includes(a.backend))
+  : []
+const ROLE_NAMES = [...new Set(ROLE_ASSIGNMENTS.map((a) => a.role))]
+const ROLE_STAGES = (ROLE_SPEC && Array.isArray(ROLE_SPEC.stages) && ROLE_SPEC.stages.length)
+  ? ROLE_SPEC.stages
+  : ['plan', 'prd', 'exec', 'verify', 'fix']
+
+// role -> its stage and default tier; (role,backend) -> how many workers were staffed.
+const ROLE_STAGE = {}
+const ROLE_TIER = {}
+const ROLE_SLOTS = {}
+for (const a of ROLE_ASSIGNMENTS) {
+  ROLE_STAGE[a.role] = a.stage
+  ROLE_TIER[a.role] = a.tier
+  ROLE_SLOTS[`${a.role}|${a.backend}`] = (ROLE_SLOTS[`${a.role}|${a.backend}`] ?? 0) + a.count
+}
+const USING_ROLES = ROLE_ASSIGNMENTS.length > 0
+
+/** Stage index for ordering; unknown/absent stages sort last but before nothing. */
+function stageRank(stage) {
+  const i = ROLE_STAGES.indexOf(stage)
+  return i === -1 ? ROLE_STAGES.length : i
+}
+
+// What each role means, handed to the worker so the role actually changes its behaviour rather than
+// being a scheduling label. Descriptions come from the roster catalog (passed in via args.roles) so
+// editing a role's `desc` there changes what its workers are told — no code change.
+const ROLE_DESC = {}
+for (const a of ROLE_ASSIGNMENTS) if (a.desc) ROLE_DESC[a.role] = a.desc
+
+function roleBrief(role) {
+  const desc = ROLE_DESC[role]
+  const stage = ROLE_STAGE[role]
+  return `You are acting in the "${role}" role${stage ? ` (pipeline stage: ${stage})` : ''}.` +
+    (desc ? ` ${desc}` : '') +
+    ` Stay within that role — do the ${role} job for this subtask and nothing else.`
+}
+
 // Verify is ON by default; callers can disable it (here or in the roster) or tune the fix loop.
 const VERIFY = (A.verify ?? TC.verify) === false ? false : true
 const MAX_FIX = Math.max(0, Math.min(3, Number(A.maxFixLoops ?? TC.max_fix_loops ?? 1) || 0))
@@ -204,7 +251,16 @@ const PLAN_SCHEMA = {
           label: { type: 'string', description: 'short kebab name, unique within the plan' },
           task: { type: 'string', description: 'full self-contained subtask text' },
           backend: { type: 'string', enum: DISPATCH, description: 'which tool runs this subtask — the listed backends are EQUAL options; pick best-fit' },
-          tier: { type: 'string', enum: ['cheap', 'standard', 'sonnet', 'opus'] },
+          tier: { type: 'string', enum: ['cheap', 'standard', 'high', 'sonnet', 'opus'] },
+          // Present only when the invocation carried a role spec. ROLE_NAMES is the set the user
+          // actually staffed, so the model cannot invent a role that has no worker behind it.
+          ...(ROLE_NAMES.length ? {
+            role: {
+              type: 'string',
+              enum: ROLE_NAMES,
+              description: 'which staffed role performs this subtask; its stage fixes when it runs',
+            },
+          } : {}),
           deps: {
             type: 'array',
             description: 'labels of subtasks whose results this one consumes (run after them). [] if independent.',
@@ -336,7 +392,10 @@ For each subtask also provide:
 - "deps": the labels of any OTHER subtasks whose output this one needs. Those run first and their results are handed to this subtask. Use [] when independent. Keep the dependency graph acyclic.
 - "verify": one short, checkable acceptance criterion (what makes this subtask's result correct).
 
-Caps — use AT MOST this many subtasks per backend: ${DISPATCH.map((b) => `${CAPS[b]} ${b}`).join(', ')} (skip a backend whose cap is 0). Prefer fewer, well-scoped subtasks; a trivial task is a single subtask. Labels must be unique. Each subtask's "task" must be self-contained.
+${USING_ROLES ? `THIS RUN IS STAFFED BY ROLE. The user assigned specific workers; you may ONLY use these (role, backend) pairs, at most the given number of subtasks each:
+${ROLE_ASSIGNMENTS.map((a) => `- role "${a.role}" on backend "${a.backend}" — up to ${a.count} subtask(s), stage "${a.stage}", tier "${a.tier}"`).join('\n')}
+
+Set "role" on every subtask to one of: ${ROLE_NAMES.join(', ')}. A role's STAGE fixes when it runs — stages execute in the order ${ROLE_STAGES.join(' -> ')}, so a later-stage subtask automatically runs after earlier-stage ones and receives their results. Do NOT staff a role the user did not assign, and do NOT pair a role with a backend it was not assigned to. If a role has no sensible work for this task, simply emit no subtask for it.` : `Caps — use AT MOST this many subtasks per backend: ${DISPATCH.map((b) => `${CAPS[b]} ${b}`).join(', ')} (skip a backend whose cap is 0).`} Prefer fewer, well-scoped subtasks; a trivial task is a single subtask. Labels must be unique. Each subtask's "task" must be self-contained.
 
 TASK:
 ${task}`,
@@ -365,13 +424,50 @@ raw.forEach((s, i) => {
   s.label = lab
 })
 
-// Apply per-backend caps (the loud, deterministic part of model dispatching). Each backend is
-// capped independently — no backend is privileged.
+// Apply caps (the loud, deterministic part of model dispatching).
 const kept = []
-for (const b of DISPATCH) {
-  const ofB = raw.filter((s) => s.backend === b)
-  kept.push(...ofB.slice(0, CAPS[b]))
-  if (ofB.length > CAPS[b]) log(`dropping ${ofB.length - CAPS[b]} ${b} subtask(s) over cap ${CAPS[b]}`)
+if (USING_ROLES) {
+  // Role-staffed run: the cap is per (role, backend) SLOT, exactly as the user staffed it. A
+  // subtask naming a pair that was never staffed is dropped rather than silently re-homed onto a
+  // different backend — the spec is an explicit instruction, not a hint.
+  const used = {}
+  for (const s of raw) {
+    const role = s.role
+    const key = `${role}|${s.backend}`
+    const slots = ROLE_SLOTS[key] ?? 0
+    if (!role || slots === 0) {
+      log(`dropping subtask '${s.label}' — role/backend pair ${role || '(none)'}/${s.backend} was not staffed`)
+      continue
+    }
+    if ((used[key] ?? 0) >= slots) {
+      log(`dropping subtask '${s.label}' — ${role}/${s.backend} already at its ${slots} staffed worker(s)`)
+      continue
+    }
+    used[key] = (used[key] ?? 0) + 1
+    // The role's stage and default tier are authoritative; a decompose that picked a different
+    // tier for a staffed role is corrected here so the model actually matches what was staffed.
+    kept.push({ ...s, stage: ROLE_STAGE[role], tier: ROLE_TIER[role] ?? s.tier })
+  }
+  // Stage order is a real execution constraint: everything in an earlier stage must finish before a
+  // later stage starts. Expressed as deps so the existing dependency-wave scheduler enforces it
+  // without a second scheduling mechanism.
+  const byStage = {}
+  for (const s of kept) (byStage[s.stage] ??= []).push(s)
+  const orderedStages = ROLE_STAGES.filter((st) => (byStage[st] || []).length > 0)
+  for (let i = 1; i < orderedStages.length; i++) {
+    const prevLabels = orderedStages.slice(0, i).flatMap((st) => byStage[st].map((s) => s.label))
+    for (const s of byStage[orderedStages[i]]) {
+      s.deps = [...new Set([...(Array.isArray(s.deps) ? s.deps : []), ...prevLabels])]
+    }
+  }
+  if (orderedStages.length) log(`role stages: ${orderedStages.map((st) => `${st}(${byStage[st].length})`).join(' -> ')}`)
+} else {
+  // Each backend is capped independently — no backend is privileged.
+  for (const b of DISPATCH) {
+    const ofB = raw.filter((s) => s.backend === b)
+    kept.push(...ofB.slice(0, CAPS[b]))
+    if (ofB.length > CAPS[b]) log(`dropping ${ofB.length - CAPS[b]} ${b} subtask(s) over cap ${CAPS[b]}`)
+  }
 }
 
 // Graceful fallback: if nothing survived the caps, run the whole task as one subtask on a backend
@@ -575,10 +671,16 @@ function relayFailReason(relay) {
 
 async function dispatch(s, text, ph) {
   const wt = worktreeFor(s.label)
+  // A role is a JOB DESCRIPTION, so it has to reach the worker — otherwise "role" would only be a
+  // scheduling label and every worker would behave identically. Prepend the role brief to the task,
+  // and put the role in the agent label so progress reads `code-reviewer:auth-check`.
+  const brief = s.role ? roleBrief(s.role) : ''
+  const body = brief ? `${brief}\n\n${text}` : text
+  const dlabel = s.role ? `${s.role}:${s.label}` : s.label
   if (s.backend === 'native') {
-    return { result: await dispatchNative(text, s.tier || 'sonnet', s.label, ph, wt), ranOn: 'native' }
+    return { result: await dispatchNative(body, s.tier || 'sonnet', dlabel, ph, wt), ranOn: 'native' }
   }
-  const relay = await dispatchRelay(s.backend, text, s.tier || 'standard', 'team', s.label, ph, wt)
+  const relay = await dispatchRelay(s.backend, body, s.tier || 'standard', 'team', dlabel, ph, wt)
   if (relaySucceeded(relay)) {
     if (relay.backend_ran !== true) {
       // The relay misjudged (its Bash tool likely timed out) but the status file proves success —
@@ -894,10 +996,14 @@ return {
   caps: CAPS,
   verify: VERIFY,
   verifier: VERIFY ? VERIFIER : 'off',
+  roles: USING_ROLES ? { assignments: ROLE_ASSIGNMENTS, stages: ROLE_STAGES.filter((st) => kept.some((s) => s.stage === st)) } : null,
   maxFixLoops: MAX_FIX,
-  plan: kept.map((s) => ({ label: s.label, backend: s.backend, tier: s.tier, deps: s.deps || [], verify: s.verify || '' })),
+  plan: kept.map((s) => ({ label: s.label, backend: s.backend, tier: s.tier, role: s.role || null, stage: s.stage || null, deps: s.deps || [], verify: s.verify || '' })),
   counts: {
     byBackend: Object.fromEntries(DISPATCH.map((b) => [b, kept.filter((s) => s.backend === b).length])),
+    // Present only for a role-staffed run, so a caller can see the staffing that was honoured.
+    byRole: USING_ROLES ? Object.fromEntries(ROLE_NAMES.map((r) => [r, kept.filter((s) => s.role === r).length])) : undefined,
+    byStage: USING_ROLES ? Object.fromEntries(ROLE_STAGES.filter((st) => kept.some((s) => s.stage === st)).map((st) => [st, kept.filter((s) => s.stage === st).length])) : undefined,
     ranOn: Object.fromEntries([...new Set(records.map((r) => r.ranOn))].map((k) => [k, records.filter((r) => r.ranOn === k).length])),
     verified: records.filter((r) => r.status === 'verified').length,
     failed: failed.length,

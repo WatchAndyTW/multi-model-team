@@ -187,7 +187,7 @@ export function parseRoleSpec(spec, opts = {}) {
 
     // No backends given (`review` on its own) -> one worker on the default backend.
     if (!rest.trim()) {
-      assignments.push({ role, stage: roleSpec.stage, backend: defaultBackend, count: defaultCount, tier: roleSpec.tier });
+      assignments.push({ role, stage: roleSpec.stage, backend: defaultBackend, count: defaultCount, tier: roleSpec.tier, desc: roleSpec.desc });
       continue;
     }
 
@@ -215,7 +215,9 @@ export function parseRoleSpec(spec, opts = {}) {
       // otherwise the role's default tier applies. CLI backends always take the role's tier and let
       // the per-backend model ladder resolve it (so `high` means "that backend's strongest").
       const tierHint = backend === 'native' ? BACKEND_TIER_HINT.get(backendWord.toLowerCase()) : undefined;
-      assignments.push({ role, stage: roleSpec.stage, backend, count, tier: tierHint || roleSpec.tier });
+      // desc rides along so the Workflow engine (which has no filesystem access) can brief each
+      // worker on its role without re-reading the roster.
+      assignments.push({ role, stage: roleSpec.stage, backend, count, tier: tierHint || roleSpec.tier, desc: roleSpec.desc });
     }
   }
 
