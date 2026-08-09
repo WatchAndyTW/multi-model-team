@@ -85,7 +85,7 @@ for a CLI-only panel. The per-invocation spec always overrides the roster panel.
 ## `src/lib/config.mjs` — `reasoningConfig(roster)`
 
 Add a `REASONING_DEFAULTS` const and an exported `reasoningConfig(roster)` that merges the roster
-`reasoning` section over the defaults exactly like `teamConfig()` (deep-merge `tier_models`
+`reasoning` section over the defaults (deep-merge `tier_models`
 key-by-key; `panel` replaced wholesale if present; ignore `_`-prefixed keys). Defaults:
 
 ```js

@@ -55,7 +55,10 @@ export function backend(roster, name);    // normalized backend cfg or { enabled
 export function agents(roster);           // array of agent cfgs (for gen-agents).
 export function routes(roster);           // array of route rules, _comment objects filtered out.
 export function proactive(roster);        // { enabled, max_chars, min_chars, rules[], guard_spawns, enforce_spawns }
-export function teamConfig(roster);       // { dispatch_backends[], verifier, caps{}, tier_models{}, verify, max_fix_loops, relay_model }
+export function teamConfig(roster);       // PIPELINE knobs only: { verify, max_fix_loops, relay_model, mode?,
+//   native_models{} }. Backend assignment lives in `roles` (src/lib/roles.mjs), not here — the old
+//   dispatch_backends/verifier/caps keys were a competing assignment mechanism and are gone.
+//   native_models is FORWARDED from defaults.native_models (single-sourced) for the Workflow runtime.
 ```
 Replaces the `config.py {defaults-env|backend-env|proactive-env|team-config}` bash-eval contract with
 plain JS objects. **No substring gating** — real JSON.parse (this fixes the fragile bash gate).
@@ -128,9 +131,25 @@ print clean stdout, exit 0. On native hop / full exhaustion -> print
 ## `src/lib/team-spec.mjs` (team_spec.py) · `src/lib/team-plan.mjs` (team_plan.py) · `src/lib/gen-agents.mjs` (gen_agents.py) · `src/bin/team.mjs` (team.sh)
 
 ```js
+// roles.mjs — the /team staffing system
+export function roleCatalog(roster);      // { catalog{role:{stage,tier,aliases,desc}}, stages[], core{}, defaultBackend, defaultCount }
+export function parseRoleSpec(spec, o);   // "impl:opencode:1,claude:2" -> { assignments[], byStage, roles[], counts, note }
+export function splitRoleSpec(raw, o);    // peel flags + a leading ROLE spec -> { ...parsed, task, flags, writable } | null
+export function resolveStaffing(in, o);   // explicit assignments -> the COMPLETE table:
+//   { assignments[], workers[], verifiers[], fixers[], byStage, roles[], stages[], stageOrder[],
+//     counts{}, backends[], defaulted[], note }
+//   Rules, in order: (1) what the user staffed stands (a DISABLED backend is dropped with a note);
+//   (2) a core role with `follows` copies that role's STAGE staffing (fixer follows executor);
+//   (3) every core job whose stage is still empty falls back to default_backend (Claude) at the
+//   role's tier. `verify`/`fix` staff the pipeline loop; other stages are decomposed into subtasks.
+export function staffingFromBackends(counts, o);  // { agy:5, native:2 } -> those become the EXECUTORS
+
 // team-spec.mjs
-export function parseCaps(spec);          // "N:gemini,M:claude" -> { gemini, codex, claude, total, source, note }
-export function splitSpec(rawText);       // -> { caps, task, source }  (peel leading cap spec; aliases; clamp<=16)
+export function parseCaps(spec);          // "N:gemini,M:claude" -> { gemini, codex, opencode, claude, total, source, note }
+//   what the user TYPED; an empty/garbage spec is ZEROS (no default panel — defaults live in resolveStaffing)
+export function splitSpec(rawText, o);    // -> { roles, caps, task, source, flags, writable }
+//   BOTH grammars resolve to one staffing table in `.roles`; `.caps` is projected off its WORKERS
+//   for cap-only consumers (--gemini-cap). Aliases; clamp<=16.
 // team-plan.mjs
 export function planToManifest(plan, workdir);  // write <idx>.task files (raw, LF), return TSV manifest rows
 //   backend normalize: agy/gemini->AGY, codex->CODEX, claude/native->NATIVE(default). tier allowlist

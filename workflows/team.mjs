@@ -1,12 +1,12 @@
 export const meta = {
   name: 'mmt-team',
-  description: 'Model-dispatching team pipeline: decompose a task into subtasks and assign each to the best-fit backend (agy / codex / native — all equal, configurable), dispatch dependency-aware, verify each result on the configured verifier, fix failures in a bounded loop, then synthesize.',
+  description: 'Model-dispatching team pipeline, staffed by role: decompose a task into subtasks assigned to the (role, backend) workers the user staffed — anything unstaffed runs on Claude — dispatch dependency-aware, verify each result on the staffed reviewer(s), fix failures in a bounded loop, then synthesize.',
   phases: [
-    { title: 'Decompose', detail: 'split into backend-assigned subtasks with deps + verify criteria' },
+    { title: 'Decompose', detail: 'split into subtasks assigned to staffed (role, backend) workers, with deps + verify criteria' },
     { title: 'Setup', detail: 'writable mode only: one git worktree + branch per subtask off HEAD' },
-    { title: 'Dispatch', detail: 'dependency-ordered waves: each subtask on its assigned backend (CLI relay or native)' },
-    { title: 'Verify', detail: 'score each result against its acceptance criterion' },
-    { title: 'Fix', detail: 'bounded re-dispatch of failed subtasks with verifier feedback' },
+    { title: 'Dispatch', detail: 'dependency-ordered waves: each subtask on its staffed backend (CLI relay or native)' },
+    { title: 'Verify', detail: 'the staffed reviewer(s) score each result against its acceptance criterion' },
+    { title: 'Fix', detail: 'bounded re-dispatch of failed subtasks with reviewer feedback' },
     { title: 'Integrate', detail: 'writable mode only: cherry-pick each worktree commit onto the integration branch (no merge commits), orchestrator resolves any conflicts' },
     { title: 'Synthesize', detail: 'merge verified results into one answer' },
   ],
@@ -14,8 +14,8 @@ export const meta = {
 
 // =============================================================================
 // mmt-team — a staged model-dispatch pipeline: plan -> exec -> verify -> fix loop,
-// with per-subtask provider routing and stage handoffs. The "provider per role" is
-// our agy(Gemini)-vs-native(Claude) backend split, resolved per subtask at plan time.
+// with per-subtask provider routing and stage handoffs. WHICH provider plays WHICH role is the
+// user's staffing (args.roles, resolved by src/lib/roles.mjs) — the only assignment mechanism here.
 //
 // Determinism: this script runs under the Workflow runtime, which forbids
 // Date/random APIs (they break resume). Nothing here uses them. Vary-by-index is
@@ -44,82 +44,85 @@ A = A || {}
 const task = A.task || ''
 const root = A.pluginRoot || ''
 
-// ---- team config: WHICH backend plays each role is configurable, not hardcoded -------------
-// The shipped defaults (agy/Gemini front-end + codex verify) are just defaults. The roster
-// `team` section (passed in as args.teamConfig — the Workflow runtime can't read files itself)
-// overrides them, and per-invocation args (in-session override) override the roster. Precedence:
+// ---- pipeline config (NOT who runs what — that is the staffing below) -------
+// args.teamConfig is the roster `team` section (the Workflow runtime can't read files itself); it
+// tunes the verify->fix loop and the relay model only. Per-invocation args override it.
 //   built-in default  <  args.teamConfig (roster)  <  top-level A.* (this invocation).
 const TC = (A.teamConfig && typeof A.teamConfig === 'object') ? A.teamConfig : {}
 const RELAY_MODEL = A.relayModel || TC.relay_model || 'haiku'          // model the thin relay agents run on
-const TIER_MODELS = { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', ...(TC.tier_models || {}) }
+// Tier -> Claude model. Single-sourced from roster defaults.native_models, forwarded via teamConfig.
+const NATIVE_MODELS = { cheap: 'haiku', haiku: 'haiku', standard: 'sonnet', sonnet: 'sonnet', high: 'opus', opus: 'opus', ...(TC.native_models || {}) }
 
-// Backends are EQUAL, interchangeable tools. Any of them (incl. native Claude) can be assigned to
-// any subtask by the decompose, and any can be the verifier — none is pinned to "simple work" or
-// "verify only". `dispatch_backends` is the eligible set the decompose chooses from (native is
-// always kept as the judgment/hard-line option). Per-backend caps bound parallelism.
-const KNOWN = ['agy', 'codex', 'opencode', 'native']
-let DISPATCH = (Array.isArray(TC.dispatch_backends) && TC.dispatch_backends.length
-  ? TC.dispatch_backends.map(String) : ['agy', 'codex', 'opencode', 'native']).filter((b) => KNOWN.includes(b))
-if (!DISPATCH.includes('native')) DISPATCH.push('native')   // native is always available (safe default)
-DISPATCH = [...new Set(DISPATCH)]
-
-// Per-backend caps = max parallel subtasks on that backend. Precedence low->high:
-//   built-in default  <  roster team.caps (by backend name)  <  cap spec (A.caps: gemini/codex/claude).
-const CAP_DEFAULT = { agy: 4, codex: 2, opencode: 2, native: 2 }
-const SPEC_CAPS = A.caps || {}        // from the cap spec: { gemini, codex, claude }
-const ROSTER_CAPS = TC.caps || {}     // by backend name: { agy, codex, native }
-const CAP_ALIAS = { agy: 'gemini', native: 'claude', codex: 'codex', opencode: 'opencode' }   // backend -> cap-spec key
-const CAPS = {}
-for (const b of DISPATCH) {
-  const v = SPEC_CAPS[CAP_ALIAS[b]] ?? ROSTER_CAPS[b] ?? CAP_DEFAULT[b] ?? 2
-  CAPS[b] = Math.max(0, Math.min(16, Number(v) || 0))
-}
-const CAP_SUM = DISPATCH.reduce((n, b) => n + CAPS[b], 0)
-
-// ─── role assignments (optional) ─────────────────────────────────────────────
+// ─── staffing: the ONE thing that decides which backend does which job ───────
 //
-// A role spec (`orch:claude:2;impl:opencode:1,claude:2;review:codex:2`) staffs the run explicitly:
-// it says WHICH role runs on WHICH backend and how many workers each gets. When present it is
-// authoritative — the decompose may only assign a (role, backend) pair the user actually staffed,
-// and stage order (plan -> prd -> exec -> verify -> fix) drives execution order on top of the
-// normal dependency waves. Absent, everything below is inert and the run behaves exactly as before.
-const ROLE_SPEC = (A.roles && typeof A.roles === 'object') ? A.roles : null
-const ROLE_ASSIGNMENTS = (ROLE_SPEC && Array.isArray(ROLE_SPEC.assignments))
-  ? ROLE_SPEC.assignments.filter((a) => a && a.role && DISPATCH.includes(a.backend))
-  : []
-const ROLE_NAMES = [...new Set(ROLE_ASSIGNMENTS.map((a) => a.role))]
-const ROLE_STAGES = (ROLE_SPEC && Array.isArray(ROLE_SPEC.stages) && ROLE_SPEC.stages.length)
-  ? ROLE_SPEC.stages
-  : ['plan', 'prd', 'exec', 'verify', 'fix']
+// `args.roles` is the RESOLVED staffing table from src/lib/roles.mjs resolveStaffing — the user's
+// role spec (`orch:claude:2;impl:opencode:1,claude:2;review:codex:2`), a backend-only spec (those
+// backends become the executors), or nothing at all, with every unstaffed job already defaulted to
+// Claude. There is no second, competing assignment mechanism: no eligible-backend list, no
+// per-backend cap panel, no configured verifier. A backend runs where it was staffed and nowhere
+// else, and the decompose may only use a (role, backend) pair that exists in this table.
+const KNOWN = ['agy', 'codex', 'opencode', 'native']
+const VERIFY_STAGE = 'verify'
+const FIX_STAGE = 'fix'
 
-// role -> its stage and default tier; (role,backend) -> how many workers were staffed.
+const STAFF = (A.roles && typeof A.roles === 'object') ? A.roles : {}
+let ASSIGN = Array.isArray(STAFF.assignments)
+  ? STAFF.assignments.filter((a) => a && a.role && KNOWN.includes(a.backend) && Number(a.count) > 0)
+  : []
+// Self-sufficient: a caller that passed no staffing gets exactly what resolveStaffing would have
+// produced with an empty spec — the whole pipeline on Claude, nothing silently on a CLI.
+if (!ASSIGN.length) {
+  ASSIGN = [
+    { role: 'executor', stage: 'exec', backend: 'native', count: 4, tier: 'standard', source: 'default',
+      desc: 'Do the actual implementation work.' },
+    { role: 'verifier', stage: VERIFY_STAGE, backend: 'native', count: 1, tier: 'standard', source: 'default',
+      desc: 'Check each result against its acceptance criterion with evidence.' },
+    { role: 'fixer', stage: FIX_STAGE, backend: 'native', count: 1, tier: 'standard', source: 'default',
+      desc: 'Apply bounded fixes for defects verification found.' },
+  ]
+}
+const STAGE_ORDER = (Array.isArray(STAFF.stageOrder) && STAFF.stageOrder.length)
+  ? STAFF.stageOrder : ['plan', 'prd', 'exec', 'verify', 'fix']
+
+// `verify` and `fix` staff the pipeline's own review/repair loop; every other stage is decomposed
+// into subtasks. Splitting the table this way is what lets ONE staffing mechanism drive both.
+const WORKERS = ASSIGN.filter((a) => a.stage !== VERIFY_STAGE && a.stage !== FIX_STAGE)
+const FIXERS = ASSIGN.filter((a) => a.stage === FIX_STAGE)
+const VERIFIERS = []
+for (const a of ASSIGN.filter((s) => s.stage === VERIFY_STAGE)) {
+  // One reviewer per (role, backend): a count bounds parallelism, it does not multiply reviews.
+  if (!VERIFIERS.some((v) => v.role === a.role && v.backend === a.backend)) VERIFIERS.push(a)
+}
+
+const DISPATCH = [...new Set(WORKERS.map((a) => a.backend))]
+const ROLE_NAMES = [...new Set(WORKERS.map((a) => a.role))]
+const WORKER_STAGES = STAGE_ORDER.filter((st) => WORKERS.some((a) => a.stage === st))
+
+// role -> its stage / tier / description; (role,backend) -> how many workers were staffed.
 const ROLE_STAGE = {}
 const ROLE_TIER = {}
+const ROLE_DESC = {}
 const ROLE_SLOTS = {}
-for (const a of ROLE_ASSIGNMENTS) {
+for (const a of WORKERS) {
   ROLE_STAGE[a.role] = a.stage
   ROLE_TIER[a.role] = a.tier
+  if (a.desc) ROLE_DESC[a.role] = a.desc
   ROLE_SLOTS[`${a.role}|${a.backend}`] = (ROLE_SLOTS[`${a.role}|${a.backend}`] ?? 0) + a.count
 }
-const USING_ROLES = ROLE_ASSIGNMENTS.length > 0
 
-/** Stage index for ordering; unknown/absent stages sort last but before nothing. */
-function stageRank(stage) {
-  const i = ROLE_STAGES.indexOf(stage)
-  return i === -1 ? ROLE_STAGES.length : i
-}
+// A fix normally goes back to whoever did the work (that is what "fixer follows executor" means),
+// so the fixer only redirects it when the user EXPLICITLY staffed the fix stage.
+const FIX_ASSIGN = FIXERS.find((a) => a.source === 'spec') || null
 
 // What each role means, handed to the worker so the role actually changes its behaviour rather than
-// being a scheduling label. Descriptions come from the roster catalog (passed in via args.roles) so
-// editing a role's `desc` there changes what its workers are told — no code change.
-const ROLE_DESC = {}
-for (const a of ROLE_ASSIGNMENTS) if (a.desc) ROLE_DESC[a.role] = a.desc
-
-function roleBrief(role) {
-  const desc = ROLE_DESC[role]
-  const stage = ROLE_STAGE[role]
-  return `You are acting in the "${role}" role${stage ? ` (pipeline stage: ${stage})` : ''}.` +
-    (desc ? ` ${desc}` : '') +
+// being a scheduling label. Descriptions come from the roster catalog (they ride in the resolved
+// table because the Workflow runtime has no filesystem access) — editing a role's `desc` there
+// changes what its workers are told, with no code change.
+function roleBrief(role, stage, desc) {
+  const d = desc || ROLE_DESC[role]
+  const st = stage || ROLE_STAGE[role]
+  return `You are acting in the "${role}" role${st ? ` (pipeline stage: ${st})` : ''}.` +
+    (d ? ` ${d}` : '') +
     ` Stay within that role — do the ${role} job for this subtask and nothing else.`
 }
 
@@ -170,10 +173,18 @@ function safeLabel(label) {
   if (/\.lock$/i.test(s)) s = s.replace(/\.lock$/i, '-lock')  // git refs can't end in .lock
   return s || 'task'
 }
-// Verifier backend: per-invocation arg > roster team.verifier > 'codex'. Any backend works equally;
-// 'native' = Claude judgment (no relay). If the chosen CLI is unavailable at runtime, the relay
-// falls back to native judgment loudly (same contract as the dispatch relay path).
-const VERIFIER = A.verifier || (A.codexVerify === false ? 'native' : (TC.verifier || 'codex'))
+// The verifiers come from the staffing table (VERIFIERS, above) — whoever staffs the `verify`
+// stage reviews each result, defaulting to Claude. `A.verifier` remains as a one-shot in-session
+// override ("verify with gemini"): it replaces the staffed reviewers for this run only.
+if (A.verifier && KNOWN.includes(String(A.verifier))) {
+  VERIFIERS.length = 0
+  VERIFIERS.push({ role: 'verifier', stage: VERIFY_STAGE, backend: String(A.verifier), count: 1, tier: 'standard', source: 'override',
+                   desc: 'Check each result against its acceptance criterion with evidence.' })
+} else if (A.codexVerify === false) {
+  VERIFIERS.length = 0
+  VERIFIERS.push({ role: 'verifier', stage: VERIFY_STAGE, backend: 'native', count: 1, tier: 'standard', source: 'override',
+                   desc: 'Check each result against its acceptance criterion with evidence.' })
+}
 
 // Relay Bash-timeout pinning (the "fails-without-a-reason" fix). The relay sub-agent shells out to
 // run.mjs, which has its OWN generous hard_timeout (SIGKILL on expiry; roster default 15m). The relay
@@ -232,8 +243,8 @@ if (!task || !String(task).trim()) {
 if (!root) {
   return { error: 'mmt-team: args.pluginRoot is required to locate src/bin/run.mjs' }
 }
-if (CAP_SUM === 0) {
-  return { error: 'mmt-team: caps sum to 0 — no agents available to dispatch' }
+if (!WORKERS.length) {
+  return { error: 'mmt-team: no workers staffed — every role was set to 0' }
 }
 
 const RUN = `${root}/src/bin/run.mjs`
@@ -252,15 +263,12 @@ const PLAN_SCHEMA = {
           task: { type: 'string', description: 'full self-contained subtask text' },
           backend: { type: 'string', enum: DISPATCH, description: 'which tool runs this subtask — the listed backends are EQUAL options; pick best-fit' },
           tier: { type: 'string', enum: ['cheap', 'standard', 'high', 'sonnet', 'opus'] },
-          // Present only when the invocation carried a role spec. ROLE_NAMES is the set the user
-          // actually staffed, so the model cannot invent a role that has no worker behind it.
-          ...(ROLE_NAMES.length ? {
-            role: {
-              type: 'string',
-              enum: ROLE_NAMES,
-              description: 'which staffed role performs this subtask; its stage fixes when it runs',
-            },
-          } : {}),
+          // The staffed roles, so the model cannot invent one with no worker behind it.
+          role: {
+            type: 'string',
+            enum: ROLE_NAMES,
+            description: 'which staffed role performs this subtask; its stage fixes when it runs',
+          },
           deps: {
             type: 'array',
             description: 'labels of subtasks whose results this one consumes (run after them). [] if independent.',
@@ -271,7 +279,7 @@ const PLAN_SCHEMA = {
             description: 'one-line, checkable acceptance criterion for this subtask (used by the verify stage).',
           },
         },
-        required: ['label', 'task', 'backend', 'tier'],
+        required: ['label', 'task', 'backend', 'tier', 'role'],
       },
     },
   },
@@ -392,10 +400,10 @@ For each subtask also provide:
 - "deps": the labels of any OTHER subtasks whose output this one needs. Those run first and their results are handed to this subtask. Use [] when independent. Keep the dependency graph acyclic.
 - "verify": one short, checkable acceptance criterion (what makes this subtask's result correct).
 
-${USING_ROLES ? `THIS RUN IS STAFFED BY ROLE. The user assigned specific workers; you may ONLY use these (role, backend) pairs, at most the given number of subtasks each:
-${ROLE_ASSIGNMENTS.map((a) => `- role "${a.role}" on backend "${a.backend}" — up to ${a.count} subtask(s), stage "${a.stage}", tier "${a.tier}"`).join('\n')}
+THIS RUN IS STAFFED. These (role, backend) pairs are the ONLY workers available — each with a hard limit on how many subtasks it may take:
+${WORKERS.map((a) => `- role "${a.role}" on backend "${a.backend}" — up to ${a.count} subtask(s), stage "${a.stage}", tier "${a.tier}"${a.desc ? ` — ${a.desc}` : ''}`).join('\n')}
 
-Set "role" on every subtask to one of: ${ROLE_NAMES.join(', ')}. A role's STAGE fixes when it runs — stages execute in the order ${ROLE_STAGES.join(' -> ')}, so a later-stage subtask automatically runs after earlier-stage ones and receives their results. Do NOT staff a role the user did not assign, and do NOT pair a role with a backend it was not assigned to. If a role has no sensible work for this task, simply emit no subtask for it.` : `Caps — use AT MOST this many subtasks per backend: ${DISPATCH.map((b) => `${CAPS[b]} ${b}`).join(', ')} (skip a backend whose cap is 0).`} Prefer fewer, well-scoped subtasks; a trivial task is a single subtask. Labels must be unique. Each subtask's "task" must be self-contained.
+Set "role" on every subtask to one of: ${ROLE_NAMES.join(', ')}. A role's STAGE fixes when it runs — stages execute in the order ${WORKER_STAGES.join(' -> ')}, so a later-stage subtask automatically runs after earlier-stage ones and receives their results. Do NOT use a role that is not listed, and do NOT pair a role with a backend it was not staffed on — such a subtask is DROPPED, not re-homed. If a role has no sensible work for this task, simply emit no subtask for it. Reviewing and fixing are handled by the pipeline afterwards, so do NOT emit subtasks for them. Prefer fewer, well-scoped subtasks; a trivial task is a single subtask. Labels must be unique. Each subtask's "task" must be self-contained.
 
 TASK:
 ${task}`,
@@ -405,10 +413,10 @@ ${task}`,
 // ---- normalize + resolve the routing snapshot (resolved once) ---------------
 let raw = ((plan && plan.subtasks) || []).filter((s) => s && s.task && String(s.task).trim())
 
-// Coerce backend + tier: an unknown/ineligible backend -> native (never silently send hard work to
-// a CLI). native gets sonnet/opus (by complexity); every other backend gets cheap/standard.
+// Normalize the tier only. The backend is deliberately NOT coerced: re-homing a subtask onto
+// native because its named backend wasn't staffed is exactly the silent substitution this pipeline
+// refuses to do — an unstaffed pair falls through to the slot check below and is DROPPED, loudly.
 for (const s of raw) {
-  s.backend = DISPATCH.includes(s.backend) ? s.backend : 'native'
   if (s.backend === 'native') s.tier = s.tier === 'opus' ? 'opus' : 'sonnet'
   else s.tier = s.tier === 'cheap' ? 'cheap' : 'standard'
 }
@@ -424,59 +432,50 @@ raw.forEach((s, i) => {
   s.label = lab
 })
 
-// Apply caps (the loud, deterministic part of model dispatching).
+// Enforce the staffing (the loud, deterministic part of model dispatching). The limit is per
+// (role, backend) SLOT, exactly as staffed. A subtask naming a pair nobody staffed is DROPPED
+// rather than silently re-homed onto another backend — staffing is an instruction, not a hint.
 const kept = []
-if (USING_ROLES) {
-  // Role-staffed run: the cap is per (role, backend) SLOT, exactly as the user staffed it. A
-  // subtask naming a pair that was never staffed is dropped rather than silently re-homed onto a
-  // different backend — the spec is an explicit instruction, not a hint.
-  const used = {}
-  for (const s of raw) {
-    const role = s.role
-    const key = `${role}|${s.backend}`
-    const slots = ROLE_SLOTS[key] ?? 0
-    if (!role || slots === 0) {
-      log(`dropping subtask '${s.label}' — role/backend pair ${role || '(none)'}/${s.backend} was not staffed`)
-      continue
-    }
-    if ((used[key] ?? 0) >= slots) {
-      log(`dropping subtask '${s.label}' — ${role}/${s.backend} already at its ${slots} staffed worker(s)`)
-      continue
-    }
-    used[key] = (used[key] ?? 0) + 1
-    // The role's stage and default tier are authoritative; a decompose that picked a different
-    // tier for a staffed role is corrected here so the model actually matches what was staffed.
-    kept.push({ ...s, stage: ROLE_STAGE[role], tier: ROLE_TIER[role] ?? s.tier })
+const used = {}
+for (const s of raw) {
+  const role = s.role
+  const key = `${role}|${s.backend}`
+  const slots = ROLE_SLOTS[key] ?? 0
+  if (!role || slots === 0) {
+    log(`dropping subtask '${s.label}' — role/backend pair ${role || '(none)'}/${s.backend} was not staffed`)
+    continue
   }
-  // Stage order is a real execution constraint: everything in an earlier stage must finish before a
-  // later stage starts. Expressed as deps so the existing dependency-wave scheduler enforces it
-  // without a second scheduling mechanism.
-  const byStage = {}
-  for (const s of kept) (byStage[s.stage] ??= []).push(s)
-  const orderedStages = ROLE_STAGES.filter((st) => (byStage[st] || []).length > 0)
-  for (let i = 1; i < orderedStages.length; i++) {
-    const prevLabels = orderedStages.slice(0, i).flatMap((st) => byStage[st].map((s) => s.label))
-    for (const s of byStage[orderedStages[i]]) {
-      s.deps = [...new Set([...(Array.isArray(s.deps) ? s.deps : []), ...prevLabels])]
-    }
+  if ((used[key] ?? 0) >= slots) {
+    log(`dropping subtask '${s.label}' — ${role}/${s.backend} already at its ${slots} staffed worker(s)`)
+    continue
   }
-  if (orderedStages.length) log(`role stages: ${orderedStages.map((st) => `${st}(${byStage[st].length})`).join(' -> ')}`)
-} else {
-  // Each backend is capped independently — no backend is privileged.
-  for (const b of DISPATCH) {
-    const ofB = raw.filter((s) => s.backend === b)
-    kept.push(...ofB.slice(0, CAPS[b]))
-    if (ofB.length > CAPS[b]) log(`dropping ${ofB.length - CAPS[b]} ${b} subtask(s) over cap ${CAPS[b]}`)
-  }
+  used[key] = (used[key] ?? 0) + 1
+  // The role's stage and default tier are authoritative; a decompose that picked a different
+  // tier for a staffed role is corrected here so the model actually matches what was staffed.
+  kept.push({ ...s, stage: ROLE_STAGE[role], tier: ROLE_TIER[role] ?? s.tier })
 }
 
-// Graceful fallback: if nothing survived the caps, run the whole task as one subtask on a backend
-// that still has capacity (prefer native for an unscoped ask).
+// Graceful fallback: if nothing survived, run the whole task as one subtask on the first staffed
+// worker slot (the run was staffed, so there is always one).
 if (kept.length === 0) {
-  log('no subtasks survived caps — collapsing to a single subtask')
-  const pick = CAPS.native > 0 ? 'native' : (DISPATCH.find((b) => CAPS[b] > 0) || 'native')
-  kept.push({ label: 'task', task, backend: pick, tier: pick === 'native' ? 'sonnet' : 'standard', deps: [], verify: '' })
+  log('no subtasks survived staffing — collapsing to a single subtask')
+  const w = WORKERS[0]
+  kept.push({ label: 'task', task, backend: w.backend, role: w.role, stage: w.stage, tier: w.tier, deps: [], verify: '' })
 }
+
+// Stage order is a real execution constraint: everything in an earlier stage must finish before a
+// later stage starts. Expressed as deps so the existing dependency-wave scheduler enforces it
+// without a second scheduling mechanism.
+const stageBuckets = {}
+for (const s of kept) (stageBuckets[s.stage] ??= []).push(s)
+const orderedStages = STAGE_ORDER.filter((st) => (stageBuckets[st] || []).length > 0)
+for (let i = 1; i < orderedStages.length; i++) {
+  const prevLabels = orderedStages.slice(0, i).flatMap((st) => stageBuckets[st].map((s) => s.label))
+  for (const s of stageBuckets[orderedStages[i]]) {
+    s.deps = [...new Set([...(Array.isArray(s.deps) ? s.deps : []), ...prevLabels])]
+  }
+}
+if (orderedStages.length > 1) log(`stages: ${orderedStages.map((st) => `${st}(${stageBuckets[st].length})`).join(' -> ')}`)
 
 // Sanitize deps: keep only edges that point at a surviving label; drop self-edges.
 const keptLabels = new Set(kept.map((s) => s.label))
@@ -486,16 +485,21 @@ for (const s of kept) {
   s.verify = typeof s.verify === 'string' ? s.verify : ''
 }
 
-log(`plan: ${DISPATCH.map((b) => `${kept.filter((s) => s.backend === b).length} ${backendLabel(b)}`).join(' + ')} (caps ${DISPATCH.map((b) => `${b}:${CAPS[b]}`).join(' ')}); verify=${VERIFY ? backendLabel(VERIFIER) : 'off'} maxFix=${MAX_FIX}`)
+log(`plan: ${DISPATCH.map((b) => `${kept.filter((s) => s.backend === b).length} ${backendLabel(b)}`).join(' + ')}` +
+  ` (staffed ${WORKERS.map((a) => `${a.role}/${backendLabel(a.backend)}:${a.count}`).join(' ')});` +
+  ` verify=${VERIFY ? VERIFIERS.map((v) => `${v.role}/${backendLabel(v.backend)}`).join('+') : 'off'}` +
+  ` fix=${FIX_ASSIGN ? `${FIX_ASSIGN.role}/${backendLabel(FIX_ASSIGN.backend)}` : 'same-backend'} maxFix=${MAX_FIX}`)
+if (STAFF.defaulted && STAFF.defaulted.length) log(`unstaffed, defaulted to Claude: ${STAFF.defaulted.join(', ')}`)
+if (STAFF.note) log(`staffing: ${STAFF.note}`)
 
 // ---- dispatch primitives ----------------------------------------------------
-// Map a plan tier to a concrete model so the plan's COMPLEXITY call actually takes effect — and
-// so the map itself is configurable (roster team.tier_models). Without an explicit model, every
-// agent here would inherit the main-loop model (e.g. Opus 4.8), which is why native analysis used
-// to run on Opus regardless of tier. Default map: cheap->haiku, standard/sonnet->sonnet, opus->opus;
-// the roster can remap any tier. This is what makes the model choice "dynamic by complexity".
+// Map a plan tier to a concrete model so the plan's COMPLEXITY call actually takes effect. Without
+// an explicit model, every agent here would inherit the main-loop model (e.g. Opus), which is why
+// native analysis used to run on Opus regardless of tier. The map is the roster's SINGLE
+// tier->Claude-model map (defaults.native_models), forwarded through teamConfig — this is what makes
+// the model choice "dynamic by complexity" and what a role's `tier` ultimately selects.
 function tierModel(tier) {
-  return TIER_MODELS[tier] || (tier === 'opus' ? 'opus' : 'sonnet')
+  return NATIVE_MODELS[tier] || NATIVE_MODELS.standard || 'sonnet'
 }
 
 // dispatchRelay — the FAITHFUL pure-pipe primitive. A non-native backend is reached ONLY by shelling
@@ -674,7 +678,7 @@ async function dispatch(s, text, ph) {
   // A role is a JOB DESCRIPTION, so it has to reach the worker — otherwise "role" would only be a
   // scheduling label and every worker would behave identically. Prepend the role brief to the task,
   // and put the role in the agent label so progress reads `code-reviewer:auth-check`.
-  const brief = s.role ? roleBrief(s.role) : ''
+  const brief = s.role ? roleBrief(s.role, s.stage, s.desc) : ''
   const body = brief ? `${brief}\n\n${text}` : text
   const dlabel = s.role ? `${s.role}:${s.label}` : s.label
   if (s.backend === 'native') {
@@ -721,11 +725,14 @@ function withContext(s, ctx) {
 }
 
 // ---- verify -----------------------------------------------------------------
-// The Verify stage runs on the CONFIGURED verifier backend (roster team.verifier, default codex).
-// For a CLI verifier we drive it through the SAME faithful pipe (dispatchRelay) and parse its
-// PASS/FAIL verdict in DETERMINISTIC code — no Claude agent re-judges the CLI's output, so the CLI
-// can't be silently impersonated. If that CLI is unavailable (backend_ran=false) we fall back to a
-// VISIBLE native verifier; `verifier:'native'` uses native judgment directly with no relay.
+// The Verify stage runs on whoever STAFFS it (VERIFIERS) — the user's `review:codex:2` /
+// `security:agy:1`, or the Claude fallback when they staffed nobody. For a CLI reviewer we drive it
+// through the SAME faithful pipe (dispatchRelay) and parse its PASS/FAIL verdict in DETERMINISTIC
+// code — no Claude agent re-judges the CLI's output, so the CLI can't be silently impersonated. If
+// that CLI is unavailable (backend_ran=false) we fall back to a VISIBLE native verifier; a `native`
+// reviewer uses Claude judgment directly with no relay. Staffing several verify roles means each
+// result faces each of them and must satisfy ALL — the default staffing is one, so the common case
+// is exactly one review per subtask.
 
 // Deterministic PASS/FAIL parse of a strict reviewer's stdout: line 1 is PASS/FAIL, the rest is the
 // reason, and (on FAIL) a trailing one-line fix. Keeps the verdict honest to what the CLI said.
@@ -737,11 +744,13 @@ function parseVerdict(stdout) {
   return { pass, reason, fix_hint }
 }
 
-// Native verifier: strict Claude judgment. Used when verifier:'native', and as the VISIBLE fallback
-// when a CLI verifier is unavailable (labelled native:verify: so it is never mistaken for the CLI).
-function nativeVerify(s, result, criterion, handoff, note) {
+// Native verifier: strict Claude judgment. Used when the verify stage is staffed on native, and as
+// the VISIBLE fallback when a CLI reviewer is unavailable (labelled native:verify: so it is never
+// mistaken for the CLI). The reviewer's ROLE brief rides along, so `security-reviewer` actually
+// audits for vulnerabilities rather than doing a generic pass/fail.
+function nativeVerify(v, s, result, criterion, handoff, note) {
   return agent(
-`You are a strict verifier (native Claude judgment).${note ? ' ' + note : ''} Decide whether the RESULT satisfies the acceptance criterion for this subtask. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, fail it.${handoff ? ' (The subtask backend reported it was unavailable — treat a bare handoff sentinel as a failure.)' : ''}
+`${roleBrief(v.role, v.stage, v.desc)} You are a strict verifier (native Claude judgment).${note ? ' ' + note : ''} Decide whether the RESULT satisfies the acceptance criterion for this subtask. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, fail it.${handoff ? ' (The subtask backend reported it was unavailable — treat a bare handoff sentinel as a failure.)' : ''}
 
 SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
 ${s.task}
@@ -751,25 +760,23 @@ ${criterion}
 
 RESULT:
 ${result}`,
-    { label: `native:verify:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: tierModel(s.tier) }
+    { label: `native:${v.role}:${s.label}`, phase: 'Verify', schema: VERIFY_SCHEMA, model: tierModel(v.tier || s.tier) }
   )
 }
 
-async function verifyResult(s, result) {
-  if (!VERIFY) return { pass: true, reason: 'verify disabled', fix_hint: '' }
-  const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
-  const criterion = s.verify && s.verify.trim()
-    ? s.verify.trim()
-    : 'The result fully and correctly satisfies the subtask.'
-
-  if (VERIFIER !== 'native') {
-    // Drive the verifier CLI through the faithful pipe, then parse ITS verdict deterministically. The
-    // review brief rides to run.mjs via a .mmt/calls/ file (--call-file) — the (untrusted) subtask +
-    // result text is inert data in a file, read only in Node, never parsed by a shell. rule
-    // "team-verify" forces the verifier.
-    const vb = backendLabel(VERIFIER)
-    const brief =
-`You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
+/** One reviewer's verdict on one result. */
+async function verifyWith(v, s, result, criterion, handoff) {
+  if (v.backend === 'native') {
+    return await nativeVerify(v, s, result, criterion, handoff)
+      || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+  }
+  // Drive the reviewer CLI through the faithful pipe, then parse ITS verdict deterministically. The
+  // review brief rides to run.mjs via a .mmt/calls/ file (--call-file) — the (untrusted) subtask +
+  // result text is inert data in a file, read only in Node, never parsed by a shell. rule
+  // "team-verify" forces the reviewer's backend.
+  const vb = backendLabel(v.backend)
+  const brief =
+`${roleBrief(v.role, v.stage, v.desc)} You are a strict reviewer. Decide whether the RESULT satisfies the ACCEPTANCE CRITERION for the subtask below. Be skeptical: if it is incomplete, wrong, empty, or only describes what should be done instead of doing it, it FAILS. Answer with a first line of exactly PASS or FAIL, then one sentence of reasoning, then (only if FAIL) a concrete one-line fix instruction.
 
 SUBTASK (${s.backend}/${s.tier}, label "${s.label}"):
 ${s.task}
@@ -779,22 +786,42 @@ ${criterion}
 
 RESULT:
 ${result}`
-    const relay = await dispatchRelay(VERIFIER, brief, 'standard', 'team-verify', `verify:${s.label}`, 'Verify')
-    if (relaySucceeded(relay)) {
-      // A native-handoff in the SUBTASK result is always a failure, regardless of the review verdict.
-      if (handoff) return { pass: false, reason: `subtask backend (${s.backend}) was unavailable — native-handoff sentinel`, fix_hint: 'solve the subtask natively' }
-      return parseVerdict(relayBody(relay))
-    }
-    // Verifier CLI did not complete -> VISIBLE native verify (not hidden behind the CLI's label). Surface
-    // the real reason (timeout/quota/…), not a blanket "unavailable".
-    log(`verifier ${vb} did not complete "${s.label}" (${relayFailReason(relay)}) — visible native verify fallback`)
-    const vf = await nativeVerify(s, result, criterion, handoff, `(${vb} was unavailable, verifying natively.)`)
-    return vf || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+  const relay = await dispatchRelay(v.backend, brief, v.tier || 'standard', 'team-verify', `${v.role}:${s.label}`, 'Verify')
+  if (relaySucceeded(relay)) {
+    // A native-handoff in the SUBTASK result is always a failure, regardless of the review verdict.
+    if (handoff) return { pass: false, reason: `subtask backend (${s.backend}) was unavailable — native-handoff sentinel`, fix_hint: 'solve the subtask natively' }
+    return parseVerdict(relayBody(relay))
   }
+  // Reviewer CLI did not complete -> VISIBLE native verify (not hidden behind the CLI's label).
+  // Surface the real reason (timeout/quota/…), not a blanket "unavailable".
+  log(`reviewer ${v.role}/${vb} did not complete "${s.label}" (${relayFailReason(relay)}) — visible native verify fallback`)
+  return await nativeVerify(v, s, result, criterion, handoff, `(${vb} was unavailable, verifying natively.)`)
+    || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+}
 
-  // Native verifier (knob: verifier:'native' / codexVerify:false).
-  const v = await nativeVerify(s, result, criterion, handoff)
-  return v || { pass: true, reason: 'verifier returned nothing; accepting', fix_hint: '' }
+async function verifyResult(s, result) {
+  if (!VERIFY || !VERIFIERS.length) return { pass: true, reason: 'verify disabled', fix_hint: '' }
+  const handoff = typeof result === 'string' && result.indexOf('MMT_NATIVE_HANDOFF') === 0
+  const criterion = s.verify && s.verify.trim()
+    ? s.verify.trim()
+    : 'The result fully and correctly satisfies the subtask.'
+
+  if (VERIFIERS.length === 1) return await verifyWith(VERIFIERS[0], s, result, criterion, handoff)
+
+  // Several reviewers were staffed: every one of them must pass it. Run them concurrently — they
+  // are independent judgments of the same finished result.
+  const verdicts = (await parallel(VERIFIERS.map((v) => () =>
+    verifyWith(v, s, result, criterion, handoff).then((d) => ({ ...d, by: `${v.role}/${backendLabel(v.backend)}` })))))
+    .filter(Boolean)
+  const failed = verdicts.filter((d) => d.pass === false)
+  if (!failed.length) {
+    return { pass: true, reason: verdicts.map((d) => `${d.by}: ${d.reason}`).join(' | ').slice(0, 400), fix_hint: '' }
+  }
+  return {
+    pass: false,
+    reason: failed.map((d) => `${d.by}: ${d.reason}`).join(' | ').slice(0, 400),
+    fix_hint: failed.map((d) => d.fix_hint).filter(Boolean).join(' ').slice(0, 400),
+  }
 }
 
 // ---- one subtask, end to end: dispatch -> verify -> bounded fix loop ---------
@@ -816,7 +843,13 @@ Previous result:
 ${result}
 
 Produce a corrected, complete result.`
-    const d = await dispatch({ ...s, label: `${s.label}#fix${attempts}` }, fixText, 'Fix')
+    // Who repairs it: the fix stage's staffing. Unstaffed (or merely inherited from the executor)
+    // means "send it back to whoever did the work" — the subtask keeps its own backend, which is
+    // the pipeline's long-standing behaviour. An EXPLICIT `fix:<backend>` redirects it.
+    const fixSpec = FIX_ASSIGN
+      ? { ...s, backend: FIX_ASSIGN.backend, tier: FIX_ASSIGN.tier, role: FIX_ASSIGN.role, stage: FIX_ASSIGN.stage, desc: FIX_ASSIGN.desc }
+      : s
+    const d = await dispatch({ ...fixSpec, label: `${s.label}#fix${attempts}` }, fixText, 'Fix')
     result = d.result
     ranOn = d.ranOn        // the last attempt's actual executor is what we report
     failReason = d.failReason
@@ -993,17 +1026,24 @@ return {
   task,
   mode: WRITABLE ? 'writable' : 'read-only',
   backends: DISPATCH,
-  caps: CAPS,
   verify: VERIFY,
-  verifier: VERIFY ? VERIFIER : 'off',
-  roles: USING_ROLES ? { assignments: ROLE_ASSIGNMENTS, stages: ROLE_STAGES.filter((st) => kept.some((s) => s.stage === st)) } : null,
+  // Who actually ran the pipeline: the resolved staffing, plus which jobs nobody staffed and so
+  // fell back to Claude. This replaces the old backends/caps/verifier trio — one table, one story.
+  staffing: {
+    workers: WORKERS,
+    verifiers: VERIFIERS,
+    fixers: FIXERS,
+    defaulted: STAFF.defaulted || [],
+    stages: orderedStages,
+    note: STAFF.note || '',
+  },
+  verifier: VERIFY ? VERIFIERS.map((v) => `${v.role}/${v.backend}`).join('+') : 'off',
   maxFixLoops: MAX_FIX,
   plan: kept.map((s) => ({ label: s.label, backend: s.backend, tier: s.tier, role: s.role || null, stage: s.stage || null, deps: s.deps || [], verify: s.verify || '' })),
   counts: {
     byBackend: Object.fromEntries(DISPATCH.map((b) => [b, kept.filter((s) => s.backend === b).length])),
-    // Present only for a role-staffed run, so a caller can see the staffing that was honoured.
-    byRole: USING_ROLES ? Object.fromEntries(ROLE_NAMES.map((r) => [r, kept.filter((s) => s.role === r).length])) : undefined,
-    byStage: USING_ROLES ? Object.fromEntries(ROLE_STAGES.filter((st) => kept.some((s) => s.stage === st)).map((st) => [st, kept.filter((s) => s.stage === st).length])) : undefined,
+    byRole: Object.fromEntries(ROLE_NAMES.map((r) => [r, kept.filter((s) => s.role === r).length])),
+    byStage: Object.fromEntries(orderedStages.map((st) => [st, kept.filter((s) => s.stage === st).length])),
     ranOn: Object.fromEntries([...new Set(records.map((r) => r.ranOn))].map((k) => [k, records.filter((r) => r.ranOn === k).length])),
     verified: records.filter((r) => r.status === 'verified').length,
     failed: failed.length,

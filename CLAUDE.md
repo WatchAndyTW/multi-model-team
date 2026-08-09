@@ -9,10 +9,11 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **177/177** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **197/197** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
-Three live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI) and **opencode** (OpenCode CLI). codex also serves as the
-**`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
+Three live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI) and **opencode** (OpenCode CLI).
+In `/team` any of them can be staffed as the reviewer (`review:codex:2`); unstaffed, review falls to
+Claude. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
 `docs/REASONING.md` (the `/reasoning` design contract).
 
 **Why the Node ESM rewrite?** The bash hooks forked ~6–7 processes per invocation under a 10 s
@@ -130,7 +131,9 @@ src/lib/router.mjs              first-match-wins decision engine (replaces match
 src/lib/backends.mjs            agy/codex invokers + clean() + quota (replaces backends.sh)
 src/lib/state.mjs               HUD state read/write (replaces state.sh)
 src/lib/hook-common.mjs         shared hook runtime — one fork-free node process (NEW; reliability core)
-src/lib/team-spec.mjs           /team cap-spec parser (replaces team_spec.py)
+src/lib/roles.mjs               /team STAFFING: role catalog, spec grammar, resolveStaffing (the ONE
+                                place a job gets a backend; unstaffed -> Claude)
+src/lib/team-spec.mjs           /team spec entry point — both grammars -> one resolved staffing
 src/lib/team-plan.mjs           plan.json → per-subtask files (replaces team_plan.py)
 src/lib/reason-spec.mjs         /reasoning panel-spec parser: expandPanel / parsePanel / splitPanel
 src/lib/gen-agents.mjs          regenerate agents/*.md from roster.json (replaces gen_agents.py)
@@ -229,7 +232,8 @@ An empty result is meaningful: **pass no model flag**, letting the CLI use its o
 opencode is wired). `model_aliases` give short handles (`flash` → `gemini-3.6-flash-low`) usable in
 a tier, `--model`, or the env override. The `high` tier asks a backend for its strongest model and
 falls back safely when it declares none. `defaults.native_models` is the **single** place a tier
-becomes a Claude model (previously duplicated across `team.tier_models` and `reasoning.tier_models`).
+becomes a Claude model — `team.tier_models` (which duplicated it) is gone; `teamConfig()` forwards
+this map instead, and a /team role's `tier` is what selects through it.
 
 agy's shipped models use the **ID form** from the left column of `agy models`
 (`gemini-3.1-pro-low`), not the display strings — both work, but ids carry no spaces or parens.
@@ -238,10 +242,10 @@ agy's shipped models use the **ID form** from the left column of `agy models`
 
 ## /team — multi-model team pipeline (v0.3)
 
-`/team [--writable] [N:gemini,M:claude] <task>` runs a task through a staged **plan → exec → verify → fix**
-pipeline: **native, agy and codex are equal, configurable tools** — the decomposer assigns each
-subtask to its best-fit backend, native Claude plans/synthesizes, and any backend (default codex)
-verifies. Stages: **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**.
+`/team [--writable] [staffing spec] <task>` runs a task through a staged **plan → exec → verify → fix**
+pipeline: **native, agy, codex and opencode are equal tools**, and **the user's staffing is the only
+thing that decides which one does which job** (see the ROLE system below). Anything unstaffed runs on
+Claude. Stages: **decompose → dispatch (dependency-aware) → verify → fix (bounded) → synthesize**.
 Flow (in `commands/team.md`):
 
 **Two modes (`--writable`).** *read-only (default):* CLI agents stay read-only (`-s read-only`), return
@@ -259,8 +263,9 @@ or via roster `team.mode:"writable"`. The full-auto sandbox is config-tunable: e
 `writable_extra` in `roster.json` (codex `--dangerously-bypass-approvals-and-sandbox`; agy keeps its
 `--dangerously-skip-permissions`, differing from read-only only by the worktree cwd).
 
-1. Parse the optional cap spec via `src/lib/team-spec.mjs` → `{gemini, claude}` (caps = max
-   agents per backend; `gemini`=agy, `claude`=native; defaults 4/2; aliases + clamp).
+1. Resolve the staffing via `src/lib/team-spec.mjs --split` → `{roles, caps, task, source, writable}`.
+   Both grammars (role spec, backend-only spec) land on ONE resolved table; `.caps` is projected
+   off it for the scripted path's `--gemini-cap`.
 2. Claude decomposes the task, then **writes `.mmt/plans/plan.json`** (array of
    `{label, task, backend, tier, deps?, verify?}`) via the Write tool — `.mmt/` is this plugin's
    state dir (NOT `.omc/`, even under OMC) — task text stays inert
@@ -274,26 +279,32 @@ or via roster `team.mode:"writable"`. The full-auto sandbox is config-tunable: e
    Every worker prompt is tagged `[mmt-team-worker]` so the spawn-guard hook exempts it.
    (`src/bin/team.mjs --plan <file> --gemini-cap G` remains as a **scripted no-agents alternative**
    — parallel `run.mjs` subprocesses, `--- AGY/CODEX/NATIVE [label] ---` blocks.)
-4. The lead **verifies** every result against its criterion via the configured verifier (default
-   codex; forced `backend:codex` via `run.mjs`, rule `team-verify`; native judgment falls back if
-   codex is unavailable), **fixes** failures in a bounded loop (default 1 attempt), then synthesizes.
+4. The lead **verifies** every result against its criterion via the **staffed reviewer(s)** (rule
+   `team-verify` forces their backend; visible native judgment falls back if a reviewer CLI is
+   unavailable), **fixes** failures in a bounded loop (default 1 attempt), then synthesizes.
 
 **Ultracode path:** when the Workflow tool is available, `/team` runs `workflows/team.mjs`, which
 does the entire pipeline deterministically: decompose → dependency-ordered waves → verify →
 bounded fix re-dispatch → synthesize. The faithful relay (`dispatchRelay`) is a PURE PIPE:
 forced into `{stdout, backend_ran}` schema, forbidden from solving/analyzing the payload. Each
-result carries `ranOn` = the backend that *actually* produced it. `verifier:'native'` skips the
-relay and judges on Claude directly.
+result carries `ranOn` = the backend that *actually* produced it. A reviewer staffed on `native`
+skips the relay and judges on Claude directly.
 
-Args: `{task, caps, pluginRoot, verify?=true, verifier?='codex', maxFixLoops?=1 (max 3)}`. Returns
-`{plan, backends, caps, verifier, counts:{byBackend,ranOn,verified,failed,nativeFallbacks}, results, final}`.
-Agent labels are backend-prefixed — `gemini:<label>`, `codex:verify:<label>`, `native:` etc.
-Native subtask model is **dynamic by complexity** (`sonnet` default, `opus` only when genuinely
-hard). Determinism-safe (no Date/random APIs) and tolerates `args` as object **or** JSON string.
+Args: `{task, roles, pluginRoot, teamConfig, verify?=true, verifier?, maxFixLoops?=1 (max 3)}`. Returns
+`{plan, backends, staffing:{workers,verifiers,fixers,defaulted}, verifier,
+counts:{byBackend,byRole,byStage,ranOn,verified,failed,nativeFallbacks}, results, final}`.
+Agent labels carry the role and backend — `gemini:executor:<label>`, `codex:code-reviewer:<label>`,
+`native:` etc. Omitting `args.roles` runs the whole pipeline on Claude — **the workflow never
+auto-staffs a CLI**. Native model is **dynamic by role tier** through `defaults.native_models`.
+Determinism-safe (no Date/random APIs) and tolerates `args` as object **or** JSON string.
 
-## The /team ROLE system (oh-my-claudecode parity)
+## The /team ROLE system — the ONLY staffing mechanism (oh-my-claudecode parity)
 
-A `/team` invocation can staff the run by **job**, not just by count:
+A `/team` invocation is staffed by **job**. This is the single mechanism that decides which backend
+does what: there is no eligible-backend list, no per-backend cap panel and no configured verifier
+sitting behind it. (There used to be — `team.dispatch_backends` / `team.caps` / `team.verifier` auto-
+assigned work from config while the role spec assigned it explicitly. Two mechanisms competing over
+one decision; the config one silently won in places. It is gone.)
 
 ```
 /team orch:claude:2;impl:opencode:1,claude:2;review:codex:2 build a REST CRUD service
@@ -314,28 +325,56 @@ executor/debugger; naming it makes that stage assignable). `orch`/`impl`/`review
 model ladder — so `high` on agy means agy's strongest model, not Opus.
 
 **Stages** run `plan → prd → exec → verify → fix` (OMC's `team-plan … team-fix`). Every role belongs
-to exactly one. A stage nobody staffed is **skipped**, so `impl:opencode:2` alone runs only exec.
+to exactly one. `plan`/`prd`/`exec` are **decomposed into subtasks**; `verify` and `fix` staff the
+pipeline's **own review/repair loop** and are never planned as work — that split is what lets one
+mechanism drive both "who implements" and "who reviews".
+
+**The three fallback rules** (`resolveStaffing` in `src/lib/roles.mjs` — the one place a job gets a
+backend):
+1. **Unstaffed → Claude**, at that role's catalog tier (which is what picks the model via
+   `defaults.native_models`). A CLI is *never* auto-staffed; it runs only where you put it.
+2. **`fixer` follows `executor`** — staff `impl:opencode:2` and fixes go back to opencode. More
+   precisely it follows the exec **stage**, so `designer:agy:2` also gets an agy fixer. An explicit
+   `fix:claude:1` overrides it.
+3. **A job is covered by any role on its stage.** `review:codex:2` IS the review job, so no second
+   Claude verifier is added beside it; `designer:agy:2` staffs exec, so no phantom Claude executors.
+
+A **backend-only spec** (`5:gemini,2:claude`) means "use these to do the work" → they become the
+**executors**, rule 2 gives them the fixer, and rule 1 puts the reviewer on Claude. With **no spec at
+all**, the whole pipeline is Claude (`executor` ×4, `verifier` ×1, `fixer` ×1).
 
 **All config, no code:** `roster.json` → `roles` (`stages`, `default_backend`, `default_count`,
-`catalog` with each role's `stage`/`tier`/`aliases`/`desc`). `src/lib/roles.mjs` hardcodes only a
-small fail-safe catalog for when that section is unreadable. `node src/lib/roles.mjs --list` prints
-the catalog; `--split` parses a spec off raw input.
+`core` = the always-needed jobs with their default worker count / `follows` / optional fallback
+`backend`, and `catalog` with each role's `stage`/`tier`/`aliases`/`desc`). `src/lib/roles.mjs`
+hardcodes only a small fail-safe catalog for when that section is unreadable. `node
+src/lib/roles.mjs --list` prints the catalog; `--split` parses a spec, `--staff` shows the RESOLVED
+table (including the Claude fallbacks).
 
 **Enforcement in `workflows/team.mjs` (the part that makes it real):**
-1. The decompose schema's `role` enum is limited to roles the user actually staffed.
-2. Caps become per **(role, backend) slot**. A subtask naming an unstaffed pair, or exceeding a
-   staffed count, is **dropped with a log line** — never silently re-homed onto another backend.
+1. The decompose schema's `role` enum is limited to staffed roles, and `role` is **required**.
+2. The limit is per **(role, backend) slot**. A subtask naming an unstaffed pair, or exceeding a
+   staffed count, is **dropped with a log line** — never silently re-homed. The decompose's backend
+   is deliberately *not* coerced to native for this reason.
 3. Each kept subtask's tier is corrected to its role's tier.
 4. Stage order is enforced by **rewriting it as dependencies**, so the existing dependency-wave
    scheduler carries it — no second scheduling mechanism, and later stages get earlier results.
 5. Each worker receives a **role brief** (`You are acting in the "code-reviewer" role…`) and its
-   label becomes `code-reviewer:<subtask>`. The `desc` rides in the parsed assignments because
-   Workflow scripts have no filesystem access to re-read the roster.
+   label becomes `code-reviewer:<subtask>`. Reviewers get it too, so `security-reviewer` audits for
+   vulnerabilities instead of doing a generic pass/fail. The `desc` rides in the resolved table
+   because Workflow scripts have no filesystem access to re-read the roster.
+6. Several staffed reviewers ⇒ each result must satisfy **all** of them (the default staffing is
+   one, so the common case is exactly one review per subtask, unchanged).
+7. A **disabled** backend can't be staffed: `resolveStaffing` drops it with a note and the job falls
+   back to Claude — the same "honour the switch at decision time" invariant the router has.
 
-**Backward compatible.** The old cap spec (`5:gemini,2:claude`) is unchanged. The grammars are
-*distinguished, not guessed*: a role spec starts with a known role word, a cap spec with a number or
-backend word. A role spec also **derives `.caps`** from its worker counts, so every cap-only
-consumer keeps working.
+**Backward compatible.** The backend-only spec (`5:gemini,2:claude`) still parses identically. The
+grammars are *distinguished, not guessed*: a role spec starts with a known role word, a backend-only
+spec with a number or backend word. `.caps` is still emitted (projected off the **worker** staffing)
+so `--gemini-cap` and the scripted path keep working.
+
+`test/team-staffing.test.mjs` runs the REAL `workflows/team.mjs` against a stubbed Workflow runtime
+(offline — `agent()` is a stub, no backend spawns), so these rules are pinned behaviourally rather
+than by string-matching the source.
 
 ## /reasoning — multi-model parallel reasoning (Fusion)
 
@@ -404,9 +443,9 @@ the parsers ignore):
 
 - **`defaults`** — `preset`, `fallback`, `quota_fallback` (ordered backend chain).
 - **`backends`** — each key is a backend a route can target. `enabled` gates use; `kind` selects
-  the invoker in `src/lib/backends.mjs`. **`kind:"gemini"` (agy) and `kind:"codex"` both have live
-  invokers**; `opencode` is the only `enabled:false` stub remaining. Adding a future backend =
-  add `invoke`/`health` dispatch cases in `backends.mjs` and flip `enabled`; no other code changes.
+  the invoker in `src/lib/backends.mjs`. **`gemini` (agy), `codex` and `opencode` all have live
+  invokers.** Adding a future backend = add `invoke`/`health` dispatch cases in `backends.mjs` and
+  flip `enabled`; no other code changes.
 - **`agents`** — each delegation subagent: `enabled`, `backend`, `tier`, `dispatch`
   (`route`=let the router decide; `forced`=pin backend+tier), `model`, `color`, `role`. The
   `.md` files in `agents/` are **generated** from this by `src/lib/gen-agents.mjs` — edit the
@@ -415,13 +454,16 @@ the parsers ignore):
   Route invariants (Opus hard-line first, multimodal before judgment-coding, judgment-coding above
   commodity agy rules) are unchanged.
 - **`proactive`** — the UserPromptSubmit nudge config.
-- **`roles`** — the /team ROLE catalog (OMC parity): `stages`, `default_backend`, `default_count`,
-  and `catalog` mapping each role to its stage / default tier / aliases / description. Edited here,
-  not in code — adding a role is a JSON entry.
-- **`team`** — the `/team` pipeline roles + defaults, read by `src/lib/config.mjs teamConfig()`
-  and passed into `team.mjs` via `args.teamConfig`. **native, agy and codex are EQUAL** — any can
-  be assigned any subtask, any can verify: `dispatch_backends`, `verifier`, `caps`, `tier_models`,
-  `verify`, `max_fix_loops`, `relay_model`. Precedence: built-in default < `team` < invocation arg.
+- **`roles`** — the /team STAFFING system, and the only place a backend is assigned to a job:
+  `stages`, `default_backend` (the unstaffed fallback = Claude), `default_count`, `core` (the
+  always-needed jobs: default worker `count`, optional `follows`, optional fallback `backend`), and
+  `catalog` mapping each role to its stage / default tier / aliases / description. Edited here, not
+  in code — adding a role is a JSON entry.
+- **`team`** — `/team` **pipeline knobs only**, read by `src/lib/config.mjs teamConfig()` and passed
+  into `team.mjs` via `args.teamConfig`: `verify`, `max_fix_loops`, `relay_model`, `mode`. It picks
+  no backends — `roles` does. `teamConfig()` also forwards `native_models` from `defaults` (the
+  Workflow runtime can't read the roster, but the tier→model map must stay single-sourced).
+  Precedence: built-in default < `team` < invocation arg.
 
 **Module contract:** `src/lib/config.mjs` exports `loadRoster`, `defaults`, `backend`, `agents`,
 `routes`, `proactive`, `teamConfig` — plain JS objects, real `JSON.parse`, no bash eval, no
@@ -459,7 +501,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 177/177 routing + unit tests (no backend calls)
+npm test                         # offline: 197/197 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`

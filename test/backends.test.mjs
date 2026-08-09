@@ -436,30 +436,36 @@ test('run.mjs (no --writable): CLI gets the read-only sandbox flags (default beh
   assert.doesNotMatch(body, /dangerously-bypass/, 'read-only mode does NOT use the full-auto flag');
 });
 
-// ── team config (equal, configurable roles) ──────────────────────────────────
-test('teamConfig defaults', () => {
+// ── team config (PIPELINE knobs only — staffing lives in `roles`) ────────────
+test('teamConfig carries pipeline knobs, and NOT a second backend-assignment mechanism', () => {
   const tc = teamConfig(ROSTER);
-  assert.deepEqual(tc.dispatch_backends, ['agy', 'codex', 'opencode', 'native']);
-  assert.equal(tc.verifier, 'codex');
-  assert.equal(tc.caps.agy, 4);
-  assert.equal(tc.caps.codex, 2);
-  assert.equal(tc.caps.opencode, 2);
+  assert.equal(tc.verify, true);
+  assert.equal(tc.max_fix_loops, 1);
+  assert.equal(tc.relay_model, 'haiku');
+
+  // The old auto-assignment panel is GONE. These keys competed with the role staffing for the same
+  // decision (which backend does which job) — two mechanisms, one of which silently won.
+  for (const dead of ['dispatch_backends', 'verifier', 'caps', 'tier_models']) {
+    assert.equal(tc[dead], undefined, `team.${dead} must not come back — staffing decides that now`);
+  }
 });
 
-test('teamConfig override merges caps key-by-key', () => {
+test('teamConfig forwards native_models from defaults — one tier->model map, not two', () => {
+  // The workflow needs the map (the Workflow runtime can't read the roster), but `team.tier_models`
+  // used to duplicate `defaults.native_models` and could drift out of step with it.
   const clone = JSON.parse(JSON.stringify(ROSTER));
-  clone.team = {
-    verifier: 'agy',
-    dispatch_backends: ['codex', 'native'],
-    caps: { codex: 6 },
-    tier_models: { standard: 'haiku' },
-  };
+  clone.defaults.native_models = { ...clone.defaults.native_models, standard: 'haiku' };
+  assert.equal(teamConfig(clone).native_models.standard, 'haiku', 'follows defaults.native_models');
+  assert.equal(teamConfig(ROSTER).native_models.high, 'opus');
+});
+
+test('teamConfig override: roster team keys win over the built-ins', () => {
+  const clone = JSON.parse(JSON.stringify(ROSTER));
+  clone.team = { verify: false, max_fix_loops: 3, relay_model: 'sonnet' };
   const tc = teamConfig(clone);
-  assert.equal(tc.verifier, 'agy');
-  assert.deepEqual(tc.dispatch_backends, ['codex', 'native']);
-  assert.equal(tc.caps.codex, 6);
-  assert.equal(tc.caps.native, 2, 'unspecified cap preserved from defaults');
-  assert.equal(tc.tier_models.standard, 'haiku');
+  assert.equal(tc.verify, false);
+  assert.equal(tc.max_fix_loops, 3);
+  assert.equal(tc.relay_model, 'sonnet');
 });
 
 // ── proactive-env knobs (config.proactive defaults + overrides) ───────────────

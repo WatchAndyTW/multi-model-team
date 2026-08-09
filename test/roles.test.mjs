@@ -9,12 +9,16 @@ import assert from 'node:assert/strict';
 
 import {
   roleCatalog, normalizeRole, looksLikeRoleSpec, parseRoleSpec, splitRoleSpec, describeRoles,
+  resolveStaffing, staffingFromBackends,
 } from '../src/lib/roles.mjs';
 import { splitSpec, parseCaps } from '../src/lib/team-spec.mjs';
 import { ROSTER } from './helpers.mjs';
 
 const R = { roster: ROSTER };
 const CAT = roleCatalog(ROSTER).catalog;
+
+/** `role/backend[xN]` for each assignment — the compact shape most staffing assertions want. */
+const shape = (list) => list.map((a) => `${a.role}/${a.backend}x${a.count}`);
 
 // ── the requested spec, end to end ───────────────────────────────────────────
 
@@ -186,28 +190,28 @@ test('role and cap grammars are told apart, not guessed', () => {
   assert.equal(looksLikeRoleSpec('fix the bug', CAT), false, 'no colon -> not a spec');
 });
 
-test('splitSpec routes a role spec to roles and a cap spec to caps', () => {
+test('BOTH grammars produce a resolved staffing table — there is no second mechanism', () => {
   const roles = splitSpec('orch:claude:2;impl:opencode:1 build it', R);
   assert.equal(roles.source, 'roles');
-  assert.ok(roles.roles, 'the parsed role spec is attached');
+  assert.ok(Array.isArray(roles.roles.assignments), 'staffing attached');
   assert.equal(roles.task, 'build it');
 
   const caps = splitSpec('5:gemini,2:claude build it', R);
   assert.equal(caps.source, 'spec');
-  assert.equal(caps.roles, undefined, 'a cap spec produces no roles');
+  assert.ok(Array.isArray(caps.roles.assignments), 'a backend-only spec resolves to staffing too');
   assert.equal(caps.caps.gemini, 5);
   assert.equal(caps.task, 'build it');
 });
 
-test('a role spec still yields caps, so cap-only consumers keep working', () => {
-  // The workflow's CAPS ladder and --gemini-cap only understand caps; a role spec must project
-  // onto them rather than leaving them at defaults.
+test('a spec still yields caps, so cap-only consumers keep working', () => {
+  // `--gemini-cap` and the scripted path only understand caps; the staffing must project back onto
+  // them. Caps count WORKERS only — a reviewer is the pipeline's verify loop, not parallel capacity.
   const { caps } = splitSpec('orch:claude:2;impl:opencode:1,claude:2;review:codex:2 x', R);
   assert.equal(caps.claude, 4, '2 planners + 2 executors on native');
   assert.equal(caps.opencode, 1);
-  assert.equal(caps.codex, 2);
+  assert.equal(caps.codex, 0, 'codex reviews; it is not a parallel subtask worker');
   assert.equal(caps.gemini, 0, 'agy was not staffed');
-  assert.equal(caps.total, 7);
+  assert.equal(caps.total, 5);
   assert.equal(caps.source, 'spec', 'a role spec IS an explicit assignment');
 });
 
@@ -218,6 +222,77 @@ test('the legacy cap grammar is untouched by the role layer', () => {
   const plain = splitSpec('do a thing with 3 steps: x', R);
   assert.equal(plain.source, 'default');
   assert.equal(plain.task, 'do a thing with 3 steps: x', '"N steps:" is still not a spec');
+});
+
+// ── staffing resolution: the ONE place a job gets a backend ──────────────────
+
+test('an unstaffed job falls back to Claude at its own tier — never to a CLI', () => {
+  const s = resolveStaffing(parseRoleSpec('impl:opencode:2', R), R);
+  assert.deepEqual(shape(s.workers), ['executor/opencodex2'], 'only what was staffed does the work');
+  assert.deepEqual(shape(s.verifiers), ['verifier/nativex1'], 'nobody staffed review -> Claude');
+  assert.deepEqual(s.defaulted, ['verifier']);
+  // The tier is the ROLE's, which is what selects the Claude model.
+  assert.equal(s.verifiers[0].tier, CAT.verifier.tier);
+});
+
+test('nothing staffed at all -> the whole pipeline is Claude', () => {
+  const s = resolveStaffing([], R);
+  assert.deepEqual(s.backends, ['native'], 'no CLI is ever auto-staffed');
+  assert.deepEqual(s.defaulted, ['executor', 'verifier', 'fixer']);
+  assert.deepEqual(shape(s.workers), ['executor/nativex4']);
+});
+
+test('the fixer follows the executor when only the executor was staffed', () => {
+  const s = resolveStaffing(parseRoleSpec('impl:opencode:1,claude:2', R), R);
+  assert.deepEqual(shape(s.fixers), ['fixer/opencodex1', 'fixer/nativex2'], 'same backends as the executors');
+  assert.ok(s.fixers.every((f) => f.source === 'follows'));
+  assert.ok(!s.defaulted.includes('fixer'), 'following is not defaulting');
+});
+
+test('an explicit fixer overrides the share', () => {
+  const s = resolveStaffing(parseRoleSpec('impl:opencode:2;fix:claude:1', R), R);
+  assert.deepEqual(shape(s.fixers), ['fixer/nativex1']);
+  assert.equal(s.fixers[0].source, 'spec');
+});
+
+test('backends named without roles become the EXECUTORS, and the fixer follows them', () => {
+  const s = staffingFromBackends({ agy: 5, native: 2 }, R);
+  assert.deepEqual(shape(s.workers), ['executor/agyx5', 'executor/nativex2']);
+  assert.deepEqual(shape(s.fixers), ['fixer/agyx5', 'fixer/nativex2']);
+  assert.deepEqual(shape(s.verifiers), ['verifier/nativex1'], 'review still falls back to Claude');
+});
+
+test('a core job is satisfied by ANY role on its stage, not just the canonical one', () => {
+  // Staffing `review:codex:2` IS staffing the review job — it must not ALSO get a defaulted Claude
+  // verifier reviewing everything a second time.
+  const s = resolveStaffing(parseRoleSpec('impl:agy:2;review:codex:2', R), R);
+  assert.deepEqual(shape(s.verifiers), ['code-reviewer/codexx2']);
+  assert.deepEqual(s.defaulted, [], 'every stage was covered');
+
+  // Same on the exec side: a designer staffs the work, so no phantom Claude executors appear.
+  const d = resolveStaffing(parseRoleSpec('designer:agy:2', R), R);
+  assert.deepEqual(shape(d.workers), ['designer/agyx2']);
+  assert.deepEqual(shape(d.fixers), ['fixer/agyx2'], 'the fix follows whoever did the work');
+});
+
+test('verify and fix staff the pipeline loop; they are never decomposed into subtasks', () => {
+  const s = resolveStaffing(parseRoleSpec('orch:claude:2;impl:opencode:1;review:codex:2', R), R);
+  assert.deepEqual(s.stages, ['plan', 'exec'], 'only worker stages are planned');
+  assert.ok(s.workers.every((a) => a.stage !== 'verify' && a.stage !== 'fix'));
+  assert.deepEqual(s.stageOrder, ['plan', 'prd', 'exec', 'verify', 'fix'], 'full order for consumers with no roster');
+});
+
+test('several reviewers are deduped per (role, backend) — a count bounds parallelism', () => {
+  const s = resolveStaffing(parseRoleSpec('review:codex:2;security:agy:1', R), R);
+  assert.deepEqual(shape(s.verifiers), ['code-reviewer/codexx2', 'security-reviewer/agyx1']);
+});
+
+test('a disabled backend cannot be staffed — the switch beats the spec', () => {
+  const clone = JSON.parse(JSON.stringify(ROSTER));
+  clone.backends.opencode.enabled = false;
+  const s = resolveStaffing(parseRoleSpec('impl:opencode:2', { roster: clone }), { roster: clone });
+  assert.match(s.note, /opencode.*disabled/, 'says why it was skipped');
+  assert.deepEqual(shape(s.workers), ['executor/nativex4'], 'the job falls back to Claude, not to another CLI');
 });
 
 // ── config-driven ────────────────────────────────────────────────────────────

@@ -1,11 +1,20 @@
 /**
- * team-spec.mjs — parse /team agent-cap specs into per-backend caps.
- * Node ESM port of scripts/lib/team_spec.py. Zero runtime dependencies.
+ * team-spec.mjs — parse a /team spec into the staffing the pipeline runs on.
+ *
+ * TWO grammars, ONE result. Whatever the user typed — a role spec (`impl:opencode:2`), a
+ * backend-only spec (`5:gemini,2:claude`), or nothing at all — `splitSpec` returns a fully
+ * RESOLVED staffing table in `.roles`, with every unstaffed job defaulted to Claude by
+ * `roles.resolveStaffing`. There is no separate auto-assignment panel to fall back to: a backend
+ * runs only where the user put it.
+ *
+ * A backend-only spec means "use these to DO the work" — they become the executors, and the fix
+ * stage follows them.
  *
  * Exports:
  *   parseCaps(spec)      — "N:gemini,M:claude" -> { gemini, codex, opencode, claude, total, source, note }
- *   splitSpec(rawText)   — peel leading mode flags + a LEADING cap spec;
- *                          return { caps, task, source, flags, writable }
+ *                          (what the user TYPED; an empty/garbage spec is zeros, not a default panel)
+ *   splitSpec(rawText)   — peel leading mode flags + a LEADING spec of either grammar;
+ *                          return { caps, roles, task, source, flags, writable }
  *
  * Cap keys are the /team SPEC vocabulary, not roster backend names:
  *   gemini -> agy,  codex -> codex,  opencode -> opencode,  claude -> native.
@@ -15,7 +24,7 @@
  * added here — `/team 2:opencode <task>` silently lost both the cap and the spec boundary.
  */
 
-import { splitRoleSpec } from './roles.mjs';
+import { splitRoleSpec, resolveStaffing, staffingFromBackends } from './roles.mjs';
 
 // ─── alias sets ──────────────────────────────────────────────────────────────
 
@@ -26,20 +35,14 @@ const CLAUDE_ALIASES   = new Set(['claude', 'native', 'sonnet', 'opus', 'anthrop
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const DEFAULT_GEMINI   = _envInt('MMT_TEAM_GEMINI_DEFAULT',   4);
-const DEFAULT_CODEX    = _envInt('MMT_TEAM_CODEX_DEFAULT',    2);
-const DEFAULT_OPENCODE = _envInt('MMT_TEAM_OPENCODE_DEFAULT', 2);
-const DEFAULT_CLAUDE   = _envInt('MMT_TEAM_CLAUDE_DEFAULT',   2);
 const MAX_PER_BACKEND = 16;
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// Cap-spec key -> roster backend name, and back. The two vocabularies are kept apart deliberately:
+// `.caps` has always spoken gemini/claude, while staffing speaks agy/native.
+const CAP_TO_BACKEND = { gemini: 'agy', codex: 'codex', opencode: 'opencode', claude: 'native' };
+const BACKEND_TO_CAP = { agy: 'gemini', codex: 'codex', opencode: 'opencode', native: 'claude' };
 
-function _envInt(name, def) {
-  const v = process.env[name] ?? '';
-  if (!v.trim()) return def;
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) ? Math.max(0, n) : def;
-}
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
 function _clamp(n) {
   const i = parseInt(n, 10);
@@ -112,13 +115,14 @@ export function parseCaps(spec) {
            source: 'spec', note: notes.join('; ') };
 }
 
+/**
+ * "The user named no backends." Deliberately ZEROS, not a default panel of CLI agents: the old
+ * built-in 4-gemini/2-codex/2-opencode/2-claude spread auto-staffed CLIs nobody asked for. Staffing
+ * defaults now live in ONE place — `roles.resolveStaffing`, which fills every unstaffed job with
+ * Claude — so there is nothing to duplicate here.
+ */
 function _defaults(note) {
-  return {
-    gemini: DEFAULT_GEMINI, codex: DEFAULT_CODEX,
-    opencode: DEFAULT_OPENCODE, claude: DEFAULT_CLAUDE,
-    total:  DEFAULT_GEMINI + DEFAULT_CODEX + DEFAULT_OPENCODE + DEFAULT_CLAUDE,
-    source: 'default', note,
-  };
+  return { gemini: 0, codex: 0, opencode: 0, claude: 0, total: 0, source: 'default', note };
 }
 
 // ─── splitSpec ───────────────────────────────────────────────────────────────
@@ -137,18 +141,19 @@ function _defaults(note) {
  * task text, which is what the command doc already asks the caller to do by hand.
  *
  * @param {string} rawText
- * @returns {{ caps: object, task: string, source: string, flags: string[], writable: boolean }}
+ * @returns {{ caps: object, roles: object, task: string, source: string, flags: string[], writable: boolean }}
  */
 export function splitSpec(rawText, opts = {}) {
   // ROLE spec first. The two grammars are unambiguous — a role spec starts with a known role word,
-  // a cap spec starts with a number or a backend word — so this is a check, not a guess. When the
-  // input is a role spec the caps are DERIVED from it, so callers that only understand caps keep
-  // working unchanged.
+  // a cap spec starts with a number or a backend word — so this is a check, not a guess. Either way
+  // the result is one RESOLVED staffing table; `.caps` is projected back off it so cap-only
+  // consumers (--gemini-cap, the scripted path) keep working unchanged.
   const asRoles = splitRoleSpec(rawText, opts);
   if (asRoles) {
+    const staffing = resolveStaffing(asRoles, opts);
     return {
-      caps: _capsFromRoleCounts(asRoles.counts),
-      roles: asRoles,
+      caps: _capsFromStaffing(staffing, 'spec'),
+      roles: staffing,
       task: asRoles.task,
       source: 'roles',
       flags: asRoles.flags,
@@ -187,46 +192,59 @@ export function splitSpec(rawText, opts = {}) {
     const caps    = parseCaps(specStr);
     text = m[2].trim();
     peelFlags();   // `caps --writable task` — the flag may also trail the spec
-    return _withFlags({ caps, task: text, source: caps.source }, flags);
+    return _withFlags(caps, text, opts, flags);
   }
 
   // Attempt: the whole string is just a spec.
   const reOnly = new RegExp(`^\\s*(${specPat})\\s*$`, 'i');
   m = reOnly.exec(text);
   if (m) {
-    const caps = parseCaps(m[1].trim());
-    return _withFlags({ caps, task: '', source: caps.source }, flags);
+    return _withFlags(parseCaps(m[1].trim()), '', opts, flags);
   }
 
-  // No spec found — return defaults + remaining text as task.
-  return _withFlags({ caps: _defaults(''), task: text, source: 'default' }, flags);
+  // No spec at all — the staffing resolver still returns a full table, all of it Claude.
+  return _withFlags(_defaults(''), text, opts, flags);
 }
 
 /**
- * Project a role spec's per-backend worker counts onto the cap-spec shape, so every existing
- * consumer of `.caps` (the workflow's CAPS ladder, `--gemini-cap`) keeps working when the user
- * types a role spec instead. Backend names come back as the CAP vocabulary (`gemini`/`claude`),
- * not roster names, because that is what `.caps` has always meant.
- * @param {Record<string,number>} counts  by roster backend name
+ * Project a staffing table's WORKER counts back onto the cap-spec shape, so every existing consumer
+ * of `.caps` (`--gemini-cap`, the scripted path) keeps working. Only worker stages count — the
+ * verify/fix staffing is the pipeline's own loop, not parallel subtask capacity, which is exactly
+ * what a cap has always meant. Names come back as the CAP vocabulary (`gemini`/`claude`).
  */
-function _capsFromRoleCounts(counts) {
-  const CAP_KEY = { agy: 'gemini', codex: 'codex', opencode: 'opencode', native: 'claude' };
+function _capsFromStaffing(staffing, source) {
   const caps = { gemini: 0, codex: 0, opencode: 0, claude: 0 };
-  for (const [backend, n] of Object.entries(counts || {})) {
-    const key = CAP_KEY[backend];
-    if (key) caps[key] = _clamp(n);
+  for (const a of (staffing.workers || [])) {
+    const key = BACKEND_TO_CAP[a.backend];
+    if (key) caps[key] = _clamp(caps[key] + a.count);
   }
   return {
     ...caps,
     total: caps.gemini + caps.codex + caps.opencode + caps.claude,
-    source: 'spec',   // the user DID specify — a role spec is an explicit assignment
-    note: '',
+    source,
+    note: staffing.note || '',
   };
 }
 
-/** Attach the consumed mode flags (and the `--writable` convenience boolean) to a split result. */
-function _withFlags(result, flags) {
-  return { ...result, flags, writable: flags.includes('--writable') };
+/**
+ * Finish a cap-grammar split: staff the named backends as EXECUTORS, resolve the rest of the
+ * pipeline onto Claude, and attach the consumed mode flags. `.caps` is re-derived from the resolved
+ * table so it reports what will actually run, not what was typed.
+ */
+function _withFlags(caps, task, opts, flags) {
+  const counts = {};
+  for (const [key, backend] of Object.entries(CAP_TO_BACKEND)) {
+    if (caps[key] > 0) counts[backend] = caps[key];
+  }
+  const staffing = staffingFromBackends(counts, opts);
+  return {
+    caps: _capsFromStaffing(staffing, caps.source),
+    roles: staffing,
+    task,
+    source: caps.source,
+    flags,
+    writable: flags.includes('--writable'),
+  };
 }
 
 function _reEscape(s) {

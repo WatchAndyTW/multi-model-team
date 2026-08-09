@@ -18,6 +18,7 @@ import {
   isNativeBackend, filterEnabled, backendDisabledByEnv, nativeModels, nativeModelForTier,
 } from '../src/lib/config.mjs';
 import { modelForTier, chooseModel } from '../src/lib/backends.mjs';
+import { parseRoleSpec } from '../src/lib/roles.mjs';
 import { decide } from '../src/lib/router.mjs';
 import { validateRoster } from '../src/lib/validate-config.mjs';
 import {
@@ -265,11 +266,13 @@ test('opencode declares a cwd_flag — it ignores the spawned process cwd', () =
   assert.equal(backend(ROSTER, 'opencode').cwd_flag, '--dir');
 });
 
-test('opencode has a dispatcher agent and a place in team/fallback config', () => {
+test('opencode has a dispatcher agent, a fallback slot, and is staffable by name', () => {
   assert.equal(ROSTER.agents.opencode.enabled, true);
   assert.equal(ROSTER.agents.opencode.backend, 'opencode');
   assert.ok(ROSTER.defaults.quota_fallback.includes('opencode'), 'reachable via the fallback chain');
-  assert.ok(ROSTER.team.dispatch_backends.includes('opencode'), '/team may assign it');
+  // /team reaches it by STAFFING it, not from an eligible-backend list — there is no such list.
+  const staffed = parseRoleSpec('impl:opencode:2', { roster: ROSTER }).assignments;
+  assert.deepEqual(staffed.map((a) => [a.role, a.backend]), [['executor', 'opencode']], '/team may staff it');
 });
 
 test('opencode claims no auto-route lane — it never silently steals agy/codex work', () => {

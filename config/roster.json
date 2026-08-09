@@ -17,25 +17,29 @@
   },
 
   "team": {
-    "_comment": "Roles + defaults for the /team pipeline. native, agy and codex are EQUAL, interchangeable tools — any can be assigned to any subtask and any can be the verifier; nothing is hardcoded. 'dispatch_backends' = the eligible set the decomposer may assign per subtask (native is always available as the judgment/hard-line option; drop a backend here to exclude it). 'verifier' = the backend that reviews each result (any backend name, or 'native' for Claude judgment). 'caps' = default max parallel subtasks per backend (by name). 'tier_models' maps a plan tier to a concrete model so the native model scales with complexity. 'relay_model' = the model the thin relay/verify agents run on. ALL overridable per-invocation (cap spec 'N:gemini,M:codex,K:claude', or in-session 'verify with X' / 'use Y for the front-end'). Precedence: built-in default < this section < per-invocation args.",
-    "dispatch_backends": ["agy", "codex", "opencode", "native"],
-    "verifier": "codex",
+    "_comment": "PIPELINE knobs for /team — nothing here chooses a backend any more. WHO does each job is decided ENTIRELY by the role staffing (see `roles` below): the user's role spec, with every unstaffed job falling back to Claude. 'verify'/'max_fix_loops' tune the verify->fix loop; 'relay_model' is the model the thin CLI-relay agents run on; 'mode':\"writable\" makes every run writable without the --writable flag. Precedence: built-in default < this section < per-invocation args.",
     "verify": true,
     "max_fix_loops": 1,
-    "caps": { "agy": 4, "codex": 2, "opencode": 2, "native": 2 },
-    "tier_models": { "cheap": "haiku", "standard": "sonnet", "sonnet": "sonnet", "opus": "opus", "high": "opus" },
     "relay_model": "haiku"
   },
 
   "roles": {
-    "_comment": "The /team ROLE system — deliberately mirrors oh-my-claudecode's staged pipeline so the vocabulary is the same one you already know. A role says WHAT a worker is for; the backend says WHICH model runs it. They are independent: any role can run on any backend (`impl:opencode:2` and `impl:claude:1` are both fine), which is the whole point — you pick the model per job, not per stage.",
-    "_spec_note": "Role spec syntax for /team: `role:backend:count` groups, comma-separated inside a role, semicolon-separated between roles. Example: `orch:claude:2;impl:opencode:1,claude:2;review:codex:2`. `backend:count` and `count:backend` are both accepted. The older cap spec (`5:gemini,2:claude`) still works unchanged — a spec is read as a ROLE spec only when its first token names a known role.",
-    "_stages_note": "Stages run in this order; every role belongs to exactly one. A stage with no assigned workers is skipped entirely, so `impl:opencode:2` alone runs just the exec stage. This is OMC's `team-plan -> team-prd -> team-exec -> team-verify -> team-fix`.",
+    "_comment": "The /team STAFFING system — the ONE place that decides which backend does which job (there is no separate auto-assignment panel any more). Vocabulary mirrors oh-my-claudecode's staged pipeline. A role says WHAT a worker is for; the backend says WHICH model runs it. They are independent: any role can run on any backend (`impl:opencode:2` and `impl:claude:1` are both fine), which is the whole point — you pick the model per job, not per stage.",
+    "_spec_note": "Role spec syntax for /team: `role:backend:count` groups, comma-separated inside a role, semicolon-separated between roles. Example: `orch:claude:2;impl:opencode:1,claude:2;review:codex:2`. `backend:count` and `count:backend` are both accepted. A backend-only spec (`5:gemini,2:claude`) still works and means 'staff these as the EXECUTORS' — the fix stage follows them and every other job falls back to Claude.",
+    "_fallback_note": "ANY job the user did not staff runs on `default_backend` (Claude) at that role's catalog `tier`, which is what picks the Claude model via defaults.native_models. Nothing is auto-assigned to a CLI backend — a CLI runs only where you put it.",
+    "_stages_note": "Stages run in this order; every role belongs to exactly one. `plan`/`prd`/`exec` are decomposed into subtasks; `verify` and `fix` are the pipeline's own review/repair machinery (they act on exec results, they are not planned work). A plan/prd stage nobody staffed is skipped. This is OMC's `team-plan -> team-prd -> team-exec -> team-verify -> team-fix`.",
     "stages": ["plan", "prd", "exec", "verify", "fix"],
 
     "_defaults_note": "Used when a role is named with no backend, or a backend with no count.",
     "default_backend": "native",
     "default_count": 1,
+
+    "_core_note": "The three jobs the pipeline ALWAYS needs. Each unstaffed one runs on `default_backend` with `count` workers at its catalog tier. `follows` borrows another role's staffing instead of defaulting — the fixer follows the executor, so `impl:opencode:2` puts fixes on opencode too, and a fix always goes back to the backend that did the work.",
+    "core": {
+      "executor": { "count": 4 },
+      "verifier": { "count": 1 },
+      "fixer":    { "count": 1, "follows": "executor" }
+    },
 
     "_catalog_note": "One entry per OMC agent, plus `fixer` for the fix stage (OMC staffs team-fix with executor/debugger; naming it lets you assign that stage directly). `tier` is the DEFAULT tier for the role and matches OMC's model choice for that agent (opus->high, sonnet->standard, haiku->cheap); it resolves per-backend through the normal model ladder, so `high` on agy means agy's strongest model, not Opus. Aliases are what a user may type; the canonical name is the key.",
     "catalog": {

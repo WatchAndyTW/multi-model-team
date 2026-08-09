@@ -9,14 +9,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { resolveRosterPath } from './platform.mjs';
 
-// ─── team defaults (mirrors TEAM_DEFAULTS in config.py) ──────────────────────
+// ─── team defaults ───────────────────────────────────────────────────────────
+// PIPELINE knobs only. Which backend does which job is decided entirely by the role staffing
+// (`roles` in the roster -> src/lib/roles.mjs resolveStaffing), so the old backend-picking keys
+// (dispatch_backends / verifier / caps) are gone — they were a second, competing assignment
+// mechanism. `tier_models` is gone too: `defaults.native_models` is the one tier->Claude-model map,
+// forwarded below as `native_models`.
 const TEAM_DEFAULTS = {
-  dispatch_backends: ['agy', 'codex', 'opencode', 'native'],
-  verifier: 'codex',
   verify: true,
   max_fix_loops: 1,
-  caps: { agy: 4, codex: 2, opencode: 2, native: 2 },
-  tier_models: { cheap: 'haiku', standard: 'sonnet', sonnet: 'sonnet', opus: 'opus', high: 'opus' },
   relay_model: 'sonnet',
 };
 
@@ -158,7 +159,7 @@ export function disabledBackends(roster) {
 
 /**
  * Filter a caller-supplied backend list down to what is actually usable, always preserving
- * `native`. Used by /team dispatch_backends, /reasoning panels, and the fallback chain so a
+ * `native`. Used by /team staffing, /reasoning panels, and the fallback chain so a
  * disabled backend is never offered as a choice.
  * @param {object} roster
  * @param {string[]} names
@@ -336,36 +337,27 @@ export function proactive(roster) {
 // ─── teamConfig ──────────────────────────────────────────────────────────────
 
 /**
- * Return team config merged over built-in defaults (mirrors emit_team_config in config.py).
- * `caps` and `tier_models` are merged key-by-key. Keys starting with `_` are ignored.
+ * Return the /team PIPELINE config merged over built-in defaults. Keys starting with `_` are
+ * ignored. This no longer decides which backend runs anything — that is the role staffing's job
+ * (src/lib/roles.mjs) — so there is nothing here to merge key-by-key.
+ *
+ * `native_models` is FORWARDED from `defaults.native_models`, not a separate knob: the workflow
+ * needs a tier->Claude-model map and the Workflow runtime can't read the roster itself, but the map
+ * must stay single-sourced.
  *
  * @param {object} roster
  * @returns {object}
  */
 export function teamConfig(roster) {
   const t = roster.team ?? {};
-
-  // deep-copy defaults so we don't mutate the constant
-  const merged = Object.fromEntries(
-    Object.entries(TEAM_DEFAULTS).map(([k, v]) => [
-      k,
-      v && typeof v === 'object' && !Array.isArray(v) ? { ...v } : v,
-    ])
-  );
+  const merged = { ...TEAM_DEFAULTS };
 
   for (const [k, v] of Object.entries(t)) {
     if (k.startsWith('_')) continue;
-    if (
-      (k === 'caps' || k === 'tier_models') &&
-      v && typeof v === 'object' && !Array.isArray(v) &&
-      merged[k] && typeof merged[k] === 'object'
-    ) {
-      Object.assign(merged[k], v);
-    } else {
-      merged[k] = v;
-    }
+    merged[k] = v;
   }
 
+  merged.native_models = nativeModels(roster);
   return merged;
 }
 

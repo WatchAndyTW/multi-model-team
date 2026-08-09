@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-177%2F177%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-197%2F197%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -73,7 +73,7 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 | Command | What it does |
 |---|---|
 | **`/reasoning [panel] <question>`** | **Fusion pipeline.** Fan one question across a panel of models in parallel → a judge compares them (consensus / contradictions / unique insights / blind spots) → synthesize one unified answer better than any single model's. |
-| **`/team [--writable] [role spec | caps] <task>`** | **Team pipeline.** Staff it by role — `orch:claude:2;impl:opencode:1,claude:2;review:codex:2` — or just by count (`5:gemini,2:claude`). Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. Add **`--writable`** to let agents actually edit code in isolated git worktrees (see below). |
+| **`/team [--writable] [staffing] <task>`** | **Team pipeline.** You staff it: by role — `orch:claude:2;impl:opencode:1,claude:2;review:codex:2` — or just by backend (`5:gemini,2:claude`, which staffs them as the implementers). Decompose → dispatch in dependency-aware waves → verify each result → bounded fix loop → synthesize. **Anything you don't staff runs on Claude**; no CLI is auto-assigned. Add **`--writable`** to let agents actually edit code in isolated git worktrees (see below). |
 | **`/route-test <task>`** | Dry-run the router: prints `{backend, model, tier}`, detected types, matched rule. No backend call — a tuning tool. |
 
 Both `/team` and `/reasoning` have **two engines**: an **Ultracode** deterministic Workflow path
@@ -163,7 +163,8 @@ Sections (keys prefixed `_comment`/`_about` are inline docs the parsers ignore):
 | **`backends`** | turn a CLI on/off (`enabled`), pick its invoker (`kind`), map tiers to models (`models`, `model_aliases`, `default_tier`), and set `writable_extra` — the flags used **instead of** `extra` in `/team --writable` mode (full-auto). All three are live: `agy` (`gemini`), `codex`, `opencode`. |
 | **`routes`** | change *where* a task type routes (first match wins). |
 | **`agents`** | the delegation subagents (`backend`/`tier`/`dispatch`/`role`). **After editing, run `node src/lib/gen-agents.mjs`** to regenerate `agents/*.md`. |
-| **`team`** | the `/team` pipeline roles + defaults — `dispatch_backends`, `verifier`, `caps`, `tier_models`, `verify`, `max_fix_loops`, and **`mode`** (`"writable"` makes `--writable` the default; per-invocation `--writable` still wins). |
+| **`roles`** | **who does what in `/team`** — the role `catalog` (stage / tier / aliases / description) and `core`, the always-needed jobs with their default worker count, `follows`, and optional standing `backend`. This is the only place a job is assigned to a backend. |
+| **`team`** | `/team` **pipeline knobs only** — `verify`, `max_fix_loops`, `relay_model`, and **`mode`** (`"writable"` makes `--writable` the default; per-invocation `--writable` still wins). It picks no backends. |
 | **`reasoning`** | the `/reasoning` Fusion defaults — **`panel`** (which models participate), `judge`, `synthesizer`, `cap`. See [docs/REASONING.md](docs/REASONING.md). |
 | **`defaults`** / **`proactive`** | preset + fallback chain, and the proactive-nudge config. |
 | **`config/tags.txt`** | (separate flat file) keyword → task-type classification. |
@@ -285,8 +286,20 @@ Every role sits in a **stage**, and stages run in order:
 plan  →  prd  →  exec  →  verify  →  fix
 ```
 
-A stage nobody staffed is **skipped** — `impl:opencode:2` alone runs just the exec stage. Later
-stages automatically receive earlier stages' results.
+`plan` / `prd` / `exec` become subtasks, and later stages automatically receive earlier stages'
+results. `verify` and `fix` staff the pipeline's own review-and-repair loop rather than being
+decomposed into work of their own.
+
+**Anything you don't staff runs on Claude** — at that role's tier, which is what picks the model.
+No CLI is ever auto-assigned; it runs where you put it and nowhere else. Two conveniences on top:
+
+- **the fixer follows the implementers**, so a fix goes back to whoever did the work — staff
+  `impl:opencode:2` and opencode fixes its own subtasks (`fix:claude:1` overrides that);
+- **naming backends without roles staffs them as the implementers**, which is exactly what the
+  count-only spec `5:gemini,2:claude` means.
+
+So `/team review:codex:1 <task>` = Claude does the work, codex reviews it; `/team <task>` with no
+spec = the whole pipeline on Claude.
 
 The vocabulary is [oh-my-claudecode](https://github.com/aptro/oh-my-claudecode)'s, so it should feel
 familiar. `orch` / `impl` / `review` are aliases for `planner` / `executor` / `code-reviewer`, and
@@ -310,9 +323,17 @@ model choice (opus→`high`, sonnet→`standard`, haiku→`cheap`) and resolves 
 
 The staffing is **enforced, not advisory**: a subtask naming a (role, backend) pair you didn't staff
 is dropped rather than quietly moved to another model, and each worker is told which role it is
-acting in. Edit the catalog in `roster.json` → `roles` to add or retune roles — it's config, not code.
+acting in — a `security-reviewer` audits for vulnerabilities instead of doing a generic pass/fail.
+Staff several reviewers and a result has to satisfy all of them.
 
-The older count-only spec still works unchanged: `/team 5:gemini,2:claude <task>`.
+Edit `roster.json` → `roles` to retune any of it — it's config, not code: `catalog` adds or
+re-tiers a role, and `core` sets what the always-needed jobs default to (including a standing
+`"backend"` if you'd rather always review on codex than type it every time).
+
+```bash
+node src/lib/roles.mjs --list     # the catalog, with aliases, stages and tiers
+node src/lib/roles.mjs --staff    # feed it a spec on stdin: the resolved staffing, fallbacks included
+```
 
 ---
 
@@ -414,7 +435,7 @@ docs/INTERFACES.md           module interface contract (Node ESM port signatures
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 177/177 routing + unit tests (no backend calls)
+npm test                # offline: 197/197 routing + unit tests (no backend calls)
 ```
 
 The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a

@@ -165,11 +165,14 @@ test('config.mjs team-config: returns valid team config JSON', () => {
   assert.equal(result.status, 0, `exit ${result.status}; stderr: ${result.stderr}`);
   assert.ok(result.stdout.trim().length > 0, 'stdout must be non-empty');
   const parsed = JSON.parse(result.stdout.trim());
-  assert.ok(Array.isArray(parsed.dispatch_backends), 'dispatch_backends is an array');
-  assert.ok(typeof parsed.verifier === 'string', 'verifier is a string');
-  assert.ok(typeof parsed.caps === 'object' && parsed.caps !== null, 'caps is an object');
   assert.ok(typeof parsed.verify === 'boolean', 'verify is a boolean');
   assert.ok(typeof parsed.max_fix_loops === 'number', 'max_fix_loops is a number');
+  assert.ok(typeof parsed.relay_model === 'string', 'relay_model is a string');
+  assert.ok(typeof parsed.native_models === 'object' && parsed.native_models !== null,
+    'native_models is forwarded so the workflow can map a tier to a Claude model');
+  // Pipeline knobs only — nothing here picks a backend any more (staffing does).
+  assert.equal(parsed.dispatch_backends, undefined);
+  assert.equal(parsed.caps, undefined);
 });
 
 test('config.mjs unknown mode: exits 2 with stderr message', () => {

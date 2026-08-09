@@ -61,7 +61,7 @@ test('a leading --writable no longer hides the cap spec', () => {
 test('mode flags are reported and never leak into the task', () => {
   const noSpec = splitSpec('--writable build a thing');
   assert.equal(noSpec.writable, true);
-  assert.equal(noSpec.caps.source, 'default', 'no spec given -> roster caps apply');
+  assert.equal(noSpec.caps.source, 'default', 'no spec given -> the Claude default staffing applies');
   assert.equal(noSpec.task, 'build a thing');
 
   const plain = splitSpec('fix the bug');
@@ -70,18 +70,29 @@ test('mode flags are reported and never leak into the task', () => {
   assert.equal(plain.task, 'fix the bug');
 });
 
-test('cap defaults include opencode and total accounts for it', () => {
+test('naming no backends means ZERO, not a default panel of CLI agents', () => {
+  // The old built-in 4-gemini/2-codex/2-opencode/2-claude spread auto-staffed CLIs nobody asked
+  // for. parseCaps now reports only what the user TYPED; the Claude fallbacks are applied once, in
+  // resolveStaffing, so there is no second place for a default to hide.
   const d = parseCaps('');
   assert.equal(d.source, 'default');
-  assert.equal(d.opencode, 2, 'matches roster team.caps.opencode');
-  assert.equal(d.total, d.gemini + d.codex + d.opencode + d.claude);
+  assert.equal(d.gemini, 0);
+  assert.equal(d.codex, 0);
+  assert.equal(d.opencode, 0);
+  assert.equal(d.claude, 0);
+  assert.equal(d.total, 0);
 });
 
 test('splitSpec deterministic boundary', () => {
   assert.equal(splitSpec('2:claude,5:gemini build it').caps.gemini, 5, 'caps preserved either order');
   assert.equal(splitSpec('5:gemini,2:claude build it').task, 'build it', 'task extracted');
   assert.equal(splitSpec('do a thing with 3 steps: x').task, 'do a thing with 3 steps: x', '"N steps:" is NOT a spec');
-  assert.equal(splitSpec('fix the bug').caps.gemini, 4, 'no spec -> default gemini');
+
+  // No spec at all -> nothing on a CLI; the whole pipeline defaults onto Claude.
+  const bare = splitSpec('fix the bug');
+  assert.equal(bare.caps.gemini, 0, 'no spec -> no gemini agents');
+  assert.ok(bare.caps.claude > 0, 'no spec -> Claude does the work');
+  assert.deepEqual(bare.roles.backends, ['native']);
 });
 
 // ── team plan -> manifest ────────────────────────────────────────────────────

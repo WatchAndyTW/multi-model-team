@@ -21,15 +21,28 @@
  *
  * Both `backend:count` and `count:backend` are accepted, matching the older cap spec's leniency.
  *
+ * Staffing is the ONLY thing that decides which backend does which job — there is no separate
+ * auto-assignment panel. `resolveStaffing` turns whatever the user typed (a role spec, a
+ * backend-only spec, or nothing at all) into a COMPLETE staffing table by applying three rules:
+ *
+ *   1. what the user staffed, stands;
+ *   2. a core role with a `follows` target borrows that role's backends (the fixer follows the
+ *      executor, so a fix goes back to whoever did the work);
+ *   3. every remaining core job falls back to Claude at that role's tier — never to a CLI.
+ *
  * Exports:
- *   roleCatalog(roster)             — normalized { role -> {stage, tier, aliases, desc} }
+ *   roleCatalog(roster)             — normalized { role -> {stage, tier, aliases, desc} } + core map
  *   normalizeRole(name, catalog)    — alias/canonical -> canonical role name, or null
  *   looksLikeRoleSpec(text, cat)    — does this text START with a known role token?
  *   parseRoleSpec(spec, opts)       — spec string -> { assignments, byStage, roles, counts, note }
  *   splitRoleSpec(rawText, opts)    — peel leading flags + role spec; -> { ...parsed, task, flags }
+ *   resolveStaffing(parsed, opts)   — explicit assignments -> the COMPLETE staffing table
+ *   staffingFromBackends(counts, o) — backend-only counts -> staffing (they become the executors)
  *
  * Zero runtime dependencies (Node stdlib only). ESM, win32/linux/darwin.
  */
+
+import { backendNames, isBackendEnabled } from './config.mjs';
 
 // ─── backend vocabulary ──────────────────────────────────────────────────────
 //
@@ -60,6 +73,20 @@ const FALLBACK_CATALOG = {
 };
 const FALLBACK_STAGES = ['plan', 'prd', 'exec', 'verify', 'fix'];
 
+// The jobs the pipeline always needs, used when roster.roles.core is missing/unreadable.
+const FALLBACK_CORE = {
+  executor: { count: 4 },
+  verifier: { count: 1 },
+  fixer: { count: 1, follows: 'executor' },
+};
+
+// Two of the stages are the pipeline's OWN machinery rather than planned work: `verify` reviews each
+// exec result and `fix` repairs it. Roles on those stages staff the verify/fix loop; roles on every
+// other stage are decomposed into subtasks. Naming them here (instead of scattering the check) is
+// what keeps "who reviews" and "who implements" one mechanism instead of two.
+export const VERIFY_STAGE = 'verify';
+export const FIX_STAGE = 'fix';
+
 const MAX_PER_ASSIGNMENT = 16;   // parity with the cap spec's clamp
 
 // ─── catalog ─────────────────────────────────────────────────────────────────
@@ -67,7 +94,7 @@ const MAX_PER_ASSIGNMENT = 16;   // parity with the cap spec's clamp
 /**
  * Normalized role catalog from the roster (documentation keys stripped).
  * @param {object} roster
- * @returns {{catalog:Record<string,{stage:string,tier:string,aliases:string[],desc:string}>, stages:string[], defaultBackend:string, defaultCount:number}}
+ * @returns {{catalog:Record<string,{stage:string,tier:string,aliases:string[],desc:string}>, stages:string[], defaultBackend:string, defaultCount:number, core:Record<string,{count:number,follows:string}>}}
  */
 export function roleCatalog(roster) {
   const cfg = (roster && roster.roles) || {};
@@ -89,9 +116,26 @@ export function roleCatalog(roster) {
     ? cfg.stages.filter((s) => typeof s === 'string')
     : FALLBACK_STAGES.slice();
 
+  // The always-needed jobs. Only roles the catalog actually knows survive, so a typo in `core`
+  // can't conjure a role with no stage or tier.
+  const rawCore = (cfg.core && typeof cfg.core === 'object' && !Array.isArray(cfg.core)) ? cfg.core : FALLBACK_CORE;
+  const core = {};
+  for (const [name, spec] of Object.entries(rawCore)) {
+    if (name.startsWith('_') || !catalog[name]) continue;
+    const count = spec && Number.isFinite(spec.count) && spec.count > 0 ? Math.floor(spec.count) : 1;
+    core[name] = {
+      count: Math.min(MAX_PER_ASSIGNMENT, count),
+      follows: spec && typeof spec.follows === 'string' && catalog[spec.follows] ? spec.follows : '',
+      // Optional per-role fallback backend, for "I always want X doing this job" without typing a
+      // spec every run. Absent -> `default_backend` (Claude).
+      backend: spec && typeof spec.backend === 'string' && spec.backend ? spec.backend : '',
+    };
+  }
+
   return {
     catalog,
     stages,
+    core,
     defaultBackend: typeof cfg.default_backend === 'string' && cfg.default_backend ? cfg.default_backend : 'native',
     defaultCount: Number.isFinite(cfg.default_count) && cfg.default_count > 0 ? Math.floor(cfg.default_count) : 1,
   };
@@ -303,6 +347,157 @@ export function splitRoleSpec(rawText, opts = {}) {
   return { ...parsed, task: text.trim(), flags, writable: flags.includes('--writable') };
 }
 
+// ─── resolveStaffing ─────────────────────────────────────────────────────────
+
+/**
+ * Turn what the user staffed into the COMPLETE staffing table the pipeline runs on.
+ *
+ * This is the single place a job gets a backend. Three rules, in order:
+ *   1. explicit assignments stand (a disabled backend is dropped with a note — the user's switch
+ *      wins over their spec, same as the router skipping a disabled route);
+ *   2. a core role with `follows` copies that role's staffing (fixer follows executor, so a fix
+ *      goes back to the backend that did the work);
+ *   3. any core job still unstaffed runs on `default_backend` (Claude) at the role's catalog tier.
+ *
+ * @param {object|Array} input   parseRoleSpec/splitRoleSpec output, or a bare assignments array
+ * @param {{roster?:object}} [opts]
+ * @returns {{
+ *   assignments: Array<object>, workers: Array<object>, verifiers: Array<object>,
+ *   fixers: Array<object>, byStage: Record<string,Array<object>>, roles: string[],
+ *   stages: string[], counts: Record<string,number>, backends: string[],
+ *   defaulted: string[], note: string
+ * }}
+ */
+export function resolveStaffing(input, opts = {}) {
+  const roster = opts.roster || {};
+  const { catalog, stages, core, defaultBackend, defaultCount } = roleCatalog(roster);
+
+  const explicit = Array.isArray(input)
+    ? input
+    : (input && Array.isArray(input.assignments) ? input.assignments : []);
+  const notes = [];
+  if (input && typeof input.note === 'string' && input.note) notes.push(input.note);
+
+  // A backend the user switched off is not a staffing option — honour the switch here rather than
+  // dispatching to it and letting run.mjs bounce it back. Skipped entirely for a roster that
+  // declares no backends at all (the fallback-catalog path), where "enabled" is unknowable.
+  const gated = backendNames(roster).length > 0;
+  const usable = (b) => !gated || isBackendEnabled(roster, b);
+
+  const out = [];
+  for (const a of explicit) {
+    if (!a || !a.role || !catalog[a.role]) continue;
+    if (!usable(a.backend)) {
+      notes.push(`'${a.role}' on ${a.backend} skipped — that backend is disabled`);
+      continue;
+    }
+    out.push({ ...a, source: 'spec' });
+  }
+
+  // A core job is satisfied by ANY role on its stage, not just the canonical one: staffing
+  // `review:codex:2` (code-reviewer) IS staffing the review job, so it must not also get a
+  // defaulted Claude verifier alongside it. Same for exec — `designer:agy:2` staffs the work.
+  const covered = (stage) => out.some((a) => a.stage === stage);
+
+  // 2 · inheritance, before defaulting: a follower only defaults if its target stage is empty too.
+  for (const [role, spec] of Object.entries(core)) {
+    const meta = catalog[role];
+    if (!spec.follows || covered(meta.stage)) continue;
+    // Follow the target's STAGE, not just its role name — a fix goes back to whoever did the work,
+    // whether that was the executor, the designer, or the debugger.
+    const fromStage = catalog[spec.follows].stage;
+    const from = out.filter((a) => a.stage === fromStage);
+    if (!from.length) continue;
+    for (const src of from) {
+      out.push({
+        role, stage: meta.stage, backend: src.backend, count: src.count,
+        tier: meta.tier, desc: meta.desc, source: 'follows', follows: spec.follows,
+      });
+    }
+    notes.push(`${role} follows ${spec.follows} (${[...new Set(from.map((a) => a.backend))].join(', ')})`);
+  }
+
+  // 3 · everything still unstaffed falls back to Claude at the role's own tier. A core entry may
+  //     name its own fallback `backend` (e.g. "always review on codex"); a disabled one reverts to
+  //     the global default rather than staffing a backend that can't run.
+  const defaulted = [];
+  for (const [role, spec] of Object.entries(core)) {
+    const meta = catalog[role];
+    if (covered(meta.stage)) continue;
+    const pref = spec.backend && usable(spec.backend) ? spec.backend : defaultBackend;
+    out.push({
+      role, stage: meta.stage, backend: pref,
+      count: Math.max(1, Math.min(MAX_PER_ASSIGNMENT, spec.count || defaultCount)),
+      tier: meta.tier, desc: meta.desc, source: 'default',
+    });
+    defaulted.push(role);
+  }
+
+  // Group. `verify`/`fix` staff the pipeline's own loop; every other stage is decomposed into work.
+  const workers = out.filter((a) => a.stage !== VERIFY_STAGE && a.stage !== FIX_STAGE);
+  const verifiers = _dedupe(out.filter((a) => a.stage === VERIFY_STAGE));
+  const fixers = out.filter((a) => a.stage === FIX_STAGE);
+
+  const byStage = {};
+  for (const a of out) (byStage[a.stage] ??= []).push(a);
+
+  const counts = {};
+  for (const a of out) counts[a.backend] = (counts[a.backend] ?? 0) + a.count;
+
+  return {
+    assignments: out,
+    workers,
+    verifiers,
+    fixers,
+    byStage,
+    roles: [...new Set(out.map((a) => a.role))],
+    // Active WORKER stages only, in pipeline order — what the decomposer plans for.
+    stages: stages.filter((s) => workers.some((a) => a.stage === s)),
+    // The full pipeline order, so a consumer that can't read the roster (the Workflow runtime) can
+    // still sort stages without hardcoding the list.
+    stageOrder: stages,
+    counts,
+    backends: [...new Set(workers.map((a) => a.backend))],
+    defaulted,
+    note: notes.filter(Boolean).join('; '),
+  };
+}
+
+/** One entry per (role, backend): a count on a reviewer bounds parallelism, not reviews per result. */
+function _dedupe(list) {
+  const seen = new Set();
+  const out = [];
+  for (const a of list) {
+    const key = `${a.role}|${a.backend}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * Staffing from a backend-only choice (`5:gemini,2:claude`, or the roster/env default): naming a
+ * backend without a role means "use it to DO the work", so those become the executors — and the
+ * fixer follows them by inheritance. Everything else falls back to Claude.
+ *
+ * @param {Record<string,number>} counts  by roster backend name, e.g. { agy: 5, native: 2 }
+ * @param {{roster?:object}} [opts]
+ */
+export function staffingFromBackends(counts, opts = {}) {
+  const { catalog } = roleCatalog(opts.roster);
+  const meta = catalog.executor;
+  const assignments = [];
+  if (meta) {
+    for (const [backend, n] of Object.entries(counts || {})) {
+      const count = Math.max(0, Math.min(MAX_PER_ASSIGNMENT, parseInt(n, 10) || 0));
+      if (!count) continue;
+      assignments.push({ role: 'executor', stage: meta.stage, backend, count, tier: meta.tier, desc: meta.desc });
+    }
+  }
+  return resolveStaffing(assignments, opts);
+}
+
 // ─── describe (for command output / --roles) ─────────────────────────────────
 
 /**
@@ -351,8 +546,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   process.stdin.on('data', (c) => chunks.push(c));
   process.stdin.on('end', () => {
     const raw = chunks.join('');
-    const useSplit = process.argv.includes('--split');
-    const result = useSplit ? splitRoleSpec(raw, { roster }) : parseRoleSpec(raw.trim(), { roster });
+    let result;
+    if (process.argv.includes('--staff')) {
+      // The RESOLVED table — what actually runs, including the Claude fallbacks. `--split`/default
+      // show only what the user typed, which is the right view for debugging the grammar itself.
+      const split = splitRoleSpec(raw, { roster });
+      const staffing = resolveStaffing(split || parseRoleSpec(raw.trim(), { roster }), { roster });
+      result = split ? { ...staffing, task: split.task, flags: split.flags, writable: split.writable } : staffing;
+    } else if (process.argv.includes('--split')) {
+      result = splitRoleSpec(raw, { roster });
+    } else {
+      result = parseRoleSpec(raw.trim(), { roster });
+    }
     process.stdout.write(JSON.stringify(result) + '\n');
   });
 }
