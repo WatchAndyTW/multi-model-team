@@ -9,7 +9,7 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **149/149** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **177/177** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
 Three live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI) and **opencode** (OpenCode CLI). codex also serves as the
 **`/team` verifier**. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
@@ -121,7 +121,7 @@ visible instead of a silent empty result.
 ```
 .claude-plugin/plugin.json      manifest (auto-discovers commands/ agents/ hooks/hooks.json)
 settings.json                   reference statusLine (see README HUD note)
-config/roster.json              ALL config: defaults + backends + agents + routes + proactive + team + reasoning
+config/roster.json              ALL config: defaults + backends + agents + routes + proactive + team + roles + reasoning
 config/tags.txt                 task-type classifier — `<type> <ERE>` per line (stays a flat file)
 src/lib/platform.mjs            cross-platform OS layer: PTY wrap, binary resolve, state dir (NEW)
 src/lib/config.mjs              roster.json loader → plain JS objects (replaces config.py)
@@ -291,6 +291,52 @@ Agent labels are backend-prefixed — `gemini:<label>`, `codex:verify:<label>`, 
 Native subtask model is **dynamic by complexity** (`sonnet` default, `opus` only when genuinely
 hard). Determinism-safe (no Date/random APIs) and tolerates `args` as object **or** JSON string.
 
+## The /team ROLE system (oh-my-claudecode parity)
+
+A `/team` invocation can staff the run by **job**, not just by count:
+
+```
+/team orch:claude:2;impl:opencode:1,claude:2;review:codex:2 build a REST CRUD service
+```
+
+`role:backend:count` — comma-separated **within** a role, semicolon-separated **between** roles.
+Roles and backends are **independent**: any role runs on any backend, and one role can span several
+(`impl:opencode:1,claude:2`). `backend:count` and `count:backend` both parse; a bare `role:backend`
+means one worker; a bare `role` means one worker on `roles.default_backend`.
+
+**Vocabulary = OMC's.** All 19 OMC agents are roles (`planner`, `executor`, `verifier`,
+`code-reviewer`, `security-reviewer`, `designer`, `debugger`, `explore`, `critic`, `analyst`,
+`architect`, `test-engineer`, `tracer`, `writer`, `document-specialist`, `scientist`, `git-master`,
+`code-simplifier`, `qa-tester`) plus **`fixer`** for the fix stage (OMC staffs team-fix with
+executor/debugger; naming it makes that stage assignable). `orch`/`impl`/`review` are aliases for
+`planner`/`executor`/`code-reviewer`. Each role's default tier mirrors OMC's model choice
+(opus→`high`, sonnet→`standard`, haiku→`cheap`) and resolves **per backend** through the normal
+model ladder — so `high` on agy means agy's strongest model, not Opus.
+
+**Stages** run `plan → prd → exec → verify → fix` (OMC's `team-plan … team-fix`). Every role belongs
+to exactly one. A stage nobody staffed is **skipped**, so `impl:opencode:2` alone runs only exec.
+
+**All config, no code:** `roster.json` → `roles` (`stages`, `default_backend`, `default_count`,
+`catalog` with each role's `stage`/`tier`/`aliases`/`desc`). `src/lib/roles.mjs` hardcodes only a
+small fail-safe catalog for when that section is unreadable. `node src/lib/roles.mjs --list` prints
+the catalog; `--split` parses a spec off raw input.
+
+**Enforcement in `workflows/team.mjs` (the part that makes it real):**
+1. The decompose schema's `role` enum is limited to roles the user actually staffed.
+2. Caps become per **(role, backend) slot**. A subtask naming an unstaffed pair, or exceeding a
+   staffed count, is **dropped with a log line** — never silently re-homed onto another backend.
+3. Each kept subtask's tier is corrected to its role's tier.
+4. Stage order is enforced by **rewriting it as dependencies**, so the existing dependency-wave
+   scheduler carries it — no second scheduling mechanism, and later stages get earlier results.
+5. Each worker receives a **role brief** (`You are acting in the "code-reviewer" role…`) and its
+   label becomes `code-reviewer:<subtask>`. The `desc` rides in the parsed assignments because
+   Workflow scripts have no filesystem access to re-read the roster.
+
+**Backward compatible.** The old cap spec (`5:gemini,2:claude`) is unchanged. The grammars are
+*distinguished, not guessed*: a role spec starts with a known role word, a cap spec with a number or
+backend word. A role spec also **derives `.caps`** from its worker counts, so every cap-only
+consumer keeps working.
+
 ## /reasoning — multi-model parallel reasoning (Fusion)
 
 `/reasoning [panel-spec] <question>` fans the **same question** out to a **panel** of models in
@@ -369,6 +415,9 @@ the parsers ignore):
   Route invariants (Opus hard-line first, multimodal before judgment-coding, judgment-coding above
   commodity agy rules) are unchanged.
 - **`proactive`** — the UserPromptSubmit nudge config.
+- **`roles`** — the /team ROLE catalog (OMC parity): `stages`, `default_backend`, `default_count`,
+  and `catalog` mapping each role to its stage / default tier / aliases / description. Edited here,
+  not in code — adding a role is a JSON entry.
 - **`team`** — the `/team` pipeline roles + defaults, read by `src/lib/config.mjs teamConfig()`
   and passed into `team.mjs` via `args.teamConfig`. **native, agy and codex are EQUAL** — any can
   be assigned any subtask, any can verify: `dispatch_backends`, `verifier`, `caps`, `tier_models`,
@@ -410,7 +459,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 149/149 routing + unit tests (no backend calls)
+npm test                         # offline: 177/177 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`

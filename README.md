@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-149%2F149%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-177%2F177%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -73,7 +73,7 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 | Command | What it does |
 |---|---|
 | **`/reasoning [panel] <question>`** | **Fusion pipeline.** Fan one question across a panel of models in parallel → a judge compares them (consensus / contradictions / unique insights / blind spots) → synthesize one unified answer better than any single model's. |
-| **`/team [--writable] [N:gemini,M:claude,X:codex] <task>`** | **Team pipeline.** Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. Add **`--writable`** to let agents actually edit code in isolated git worktrees (see below). |
+| **`/team [--writable] [role spec | caps] <task>`** | **Team pipeline.** Staff it by role — `orch:claude:2;impl:opencode:1,claude:2;review:codex:2` — or just by count (`5:gemini,2:claude`). Decompose → dispatch each subtask to its best-fit backend (dependency-aware waves) → verify each result → bounded fix loop → synthesize. Add **`--writable`** to let agents actually edit code in isolated git worktrees (see below). |
 | **`/route-test <task>`** | Dry-run the router: prints `{backend, model, tier}`, detected types, matched rule. No backend call — a tuning tool. |
 
 Both `/team` and `/reasoning` have **two engines**: an **Ultracode** deterministic Workflow path
@@ -266,6 +266,56 @@ you pick it: its agent, a `/team` assignment, a `/reasoning` panel, or the quota
 
 ---
 
+## 🎭 Staffing a team by role
+
+`/team` can be staffed by **job**, not just by headcount:
+
+```
+/team orch:claude:2;impl:opencode:1,claude:2;review:codex:2  build a REST CRUD service
+```
+
+`role:backend:count` — commas **within** a role, semicolons **between** roles. Roles and backends
+are independent, so one role can span several models (`impl:opencode:1,claude:2` = three
+implementers: one on OpenCode, two on Claude). `backend:count` and `count:backend` both work, and a
+bare `role:backend` means one worker.
+
+Every role sits in a **stage**, and stages run in order:
+
+```
+plan  →  prd  →  exec  →  verify  →  fix
+```
+
+A stage nobody staffed is **skipped** — `impl:opencode:2` alone runs just the exec stage. Later
+stages automatically receive earlier stages' results.
+
+The vocabulary is [oh-my-claudecode](https://github.com/aptro/oh-my-claudecode)'s, so it should feel
+familiar. `orch` / `impl` / `review` are aliases for `planner` / `executor` / `code-reviewer`, and
+every specialist is nameable directly:
+
+| stage | roles |
+|---|---|
+| `plan` | `explore`, `planner` (`orch`), `architect` |
+| `prd` | `analyst` (`prd`), `critic` |
+| `exec` | `executor` (`impl`), `designer`, `debugger`, `tracer`, `test-engineer`, `code-simplifier`, `writer`, `document-specialist`, `scientist`, `git-master` |
+| `verify` | `verifier`, `code-reviewer` (`review`), `security-reviewer`, `qa-tester` |
+| `fix` | `fixer` |
+
+```bash
+node src/lib/roles.mjs --list
+```
+
+prints the catalog with aliases, stages and default tiers. Each role's default tier mirrors OMC's
+model choice (opus→`high`, sonnet→`standard`, haiku→`cheap`) and resolves **per backend** — so
+`review:codex` runs codex's strongest model, not Opus.
+
+The staffing is **enforced, not advisory**: a subtask naming a (role, backend) pair you didn't staff
+is dropped rather than quietly moved to another model, and each worker is told which role it is
+acting in. Edit the catalog in `roster.json` → `roles` to add or retune roles — it's config, not code.
+
+The older count-only spec still works unchanged: `/team 5:gemini,2:claude <task>`.
+
+---
+
 ## 🔀 Turning backends on and off
 
 `node src/bin/route.mjs --backends` shows every backend, whether it is on, what turned it off, and
@@ -364,7 +414,7 @@ docs/INTERFACES.md           module interface contract (Node ESM port signatures
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 149/149 routing + unit tests (no backend calls)
+npm test                # offline: 177/177 routing + unit tests (no backend calls)
 ```
 
 The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a
