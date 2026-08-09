@@ -82,8 +82,8 @@ function matchRule(routes, chars, types, isEnabled) {
 
     // A rule pointing at a DISABLED backend is skipped entirely, so matching continues to the next
     // rule. Without this the router would happily return a backend that run.mjs then refuses to
-    // use — the decision JSON (and /route-test, and the proactive hooks) would advertise a backend
-    // the user has switched off, and the real destination would only emerge as a silent fallback.
+    // use — the decision JSON would advertise a backend the user has switched off, and the real
+    // destination would only emerge as a silent fallback.
     // Skipping here means disabling `agy` makes its commodity work fall through to the next
     // matching rule (codex/opencode/native) as an HONEST, visible decision.
     if (r.backend && !isEnabled(r.backend)) {
@@ -177,8 +177,8 @@ export function decide({ task, roster, tagsPath, preset: presetArg }) {
 
   return {
     backend, model, tier, rule: ruleName, native, preset, score, nearMisses, confidence,
-    // Rules passed over because their backend is switched off — surfaced so `--explain` and
-    // `/route-test` can say WHY a task landed somewhere unexpected.
+    // Rules passed over because their backend is switched off — surfaced so `--explain` can say
+    // WHY a task landed somewhere unexpected.
     skippedDisabled,
   };
 }

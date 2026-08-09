@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-197%2F197%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-189%2F189%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -50,8 +50,8 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash  # then: agy login
 ```
 
 **2 · Add the plugin.** This repo *is* the plugin — point Claude Code at it as a local plugin (local
-marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/`, `agents/`, and
-`hooks/hooks.json`. Nothing else to wire up.
+marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/` and `agents/`.
+Nothing else to wire up.
 
 **3 · (Optional) Turn on the HUD.** Add a `statusLine` to **your own** `~/.claude/settings.json`
 (the plugin can't register one for you) — see [Statusline HUD](#-statusline-hud).
@@ -61,7 +61,6 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 ```
 /reasoning  2:gemini,opus,codex   What's the best caching strategy for a read-heavy API?
 /team       3:gemini,1:codex      Build a REST CRUD service with tests
-/route-test                       Write a SQL query to list users by signup date   ← dry-run, no call
 ```
 
 …or just work normally and let Claude reach for the `agy` / `codex` agents on its own.
@@ -74,7 +73,6 @@ marketplace or `--plugin-dir`). On enable, Claude Code auto-discovers `commands/
 |---|---|
 | **`/reasoning [panel] <question>`** | **Fusion pipeline.** Fan one question across a panel of models in parallel → a judge compares them (consensus / contradictions / unique insights / blind spots) → synthesize one unified answer better than any single model's. |
 | **`/team [--writable] [staffing] <task>`** | **Team pipeline.** You staff it: by role — `orch:claude:2;impl:opencode:1,claude:2;review:codex:2` — or just by backend (`5:gemini,2:claude`, which staffs them as the implementers). Decompose → dispatch in dependency-aware waves → verify each result → bounded fix loop → synthesize. **Anything you don't staff runs on Claude**; no CLI is auto-assigned. Add **`--writable`** to let agents actually edit code in isolated git worktrees (see below). |
-| **`/route-test <task>`** | Dry-run the router: prints `{backend, model, tier}`, detected types, matched rule. No backend call — a tuning tool. |
 
 Both `/team` and `/reasoning` have **two engines**: an **Ultracode** deterministic Workflow path
 (preferred, when the Workflow tool is available) and a parallel `Task`-agent fallback. Either way the
@@ -166,37 +164,12 @@ Sections (keys prefixed `_comment`/`_about` are inline docs the parsers ignore):
 | **`roles`** | **who does what in `/team`** — the role `catalog` (stage / tier / aliases / description) and `core`, the always-needed jobs with their default worker count, `follows`, and optional standing `backend`. This is the only place a job is assigned to a backend. |
 | **`team`** | `/team` **pipeline knobs only** — `verify`, `max_fix_loops`, `relay_model`, and **`mode`** (`"writable"` makes `--writable` the default; per-invocation `--writable` still wins). It picks no backends. |
 | **`reasoning`** | the `/reasoning` Fusion defaults — **`panel`** (which models participate), `judge`, `synthesizer`, `cap`. See [docs/REASONING.md](docs/REASONING.md). |
-| **`defaults`** / **`proactive`** | preset + fallback chain, and the proactive-nudge config. |
+| **`defaults`** | preset, fallback chain, and `native_models` (the one tier → Claude-model map). |
 | **`config/tags.txt`** | (separate flat file) keyword → task-type classification. |
 
-Routing changes need no code edit — verify with `/route-test`. Adding a future backend: add
+Routing changes need no code edit — dry-run one with `node src/bin/route.mjs --explain`
+(task on stdin). Adding a future backend: add
 `invoke`/`health` cases in `src/lib/backends.mjs` and flip `enabled`.
-
-### Proactive delegation (opt-in, off by default)
-
-Two config-gated hooks make Claude reach for a backend on its own instead of waiting for you to ask:
-
-1. **Prompt nudge** (`UserPromptSubmit`) — when a prompt would route to a CLI backend, injects a
-   one-shot reminder to delegate instead of solving inline.
-2. **Spawn guard** (`PreToolUse` on `Task`/`Agent`) — when Claude spawns an agent whose task routes
-   to agy/codex, makes that work actually run on the CLI (nudge by default; hard block under
-   `enforce_spawns`). Your `/team` workers and the plugin's own subagents are exempt; **oh-my-claudecode
-   team workers are always nudged, never denied**, so they never stall.
-
-```jsonc
-"proactive": {
-  "enabled": true,          // master switch for BOTH hooks (default false)
-  "max_chars": 0, "min_chars": 0,  // size window (0 = unbounded)
-  "rules": "",              // CSV allowlist of route names; empty = any CLI route
-  "guard_spawns": true,     // (2) intercept agy/codex-routable Task/Agent spawns
-  "enforce_spawns": false   // (2) false = nudge; true = hard-deny + require CLI re-dispatch
-}
-```
-
-Slash commands and native-routing work are never touched. Disabled → both hooks exit immediately
-(zero forks). Hard kill switch: `MMT_PROACTIVE_DISABLE=1`.
-
----
 
 ## 📺 Statusline HUD
 
@@ -232,7 +205,7 @@ prints `◦ mmt idle`.
 silent no-op that looks like success. The plugin runs every agy call under a real **pseudo-terminal
 via [`node-pty`](https://github.com/microsoft/node-pty)** (ConPTY on Windows 10/11, forkpty on
 Linux/macOS), so `isatty` is true and agy emits — **with no visible console window, working even from
-a fully headless parent** (a Bash-tool call, a hook, a `/team` or `/reasoning` sub-agent). The prompt
+a fully headless parent** (a Bash-tool call, a `/team` or `/reasoning` sub-agent). The prompt
 rides as a real argv element (no shell — injection-safe).
 
 > **node-pty resolution:** `npm install -g node-pty` once and it resolves across every plugin update
@@ -406,8 +379,8 @@ src/lib/score.mjs            char count + keyword type classification
 src/lib/router.mjs           first-match-wins decision engine
 src/lib/backends.mjs         agy/codex invokers + clean() + quota detection
 src/lib/state.mjs            HUD state read/write
-src/lib/hook-common.mjs      shared hook runtime (one fork-free node process per hook)
-src/lib/team-spec.mjs        /team cap-spec parser
+src/lib/roles.mjs            /team staffing: role catalog, spec grammar, resolveStaffing
+src/lib/team-spec.mjs        /team spec entry point (both grammars → one staffing table)
 src/lib/team-plan.mjs        plan.json → per-subtask files
 src/lib/reason-spec.mjs      /reasoning panel-spec parser
 src/lib/gen-agents.mjs       regenerate agents/*.md from the roster
@@ -416,13 +389,9 @@ src/bin/route.mjs            task → decision JSON CLI
 src/bin/run.mjs              executor + fallback chain + HUD state (file relay transport: --call-file)
 src/bin/team.mjs             scripted CLI fan-out for /team
 src/bin/reason.mjs           scripted panel fan-out for /reasoning
-hooks/proactive-route.mjs    UserPromptSubmit delegation nudge (opt-in)
-hooks/spawn-route-guard.mjs  PreToolUse(Task|Agent) guard — CLI-routable spawns (opt-in)
-hooks/command-fanout-guard.mjs  UserPromptSubmit guard — forces /reasoning & /team into the engine
-hooks/hooks.json             hook registrations
 statusline/statusline.mjs    fork-free HUD line
 agents/                      agy, codex (GENERATED)
-commands/                    reasoning, team, route-test
+commands/                    reasoning, team, mmt-setup
 workflows/team.mjs           Ultracode team workflow
 workflows/reasoning.mjs      Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs              offline test suite
@@ -435,17 +404,11 @@ docs/INTERFACES.md           module interface contract (Node ESM port signatures
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 197/197 routing + unit tests (no backend calls)
+npm test                # offline: 189/189 routing + unit tests (no backend calls)
 ```
 
 The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a
 real `node src/bin/run.mjs --call-file=…` against the installed CLIs), not by a `npm test` gate.
-
-> **Why Node ESM?** The original bash hooks forked ~6–7 processes per invocation under a 10 s msys
-> timeout and were intermittently killed ("hooks not triggering sometimes"). Each hook is now **one
-> fork-free Node process** — read payload, gate with real `JSON.parse`, route in-process, emit.
-
----
 
 ## 🔧 Env overrides
 
@@ -457,10 +420,6 @@ real `node src/bin/run.mjs --call-file=…` against the installed CLIs), not by 
 | `MMT_MODEL_AGY` / `MMT_MODEL_CODEX` / `MMT_MODEL_OPENCODE` | override that backend's model (a real id, or a `model_aliases` handle) |
 | `MMT_TAGS` | alternate `tags.txt` |
 | `MMT_STATE_DIR` / `MMT_STATE_FILE` | HUD state location |
-| `MMT_PROACTIVE_DISABLE` | `=1` hard-disables both proactive hooks |
-| `MMT_HOOK_DISABLE` | `=1` disables all hooks |
-| `MMT_COMMAND_GUARD_DISABLE` | `=1` disables just the `/reasoning`·`/team` engine guard |
-| `MMT_HOOK_DEBUG` | `=1` appends firing markers to `stateDir/hooks.log` |
 
 ---
 

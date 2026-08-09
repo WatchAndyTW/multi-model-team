@@ -316,24 +316,6 @@ export function routes(roster) {
   return raw.filter(r => typeof r === 'object' && r !== null && !('_comment' in r && !('name' in r)));
 }
 
-// ─── proactive ───────────────────────────────────────────────────────────────
-
-/**
- * @param {object} roster
- * @returns {{ enabled: boolean, max_chars: number, min_chars: number, rules: string, guard_spawns: boolean, enforce_spawns: boolean }}
- */
-export function proactive(roster) {
-  const p = roster.proactive ?? {};
-  return {
-    enabled: p.enabled ?? false,
-    max_chars: _int(p.max_chars, 0),
-    min_chars: _int(p.min_chars, 0),
-    rules: p.rules ?? '',
-    guard_spawns: p.guard_spawns ?? true,
-    enforce_spawns: p.enforce_spawns ?? false,
-  };
-}
-
 // ─── teamConfig ──────────────────────────────────────────────────────────────
 
 /**
@@ -396,13 +378,6 @@ export function reasoningConfig(roster) {
   }
 
   return merged;
-}
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
-
-function _int(value, defaultVal = 0) {
-  const n = parseInt(value, 10);
-  return Number.isFinite(n) ? n : defaultVal;
 }
 
 // ─── CLI entry ────────────────────────────────────────────────────────────────

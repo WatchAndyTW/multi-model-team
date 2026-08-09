@@ -191,8 +191,7 @@ subtasks whose `deps` are all already complete; run waves in order, feeding each
 its dependents. Never exceed a staffed pair's worker count in flight at once. A plan
 with no `deps` is a single wave — the common case.
 
-Every worker prompt is tagged **`[mmt-team-worker]`** so the spawn-guard hook leaves our own workers
-alone. There are two worker kinds:
+There are two worker kinds:
 
 - **CLI backend (agy / codex) → a FAITHFUL RELAY agent.** It does NOT solve the task; it runs our one
   dispatch command and returns the CLI's output verbatim (this is the no-dress-up contract — a
@@ -212,7 +211,7 @@ alone. There are two worker kinds:
   shell. The call file holds both the forced decision and the task:
 
   ````
-  [mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve, analyze,
+  You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve, analyze,
   or answer the task yourself.
 
   Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>". You MUST replace
@@ -254,7 +253,7 @@ alone. There are two worker kinds:
   the hard line / deep architecture) with:
 
   ````
-  [mmt-team-worker] Solve this subtask directly and return a complete, self-contained result — no
+  Solve this subtask directly and return a complete, self-contained result — no
   preamble. <Append "Upstream result — <dep>:" blocks for each dep so it has that context.>
 
   SUBTASK: <subtask text>

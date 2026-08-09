@@ -16,7 +16,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "route-test": "node ./src/bin/route.mjs --explain"
+    "explain": "node ./src/bin/route.mjs --explain"
   },
   "engines": {
     "node": ">=18"

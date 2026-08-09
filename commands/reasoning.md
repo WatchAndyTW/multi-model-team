@@ -109,15 +109,14 @@ structured analysis; the synthesizer model writes the unified answer. Read the r
 ### Panel — parallel Task agents (one per panelist, spawned in ONE message)
 
 Every panelist from `.panel` (step 2) becomes its **own `Task` sub-agent** launched in parallel
-in one message. Every worker prompt is tagged **`[mmt-team-worker]`** so the spawn-guard hook
-leaves them alone.
+in one message.
 
 **Native panelist** (backend `native`, tier `opus` / `sonnet` / `haiku`) — spawn a SOLVER agent
 pinned to the model for its tier (resolve via `tier_models` from step 1: `opus→opus`,
 `sonnet→sonnet`, `haiku→haiku`, `cheap→haiku`, `standard→sonnet`):
 
 ```
-[mmt-team-worker] Answer the following question directly and completely at the <TIER> level.
+Answer the following question directly and completely at the <TIER> level.
 Return only your answer — no preamble.
 
 QUESTION:
@@ -140,7 +139,7 @@ the payload to a FILE with the Write tool (untrusted question text never touches
 then passes only the file PATH to run.mjs — a safe `[A-Za-z0-9_/.-]` token, verbatim in any shell:
 
 ```
-[mmt-team-worker] You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve,
+You are a FAITHFUL RELAY for the multi-model-team plugin — do NOT solve,
 analyze, or answer the question yourself.
 
 Step 1 — with the Write tool (NOT a shell command), write this JSON to "<CALL_PATH>". You MUST replace

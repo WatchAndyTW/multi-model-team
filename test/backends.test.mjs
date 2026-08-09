@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, chmodSync, readFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
-import { backend, teamConfig, proactive } from '../src/lib/config.mjs';
+import { backend, teamConfig } from '../src/lib/config.mjs';
 import { ROSTER, ROSTER_PATH, BIN_RUN, tmp, writeRosterVariant, runNode, disableAllBackends } from './helpers.mjs';
 
 // ── quota detection (uses the real agy patterns from roster, like the oracle sources backend-env) ──
@@ -466,19 +466,6 @@ test('teamConfig override: roster team keys win over the built-ins', () => {
   assert.equal(tc.verify, false);
   assert.equal(tc.max_fix_loops, 3);
   assert.equal(tc.relay_model, 'sonnet');
-});
-
-// ── proactive-env knobs (config.proactive defaults + overrides) ───────────────
-test('proactive gate defaults + overrides', () => {
-  const def = proactive(ROSTER);
-  assert.equal(def.guard_spawns, true);
-  assert.equal(def.enforce_spawns, false);
-  const clone = JSON.parse(JSON.stringify(ROSTER));
-  clone.proactive.guard_spawns = false;
-  clone.proactive.enforce_spawns = true;
-  const ov = proactive(clone);
-  assert.equal(ov.guard_spawns, false);
-  assert.equal(ov.enforce_spawns, true);
 });
 
 // ── timeout ordering invariant: agy --print-timeout must stay UNDER hard_timeout ──────────────

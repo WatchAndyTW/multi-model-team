@@ -54,14 +54,13 @@ export function backend(roster, name);    // normalized backend cfg or { enabled
 //   quota_patterns[], quota_exit_codes[].
 export function agents(roster);           // array of agent cfgs (for gen-agents).
 export function routes(roster);           // array of route rules, _comment objects filtered out.
-export function proactive(roster);        // { enabled, max_chars, min_chars, rules[], guard_spawns, enforce_spawns }
 export function teamConfig(roster);       // PIPELINE knobs only: { verify, max_fix_loops, relay_model, mode?,
 //   native_models{} }. Backend assignment lives in `roles` (src/lib/roles.mjs), not here — the old
 //   dispatch_backends/verifier/caps keys were a competing assignment mechanism and are gone.
 //   native_models is FORWARDED from defaults.native_models (single-sourced) for the Workflow runtime.
 ```
-Replaces the `config.py {defaults-env|backend-env|proactive-env|team-config}` bash-eval contract with
-plain JS objects. **No substring gating** — real JSON.parse (this fixes the fragile bash gate).
+Replaces the `config.py {defaults-env|backend-env|team-config}` bash-eval contract with plain JS
+objects. **No substring gating** — real JSON.parse (this fixes the fragile bash gate).
 
 ## `src/lib/score.mjs` — classifier (replaces score.sh)
 
@@ -161,31 +160,6 @@ export function generateAgents(roster, agentsDir);  // write/remove agents/<name
 ```
 
 ---
-
-## `src/lib/hook-common.mjs` — shared hook runtime (NEW; the reliability core)
-
-```js
-export async function readPayload();      // read+JSON.parse hook stdin (bounded, timeout-guarded). null on empty/bad.
-export function proactiveGate(roster);    // { enabled, guard_spawns, enforce_spawns, ... } via config.proactive — REAL parse, no substring scan.
-export function emit(obj);                // JSON.stringify hookSpecificOutput to stdout.
-export function allow(ctx);               // -> emit PreToolUse allow (+optional additionalContext)
-export function deny(reason);             // -> emit PreToolUse deny (+reason)
-export function promptContext(ctx);       // -> emit UserPromptSubmit additionalContext
-export function decideTask(task, {roster, tagsPath});  // in-process router.decide (NO bash fork) -> decision
-export function debugMark(name, info);    // append firing marker to stateDir()/hooks.log when MMT_HOOK_DEBUG=1
-```
-Each hook = **one node process**: read payload -> gate -> in-process route -> emit. No child processes,
-no substring gate. This is what fixes the intermittent-firing bug (collapses the 6–7-fork msys storm
-to a single short-lived node proc, well under any timeout). Kill switches preserved:
-`MMT_PROACTIVE_DISABLE=1`, `MMT_HOOK_DISABLE=1`. Fail-OPEN on any uncertainty.
-
-## `hooks/*.mjs` — `proactive-route` · `spawn-route-guard`
-
-Reimplement the live bash hooks on `hook-common`, same semantics (incl. OMC-aware spawn guard:
-nudge-never-deny for OMC team workers; exempt `multi-model-team:*` + `[mmt-team-worker]` + already-
-routed tasks). The `Workflow` guard is **dropped** (empirically never fires — no `wf-guard.log`); its
-nudge moves into `workflows/team.mjs`. `hooks/hooks.json` commands change to
-`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`.
 
 ## `statusline/statusline.mjs` (replaces statusline.sh)
 

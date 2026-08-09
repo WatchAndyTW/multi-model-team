@@ -9,19 +9,21 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **197/197** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **189/189** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
 Three live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI) and **opencode** (OpenCode CLI).
 In `/team` any of them can be staffed as the reviewer (`review:codex:2`); unstaffed, review falls to
 Claude. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
 `docs/REASONING.md` (the `/reasoning` design contract).
 
-**Why the Node ESM rewrite?** The bash hooks forked ~6–7 processes per invocation under a 10 s
-msys timeout and were intermittently killed ("hooks not triggering sometimes"). Each hook is now
-**one fork-free Node process** (in-process routing via `hook-common.mjs`); the fragile
-substring proactive-gate is replaced by real `JSON.parse`. The dead `Workflow` PreToolUse guard
-was dropped (empirically never fired — Claude Code doesn't dispatch `PreToolUse` to a `Workflow`
-matcher).
+**Why the Node ESM rewrite?** The original bash implementation forked ~6–7 processes per invocation
+under a 10 s msys timeout and was intermittently killed. Everything is now plain Node ESM: real
+`JSON.parse` instead of substring gating, no `jq`/`python3`/`grep` in hot paths.
+
+**Removed, deliberately — don't reintroduce:** the `hooks/` tree (a UserPromptSubmit delegation
+nudge, a `PreToolUse` spawn guard, and a `/reasoning`·`/team` fan-out guard) plus the `/route-test`
+command and the roster's `proactive` section. The hooks fired on every prompt to enforce behaviour
+the commands already specify, and `/route-test` duplicated `node src/bin/route.mjs --explain`.
 
 ---
 
@@ -33,7 +35,7 @@ matcher).
 nothing** — a silent no-op that looks like success. The plugin therefore runs agy under a real
 **pseudo-terminal via `node-pty`** (`backends.mjs runPty`): ConPTY on Windows 10/11, forkpty on
 Linux/macOS. `isatty(stdout)` is true, so agy emits — **with no visible console window, working even
-from a fully headless parent** (a Bash-tool subshell, a hook, a `/team` or `/reasoning` sub-agent).
+from a fully headless parent** (a Bash-tool subshell, a `/team` or `/reasoning` sub-agent).
 The prompt rides as a real **argv element** (node-pty passes argv to the child, never via a shell —
 injection-safe). A pty is one merged stream (stdout+stderr); `clean()` strips the terminal control
 bytes (CSI/OSC) ConPTY emits. `node-pty` is **lazy-imported** so the rest of `backends.mjs`
@@ -120,9 +122,9 @@ visible instead of a silent empty result.
 ## Directory map
 
 ```
-.claude-plugin/plugin.json      manifest (auto-discovers commands/ agents/ hooks/hooks.json)
+.claude-plugin/plugin.json      manifest (auto-discovers commands/ and agents/)
 settings.json                   reference statusLine (see README HUD note)
-config/roster.json              ALL config: defaults + backends + agents + routes + proactive + team + roles + reasoning
+config/roster.json              ALL config: defaults + backends + agents + routes + team + roles + reasoning
 config/tags.txt                 task-type classifier — `<type> <ERE>` per line (stays a flat file)
 src/lib/platform.mjs            cross-platform OS layer: PTY wrap, binary resolve, state dir (NEW)
 src/lib/config.mjs              roster.json loader → plain JS objects (replaces config.py)
@@ -130,7 +132,6 @@ src/lib/score.mjs               char count + keyword type classification (replac
 src/lib/router.mjs              first-match-wins decision engine (replaces match.py)
 src/lib/backends.mjs            agy/codex invokers + clean() + quota (replaces backends.sh)
 src/lib/state.mjs               HUD state read/write (replaces state.sh)
-src/lib/hook-common.mjs         shared hook runtime — one fork-free node process (NEW; reliability core)
 src/lib/roles.mjs               /team STAFFING: role catalog, spec grammar, resolveStaffing (the ONE
                                 place a job gets a backend; unstaffed -> Claude)
 src/lib/team-spec.mjs           /team spec entry point — both grammars -> one resolved staffing
@@ -143,13 +144,9 @@ src/bin/run.mjs                 executor + fallback chain + HUD state (replaces 
 src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
 src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
 src/bin/setup.mjs               /mmt-setup engine: create/reset ~/.claude/mmt-roster.json
-hooks/proactive-route.mjs       UserPromptSubmit nudge: CLI-routable prompt → suggest delegating
-hooks/spawn-route-guard.mjs     PreToolUse(Task|Agent) guard: nudge/deny CLI-routable agent spawns
-hooks/command-fanout-guard.mjs  UserPromptSubmit guard: force /reasoning and /team into the engine
-hooks/hooks.json                hook registrations (all commands: `node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`)
 statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
 agents/{agy,codex,opencode}.md   GENERATED from roster.json (gen-agents.mjs)
-commands/{team,route-test,reasoning,mmt-setup}.md   /team = multi-agent fan-out; /route-test = dry-run router; /reasoning = Fusion pipeline; /mmt-setup = durable personal roster setup
+commands/{team,reasoning,mmt-setup}.md   /team = multi-agent fan-out; /reasoning = Fusion pipeline; /mmt-setup = durable personal roster setup
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
 test/*.test.mjs                 offline test suite (npm test — node --test)
@@ -195,7 +192,8 @@ call, or a `/team` subtask assignment — `run.mjs` dispatches to that backend *
 the router**, so the OPUS hard line never bounces an explicitly-chosen job back to native.
 
 **Tuning needs no code edits:** edit `config/tags.txt` to change *what type* a task is, and
-`config/roster.json` to change *where a type routes*. Verify with `/route-test`. When editing
+`config/roster.json` to change *where a type routes*. Verify with `node src/bin/route.mjs
+--explain` (task on stdin). When editing
 the OPUS hard-line regexes, keep them tight — a bare word like `binary`/`hooks`/`injection`
 will false-positive on "binary search" / React "hooks" / "dependency injection" and force Opus.
 When editing agy regexes, keep them specific — bare `extract`/`config file` steal
@@ -215,8 +213,8 @@ agy; `premium` pulls standard-coding up to Sonnet (keeps agy for its categorical
 `native` is **never** disable-able; it is the guaranteed final fallback. A disabled backend is
 honoured *at routing time*, not just at dispatch: `router.matchRule` **skips** any rule whose
 backend is off, so matching continues to the next rule and the decision is honest. (Previously the
-router returned a backend `run.mjs` would then refuse, so the decision JSON, `/route-test` and the
-proactive hooks all advertised a destination the user had switched off.) A preset that biases *into*
+router returned a backend `run.mjs` would then refuse, so the decision JSON advertised a
+destination the user had switched off.) A preset that biases *into*
 a disabled backend is undone rather than emitted. `skippedDisabled` in the decision reports what was
 passed over and why. Inspect it all with `node src/bin/route.mjs --backends`.
 
@@ -269,14 +267,13 @@ or via roster `team.mode:"writable"`. The full-auto sandbox is config-tunable: e
 2. Claude decomposes the task, then **writes `.mmt/plans/plan.json`** (array of
    `{label, task, backend, tier, deps?, verify?}`) via the Write tool — `.mmt/` is this plugin's
    state dir (NOT `.omc/`, even under OMC) — task text stays inert
-   data, never shell-parsed (injection-safe boundary; same reason `/route-test` uses stdin).
+   data, never shell-parsed (injection-safe boundary).
    `deps` = labels this subtask consumes; `verify` = a one-line acceptance criterion.
    `src/lib/team-plan.mjs` **ignores `deps`/`verify`** (inert in the scripted path).
 3. Claude dispatches each subtask as its **own parallel `Task` sub-agent**, a dependency **wave**
    at a time — the whole wave spawned in ONE message (OMC-style fan-out). CLI subtasks get a
    **faithful-relay** worker that runs `node src/bin/run.mjs --decision {backend}` and returns the
    CLI's stdout verbatim (a bare `MMT_NATIVE_HANDOFF` → lead spawns a visible native worker).
-   Every worker prompt is tagged `[mmt-team-worker]` so the spawn-guard hook exempts it.
    (`src/bin/team.mjs --plan <file> --gemini-cap G` remains as a **scripted no-agents alternative**
    — parallel `run.mjs` subprocesses, `--- AGY/CODEX/NATIVE [label] ---` blocks.)
 4. The lead **verifies** every result against its criterion via the **staffed reviewer(s)** (rule
@@ -401,40 +398,11 @@ vocabulary and alias map: see `docs/REASONING.md`. Default panel: `["opus","sonn
 **Two engines** — same as `/team`:
 - **Ultracode path:** `workflows/reasoning.mjs` runs the full pipeline deterministically
   (`parallel()` for the Panel phase, schema-validated Judge, Synthesize). Preferred.
-- **Fallback path:** parallel `Task` sub-agents for the Panel (tagged `[mmt-team-worker]`), then
+- **Fallback path:** parallel `Task` sub-agents for the Panel, then
   native judge + synthesize. Scripted alternative: `src/bin/reason.mjs` (no agents, stdin question).
 
 Config lives in `roster.json` `reasoning` section (panel, judge, synthesizer, cap, tier_models,
 relay_model); full token vocabulary and override precedence documented in `docs/REASONING.md`.
-
-## Proactive delegation hooks (opt-in)
-
-Two nudges (was three — the `Workflow` guard is dropped; it empirically never fired), all gated by
-`[proactive].enabled = true` in `roster.json` (off by default):
-
-**(1) Prompt nudge — `hooks/proactive-route.mjs` (UserPromptSubmit).** Runs each submitted prompt
-through the router **in-process** (no fork); if it routes to a CLI backend, injects a one-shot
-reminder (`hookSpecificOutput.additionalContext`) nudging Claude to delegate via the
-`multi-model-team:agy` agent / `/team` instead of solving inline. Never fires for slash
-commands or prompts that route to native (judgment/RE/systems).
-
-**(2) Spawn guard — `hooks/spawn-route-guard.mjs` (PreToolUse, matcher `Task|Agent`).** The
-"NOT /team" enforcer: when you spawn an agent **outside** the team pipeline and its task routes
-to a CLI backend (agy or codex), the guard makes the work actually run on that CLI.
-`enforce_spawns=false` (default) → a **non-blocking nudge**; `enforce_spawns=true` → a hard
-**`permissionDecision:"deny"`**, forcing a re-dispatch. **Exempt:** our own subagents
-(`subagent_type` `multi-model-team:*`) and `/team` workers (tagged `[mmt-team-worker]`).
-**OMC-aware:** an OMC team worker (`tool_input.team_name` set, an `oh-my-claudecode:*` subagent,
-or the OMC worker preamble) is **always nudged, never denied** — even under `enforce_spawns` — so
-the guard can't stall OMC's persistent-teammate orchestration. Its `additionalContext` tells that
-worker to execute its task via `node <root>/src/bin/run.mjs` and report back through OMC's
-TaskList/SendMessage flow.
-
-**Both hooks:** one fork-free node process each. Gate check uses real `JSON.parse` (no substring
-scan). **Cost discipline:** when disabled both exit immediately (no forks) — zero cost. Hard kill
-switch: `MMT_PROACTIVE_DISABLE=1`. Injection-safe: the prompt/spawned-task reaches the router only
-in-memory, never as a shell argument. Tests: `── Unit: proactive hook` and
-`── Unit: spawn-route guard` in `test/*.test.mjs`.
 
 ## Config = one JSON file (`config/roster.json`)
 
@@ -453,7 +421,6 @@ the parsers ignore):
 - **`routes`** — first-match-wins rules; `src/lib/router.mjs` skips `_comment` marker objects.
   Route invariants (Opus hard-line first, multimodal before judgment-coding, judgment-coding above
   commodity agy rules) are unchanged.
-- **`proactive`** — the UserPromptSubmit nudge config.
 - **`roles`** — the /team STAFFING system, and the only place a backend is assigned to a job:
   `stages`, `default_backend` (the unstaffed fallback = Claude), `default_count`, `core` (the
   always-needed jobs: default worker `count`, optional `follows`, optional fallback `backend`), and
@@ -466,7 +433,7 @@ the parsers ignore):
   Precedence: built-in default < `team` < invocation arg.
 
 **Module contract:** `src/lib/config.mjs` exports `loadRoster`, `defaults`, `backend`, `agents`,
-`routes`, `proactive`, `teamConfig` — plain JS objects, real `JSON.parse`, no bash eval, no
+`routes`, `teamConfig` — plain JS objects, real `JSON.parse`, no bash eval, no
 substring gating. `run.mjs` calls `config.defaults()` once, then `config.backend(name)` per
 fallback hop.
 
@@ -485,12 +452,12 @@ fallback hop.
   deps: no `jq`, no `python3`, no `grep` in hot paths. `state.mjs` writes flat one-field-per-line
   JSON so `statusline.mjs` can parse it without a real JSON parser (fork-free).
 - **Untrusted task text is injection-unsafe in slash commands.** Claude Code textually pastes
-  `$ARGUMENTS` into `!` bash blocks (RCE). `/team` and `/route-test` do NOT inline-exec — they
+  `$ARGUMENTS` into `!` bash blocks (RCE). `/team` and `/reasoning` do NOT inline-exec — they
   instruct Claude to run the binary via the Bash tool, feeding the task on stdin. Keep it that way.
 - **HUD registration is manual.** A plugin's bundled `settings.json` does not register a
   top-level `statusLine`; the user adds the `statusLine` to their own `~/.claude/settings.json`
   with an absolute path pointing to `statusline/statusline.mjs`. `settings.json` here is a reference.
-- **Binary self-location.** `src/bin/*.mjs` and `hooks/*.mjs` resolve sibling files via
+- **Binary self-location.** `src/bin/*.mjs` resolve sibling files via
   `import.meta.url` (Node ESM); agents/commands reference `${CLAUDE_PLUGIN_ROOT}`.
 - **Cross-platform:** `src/lib/platform.mjs` is the only place OS branching for PTY/binary/state
   belongs. Developed on Windows and **tested on Linux/macOS** — the POSIX paths (the `script` PTY
@@ -501,7 +468,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 197/197 routing + unit tests (no backend calls)
+npm test                         # offline: 189/189 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`

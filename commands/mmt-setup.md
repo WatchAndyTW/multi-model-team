@@ -67,7 +67,7 @@ Briefly note what they can edit in the roster: `backends` (enable/disable agy/co
 map each one's tiers to models via `models` / `model_aliases`), `routes` (where a task type goes),
 `team` (the `/team` pipeline roles), `reasoning.panel` (which models `/reasoning` fans out to),
 `defaults.native_models` (which Claude model each tier means), `defaults.preset`
-(`budget`/`balanced`/`premium`). Routing changes can be verified with `/route-test`.
+(`budget`/`balanced`/`premium`). Routing changes can be dry-run with `node src/bin/route.mjs --explain` (task on stdin).
 
 Also mention the two inspection/override shortcuts, which need no roster edit:
 

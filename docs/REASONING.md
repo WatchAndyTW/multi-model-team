@@ -243,8 +243,8 @@ Mirror team.md's **two-engine** structure:
    Present `final`, then a short panel/judge appendix (who said what, the consensus / contradictions
    / unique insights / blind spots), and note any `counts.nativeFallbacks`.
 4. **Fallback path** (no Workflow tool):
-   - **Panel** — spawn every panelist as its **own parallel `Task` agent in ONE message**
-     (`[mmt-team-worker]`-tagged so the spawn guard exempts them). Native panelist → a SOLVER agent
+   - **Panel** — spawn every panelist as its **own parallel `Task` agent in ONE message**.
+     Native panelist → a SOLVER agent
      pinned to the model for its tier (opus/sonnet/haiku), answering the question directly. CLI
      panelist → a FAITHFUL RELAY agent (the exact relay prompt from team.md, `rule:"reason"`) that
      runs `node src/bin/run.mjs --decision '{...,"native":false}'` with the question on a
