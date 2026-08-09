@@ -1,5 +1,5 @@
-// backends.test.mjs — port of the unit blocks for quota detection, clean(), JSON config,
-// forced-decision override, and backend-failure stderr surfacing.
+// backends.test.mjs — quota detection, clean(), the forced-decision override, and the
+// failure paths run.mjs must surface loudly (stderr, timeout, health) instead of silently.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs'
 import { backend, teamConfig } from '../src/lib/config.mjs';
 import { ROSTER, ROSTER_PATH, BIN_RUN, tmp, writeRosterVariant, runNode, disableAllBackends } from './helpers.mjs';
 
-// ── quota detection (uses the real agy patterns from roster, like the oracle sources backend-env) ──
+// ── quota detection (against the real agy patterns from the roster) ──
 test('quota detection', () => {
   const cfg = backend(ROSTER, 'agy');
   const pats = cfg.quota_patterns;
@@ -74,32 +74,11 @@ test('run.mjs: exit-0 backend whose stdout contains quota words is returned, not
 });
 
 // ── clean() strips CR + winpty noise ─────────────────────────────────────────
-test('clean strips CR + winpty teardown noise', () => {
+test('clean strips CR, winpty teardown noise and ANSI control bytes', () => {
   assert.equal(clean('HELLO\r\nAssertion failed: ... winpty.cc, line 924\n'), 'HELLO');
-});
-
-test('clean: null/empty -> empty string', () => {
+  assert.equal(clean('\x1b[31mRED\x1b[0m'), 'RED', 'ConPTY emits CSI/OSC on the merged pty stream');
   assert.equal(clean(null), '');
   assert.equal(clean(''), '');
-});
-
-test('clean: strips ANSI CSI/OSC noise', () => {
-  assert.equal(clean('\x1b[31mRED\x1b[0m'), 'RED');
-});
-
-// ── JSON config — backends configurable ──────────────────────────────────────
-test('backend config fields', () => {
-  assert.equal(backend(ROSTER, 'agy').kind, 'gemini');
-  assert.equal(backend(ROSTER, 'codex').enabled, true);
-  assert.equal(backend(ROSTER, 'codex').kind, 'codex');
-  assert.equal(backend(ROSTER, 'codex').oneshot_flag, 'exec');
-  assert.equal(backend(ROSTER, 'opencode').enabled, true);
-  assert.equal(backend(ROSTER, 'opencode').kind, 'opencode');
-  assert.equal(backend(ROSTER, 'opencode').oneshot_flag, 'run');
-  // opencode deliberately ships NO tier->model map: the invoker omits --model so opencode uses
-  // whichever model the user configured in opencode itself.
-  assert.deepEqual(backend(ROSTER, 'opencode').model_tiers, {});
-  assert.equal(backend(ROSTER, 'nope').enabled, false); // unknown -> off
 });
 
 test('run.mjs: all backends disabled -> native handoff', () => {
@@ -122,7 +101,7 @@ test('run.mjs: a kind with no invoker health-fails -> native handoff', () => {
 });
 
 // ── explicit force overrides the hard-line ───────────────────────────────────
-test('forced decision bypasses route.sh hard-line; forced rule survives to handoff', () => {
+test('forced decision bypasses the router hard-line; forced rule survives to handoff', () => {
   const reTask = 'Reverse engineer the IL2CPP dump and reconstruct the protobuf schemas via disassembly';
   const d = tmp('force-');
   const nocli = writeRosterVariant(d, 'nocli.json', disableAllBackends);

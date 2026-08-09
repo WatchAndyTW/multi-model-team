@@ -1,7 +1,12 @@
-// workflows.test.mjs — port of the oracle's team.mjs determinism + pipeline-structure block.
-// Static analysis on workflows/team.mjs (the Ultracode dynamic-workflow fan-out): the Workflow
-// runtime forbids Date/random APIs (they break resume), so they must not appear; and the staged
-// pipeline + faithful-relay machinery must be present.
+// workflows.test.mjs — the parts of workflows/*.mjs that can only be checked against the SOURCE.
+//
+// These scripts run under the Workflow runtime, so they can't be imported (top-level `return`,
+// injected globals). Two things still need guarding here:
+//   1. invariants that are properties of the source itself — no Date/random (they break resume),
+//      no project-lib imports, and the relay PROMPT text (an LLM instruction, not runnable code);
+//   2. pure helpers, which are EXTRACTED from the source and actually executed below.
+// Behaviour of the pipeline itself is tested in team-staffing.test.mjs, which runs the real
+// workflow against a stubbed runtime. Nothing here should assert that an identifier merely exists.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,23 +21,6 @@ const REASON_SRC = readFileSync(join(ROOT, 'workflows', 'reasoning.mjs'), 'utf8'
 
 test('team.mjs: no Date/random APIs (determinism guard)', () => {
   assert.doesNotMatch(SRC, /Date\.now|Math\.random|new Date/, 'forbidden non-deterministic API present');
-});
-
-test('team.mjs: staged-pipeline + faithful-relay markers present', () => {
-  // The load-bearing structural markers (subset of the oracle list — the ones that encode the
-  // equal-backends / faithful-relay / dynamic-tier contract).
-  const markers = [
-    'dispatchRelay',   // the PURE RELAY PIPE sub-agent
-    'parseVerdict',    // deterministic PASS/FAIL parse of the verifier CLI
-    'ranOn',           // records the backend that ACTUALLY produced each result
-    'teamConfig',      // equal/configurable roles from roster
-    'tierModel',       // tier -> concrete native model (dynamic by complexity)
-    'native-fallback', // visible native fallback (no dress-up)
-    'team-verify',     // forced codex verify rule
-  ];
-  for (const m of markers) {
-    assert.ok(SRC.includes(m), `team.mjs missing marker: ${m}`);
-  }
 });
 
 test('team.mjs: relay uses the file transport (--call-file), no heredoc, never `bash …run.mjs`', () => {
@@ -59,11 +47,14 @@ test('team.mjs: relay uses the file transport (--call-file), no heredoc, never `
   //    self-imposed sleep/timeout, retry-and-wait on the relay's own time limit.
   assert.match(SRC, /FOREGROUND and WAIT/, 'team.mjs relay must tell the worker to run foreground and wait');
   assert.ok(SRC.includes('status file') || SRC.includes('.status.json'), 'team.mjs relay must mention the pollable status file');
-  // 6. Anti-thrash (the gemini multi-attempt-timeout bug): on the relay's OWN time limit it must
-  //    poll the status file and keep WAITING on state:"running", NOT blindly re-run (which spawns a
-  //    second CLI process). Re-run at most once.
+  // 6. Anti-thrash (the gemini multi-attempt-timeout bug): hard_timeout (up to 30m) can exceed the
+  //    relay's own 10m Bash window, so on ITS time limit the relay must POLL the status file and keep
+  //    WAITING on state:"running" — not blindly re-run, which spawns a second CLI process.
   assert.match(SRC, /do NOT immediately re-run/i, 'team.mjs relay must not blindly re-run on its own time limit');
   assert.match(SRC, /at most ONCE/i, 'team.mjs relay must cap re-runs at once (no loop)');
+  assert.match(SRC, /HARD_TIMEOUT_MS \/ 60000/, 'relay prompt must surface the hard_timeout minute budget');
+  assert.match(SRC, /Polling the status file is NOT re-running/, 'relay must distinguish polling from re-running');
+  assert.match(SRC, /sleep 30; cat/, 'relay must be given a concrete sleep-and-read poll command');
 });
 
 test('workflows: relay guards against an empty/placeholder payload (the undefined-task bug)', () => {
@@ -77,38 +68,6 @@ test('workflows: relay guards against an empty/placeholder payload (the undefine
     assert.match(src, /SELF-CHECK/, `${name} relay prompt must include the placeholder self-check`);
     assert.match(src, /placeholder/i, `${name} self-check must mention the placeholder`);
   }
-});
-
-test('team.mjs: writable-mode worktree machinery present (Setup/Integrate, --cwd --writable, integration branch)', () => {
-  const markers = [
-    'WRITABLE',                 // the mode flag
-    'INT_BRANCH',               // the integration branch name
-    'mmt/team-',                // integration branch naming off the slug
-    'worktreeFor',              // per-subtask worktree path
-    '.mmt/worktrees/',          // gitignored worktree home
-    'SETUP_SCHEMA',             // setup agent structured report
-    'INTEGRATE_SCHEMA',         // integration agent structured report
-    "phase('Setup')",           // the two new writable-only phases
-    "phase('Integrate')",
-    '--cwd=',                   // relay passes the worktree cwd
-    '--writable',               // relay passes the writable flag
-    'INT_WORKTREE',             // dedicated integration worktree (user's checkout never touched)
-    'safeLabel',                // labels sanitized before use in refs/paths
-    'show-ref --verify',        // idempotent branch creation (resume-safe)
-    'RESOLVE it',               // the orchestrator resolves conflicts itself (not abort+leave)
-    'resolved',                 // the schema field for orchestrator-resolved conflicts
-    'unresolved',               // the rare conflict left for the user
-  ];
-  for (const m of markers) {
-    assert.ok(SRC.includes(m), `team.mjs missing writable-mode marker: ${m}`);
-  }
-  // The integration agent RESOLVES conflicts rather than the old abort-and-leave-for-user flow:
-  // `merge --abort` must only appear on the genuinely-unresolvable path, and the prompt must instruct
-  // editing the conflicted files (remove conflict markers) + completing the merge.
-  assert.match(SRC, /do NOT abort\. RESOLVE it/, 'integration must resolve conflicts, not blindly abort');
-  assert.match(SRC, /remove ALL conflict markers/i, 'integration must remove conflict markers when resolving');
-  // Determinism still holds with the new code (no Date/random crept in).
-  assert.doesNotMatch(SRC, /Date\.now|Math\.random|new Date/, 'writable code must stay determinism-safe');
 });
 
 test('team.mjs safeLabel: produces git-ref-safe + path-safe tokens (no .., no .lock, no leading/trailing . or -)', () => {
@@ -137,8 +96,7 @@ test('team.mjs safeLabel: produces git-ref-safe + path-safe tokens (no .., no .l
 });
 
 // ── workflows/reasoning.mjs — the Fusion (Panel -> Judge -> Synthesize) workflow ─────
-// Same static-analysis contract as team.mjs: determinism (no Date/random), the faithful-relay
-// machinery, the four Fusion judge dimensions, and the `node …run.mjs` (never `bash`) relay shell.
+// Same source-level contract as team.mjs: determinism, self-containment, and the relay prompt.
 
 test('reasoning.mjs: no Date/random APIs (determinism guard)', () => {
   assert.doesNotMatch(REASON_SRC, /Date\.now|Math\.random|new Date/, 'forbidden non-deterministic API present');
@@ -147,27 +105,6 @@ test('reasoning.mjs: no Date/random APIs (determinism guard)', () => {
 test('reasoning.mjs: self-contained — no project-lib imports (Workflow runtime has no fs/import)', () => {
   assert.doesNotMatch(REASON_SRC, /^\s*import\s.+from\s+['"]\.\.?\//m, 'workflow must not import project libs');
   assert.doesNotMatch(REASON_SRC, /\brequire\s*\(/, 'workflow must not require()');
-});
-
-test('reasoning.mjs: Fusion pipeline + faithful-relay markers present', () => {
-  const markers = [
-    'dispatchRelay',     // the PURE RELAY PIPE sub-agent (CLI panelists)
-    'RELAY_SCHEMA',      // forces the faithful {stdout, backend_ran} report
-    'JUDGE_SCHEMA',      // structured judge output
-    'consensus',         // the four Fusion judge dimensions:
-    'contradictions',
-    'unique_insights',
-    'blind_spots',
-    'ranOn',             // records the backend that ACTUALLY produced each answer
-    'native-fallback',   // visible native fallback (no dress-up behind a CLI label)
-    'tierModel',         // tier -> concrete native model
-    "phase('Panel')",    // the three staged phases:
-    "phase('Judge')",
-    "phase('Synthesize')",
-  ];
-  for (const m of markers) {
-    assert.ok(REASON_SRC.includes(m), `reasoning.mjs missing marker: ${m}`);
-  }
 });
 
 test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, never `bash …run.mjs`', () => {
@@ -182,25 +119,6 @@ test('reasoning.mjs: relay uses the file transport (--call-file), no heredoc, ne
   assert.ok(REASON_SRC.includes('status file') || REASON_SRC.includes('.status.json'), 'reasoning.mjs relay must mention the pollable status file');
   assert.match(REASON_SRC, /do NOT immediately re-run/i, 'reasoning.mjs relay must not blindly re-run on its own time limit');
   assert.match(REASON_SRC, /at most ONCE/i, 'reasoning.mjs relay must cap re-runs at once (no loop)');
-});
-
-// ── Regression: status-file-authoritative dispatch (the "fails-without-a-reason" fix) ──
-// The relay's backend_ran is an LLM self-judgment that a cheap relay model misreports when ITS OWN
-// Bash tool times out on a slow-but-successful agy/codex call. run.mjs's status file is authoritative:
-// state:"done" + usable stdout == success EVEN IF the relay said backend_ran:false. And every native
-// fallback must carry the REAL reason (timeout/quota/…), not a generic "unavailable".
-test('team.mjs: dispatch is status-file-authoritative + surfaces the real fallback reason', () => {
-  // (a) The relay schema must collect the authoritative status-file fields + the sidecar-recovery field.
-  for (const m of ['status_state', 'out_chars', 'fail_kind', 'relay_note', 'recovered_stdout', 'out_file']) {
-    assert.ok(SRC.includes(m), `team.mjs RELAY_SCHEMA missing status field: ${m}`);
-  }
-  // (b) The deterministic helpers + the relay-timeout pin must exist.
-  for (const m of ['relaySucceeded', 'relayFailReason', 'hasUsableStdout', 'RELAY_BASH_TIMEOUT_MS', 'fallbackReasons', 'failReason']) {
-    assert.ok(SRC.includes(m), `team.mjs missing marker: ${m}`);
-  }
-  // (c) dispatch() must NOT gate solely on backend_ran any more (the misclassification bug). The old
-  //     `relay.backend_ran === true && ... relay.stdout ... trim()` guard is replaced by relaySucceeded.
-  assert.match(SRC, /if \(relaySucceeded\(relay\)\)/, 'dispatch must decide success via relaySucceeded, not a raw backend_ran check');
 });
 
 test('team.mjs: relaySucceeded/relayFailReason behave (status file overrides relay judgment)', () => {
@@ -317,10 +235,17 @@ test('team.mjs: reset-to-base actually discards a partial commit + dirty files (
 });
 
 test('team.mjs: resetWorktree path-safety guard accepts the real shape, rejects metachars + traversal', () => {
-  // Mirror the EXACT guard from resetWorktree: an exact-shape match AND a `..`-segment reject. A path is
-  // SAFE iff it matches the shape and has no `..` segment.
-  const SHAPE = /^\.mmt[\/\\]worktrees[\/\\][A-Za-z0-9._-]+[\/\\][A-Za-z0-9._-]+$/;
-  const TRAVERSE = /(^|[\/\\])\.\.([\/\\]|$)/;
+  // Extract the SHIPPED regexes out of resetWorktree and exercise those — a copy of them here would
+  // pass forever no matter what the workflow actually does. A path is SAFE iff it matches the exact
+  // `.mmt/worktrees/<slug>/<label>` shape AND has no `..` segment; anything else must never reach a
+  // `git -C <path> reset --hard`.
+  const shapeM = SRC.match(/const SHAPE = (\/.+\/)\s*$/m);
+  const travM = SRC.match(/\|\|\s*(\/.+?\/)\.test\(wtStr\)/);
+  assert.ok(shapeM && travM, 'could not extract the shipped path guard from team.mjs');
+  // eslint-disable-next-line no-new-func
+  const SHAPE = new Function(`return ${shapeM[1]}`)();
+  // eslint-disable-next-line no-new-func
+  const TRAVERSE = new Function(`return ${travM[1]}`)();
   const safe = (p) => SHAPE.test(p) && !TRAVERSE.test(p);
   // real path shapes the workflow constructs (.mmt/worktrees/<slug>/<label>) — must be accepted:
   for (const ok of ['.mmt/worktrees/fix-the-bug/data-model', '.mmt/worktrees/task/sql-report', '.mmt\\worktrees\\t\\a']) {
@@ -337,11 +262,3 @@ test('team.mjs: resetWorktree path-safety guard accepts the real shape, rejects 
   }
 });
 
-// ── Regression: the relay is told it may poll the status file far longer than its own Bash window ──
-// hard_timeout (up to 30m) can exceed the relay's 10m Bash-tool cap; the relay must POLL (sleep+read),
-// not give up or re-run the node command, for the full hard_timeout window.
-test('team.mjs: relay polls the status file for the full hard_timeout window (long-wait hardening)', () => {
-  assert.match(SRC, /HARD_TIMEOUT_MS \/ 60000/, 'relay prompt must surface the hard_timeout minute budget');
-  assert.match(SRC, /Polling the status file is NOT re-running/, 'relay must distinguish polling from re-running');
-  assert.match(SRC, /sleep 30; cat/, 'relay must be given a concrete sleep-and-read poll command');
-});

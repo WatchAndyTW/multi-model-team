@@ -5,7 +5,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { loadRoster } from '../src/lib/config.mjs';
@@ -20,7 +20,6 @@ export const ROSTER = loadRoster(ROSTER_PATH);
 
 export const BIN_ROUTE = join(ROOT, 'src', 'bin', 'route.mjs');
 export const BIN_RUN = join(ROOT, 'src', 'bin', 'run.mjs');
-export const BIN_SETUP = join(ROOT, 'src', 'bin', 'setup.mjs');
 export const STATUSLINE = join(ROOT, 'statusline', 'statusline.mjs');
 
 /** Make a throwaway temp dir (auto-namespaced). */
@@ -57,22 +56,6 @@ export function writeRosterVariant(dir, name, fn) {
 }
 
 /**
- * Create a temp project dir with a `.mmt/roster.json` (deep-cloned real roster, mutated via `fn`).
- * Run a script with `{ cwd: <returned dir> }` so resolveRosterPath picks up this project roster —
- * the file-based replacement for the removed MMT_ROSTER env override.
- * @returns {string} the temp project dir (its .mmt/roster.json is the active roster when used as cwd)
- */
-export function makeProjectRoster(prefix, fn) {
-  const dir = mkdtempSync(join(tmpdir(), prefix || 'mmt-proj-'));
-  const mmt = join(dir, '.mmt');
-  mkdirSync(mmt, { recursive: true });
-  const clone = JSON.parse(JSON.stringify(ROSTER));
-  if (fn) fn(clone);
-  writeFileSync(join(mmt, 'roster.json'), JSON.stringify(clone), 'utf8');
-  return dir;
-}
-
-/**
  * Run a node script (a bin or a hook) capturing stdout.
  * @param {string} script  absolute path to the .mjs entry
  * @param {object} opts    { args?:string[], input?:string, env?:object, cwd?:string }
@@ -92,5 +75,3 @@ export function runNode(script, { args = [], input = '', env = {}, cwd } = {}) {
     code: typeof r.status === 'number' ? r.status : (r.signal ? 1 : 0),
   };
 }
-
-export { readFileSync };

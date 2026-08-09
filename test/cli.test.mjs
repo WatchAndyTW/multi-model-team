@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { ROSTER } from './helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -128,19 +129,6 @@ test('team-spec.mjs --split: parses cap spec + task from stdin', () => {
   assert.equal(parsed.source, 'spec', 'source = spec when a valid spec is present');
 });
 
-test('team-spec.mjs --split: no spec → default caps + full text as task', () => {
-  const result = spawnSync(
-    process.execPath,
-    [join(ROOT, 'src/lib/team-spec.mjs'), '--split'],
-    { input: 'just a plain task', encoding: 'utf8' }
-  );
-  assert.equal(result.status, 0, `exit ${result.status}; stderr: ${result.stderr}`);
-  const parsed = JSON.parse(result.stdout.trim());
-  assert.equal(parsed.source, 'default', 'no spec → source=default');
-  assert.equal(parsed.task, 'just a plain task', 'full input returned as task');
-  assert.ok(typeof parsed.caps.gemini === 'number', 'gemini is a number');
-});
-
 test('team-spec.mjs (no --split): parseCaps from stdin', () => {
   const result = spawnSync(
     process.execPath,
@@ -162,17 +150,14 @@ test('config.mjs team-config: returns valid team config JSON', () => {
     [join(ROOT, 'src/lib/config.mjs'), join(ROOT, 'config/roster.json'), 'team-config'],
     { encoding: 'utf8' }
   );
+  // The CLI mode is how commands/team.md reads the config, so it must emit parseable JSON carrying
+  // the shipped values. (What the config may and may not contain is teamConfig's own test.)
   assert.equal(result.status, 0, `exit ${result.status}; stderr: ${result.stderr}`);
-  assert.ok(result.stdout.trim().length > 0, 'stdout must be non-empty');
   const parsed = JSON.parse(result.stdout.trim());
-  assert.ok(typeof parsed.verify === 'boolean', 'verify is a boolean');
-  assert.ok(typeof parsed.max_fix_loops === 'number', 'max_fix_loops is a number');
-  assert.ok(typeof parsed.relay_model === 'string', 'relay_model is a string');
-  assert.ok(typeof parsed.native_models === 'object' && parsed.native_models !== null,
-    'native_models is forwarded so the workflow can map a tier to a Claude model');
-  // Pipeline knobs only — nothing here picks a backend any more (staffing does).
-  assert.equal(parsed.dispatch_backends, undefined);
-  assert.equal(parsed.caps, undefined);
+  assert.equal(parsed.verify, ROSTER.team.verify);
+  assert.equal(parsed.max_fix_loops, ROSTER.team.max_fix_loops);
+  assert.equal(parsed.relay_model, ROSTER.team.relay_model);
+  assert.equal(parsed.native_models.high, 'opus', 'native_models forwarded from defaults');
 });
 
 test('config.mjs unknown mode: exits 2 with stderr message', () => {

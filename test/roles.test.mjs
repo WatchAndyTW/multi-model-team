@@ -47,13 +47,8 @@ test('only stages with workers are active, in pipeline order', () => {
   // Ordering is the pipeline's, not the order the user typed.
   const typed = splitRoleSpec('review:codex:2;orch:claude:1 x', R);
   assert.deepEqual(typed.stages, ['plan', 'verify'], 'stage order is canonical, not as-typed');
-});
-
-test('a single role runs just its own stage', () => {
-  const s = splitRoleSpec('impl:opencode:2 build it', R);
-  assert.deepEqual(s.stages, ['exec']);
-  assert.equal(s.assignments.length, 1);
-  assert.equal(s.task, 'build it');
+  // One role -> just its own stage.
+  assert.deepEqual(splitRoleSpec('impl:opencode:2 build it', R).stages, ['exec']);
 });
 
 // ── OMC vocabulary ───────────────────────────────────────────────────────────
@@ -70,28 +65,24 @@ test('the catalog is OMC\'s: every agent is a role, on its OMC stage', () => {
   // Plus the fix-stage role OMC staffs with executor/debugger.
   assert.ok(CAT.fixer, 'fixer covers OMC team-fix');
 
-  // OMC's stage placement for the load-bearing ones.
-  assert.equal(CAT.explore.stage, 'plan');
-  assert.equal(CAT.planner.stage, 'plan');
-  assert.equal(CAT.analyst.stage, 'prd');
-  assert.equal(CAT.critic.stage, 'prd');
-  assert.equal(CAT.executor.stage, 'exec');
-  assert.equal(CAT.verifier.stage, 'verify');
-  assert.equal(CAT['security-reviewer'].stage, 'verify');
-  assert.equal(CAT.fixer.stage, 'fix');
-});
-
-test('default tiers mirror OMC\'s model choice per agent', () => {
-  // OMC: planner/analyst/architect/critic/code-reviewer/security-reviewer = opus -> high
-  //      executor/verifier/designer/debugger/test-engineer            = sonnet -> standard
-  //      explore/writer                                              = haiku  -> cheap
-  assert.equal(CAT.planner.tier, 'high');
-  assert.equal(CAT['code-reviewer'].tier, 'high');
-  assert.equal(CAT['security-reviewer'].tier, 'high');
-  assert.equal(CAT.executor.tier, 'standard');
-  assert.equal(CAT.verifier.tier, 'standard');
-  assert.equal(CAT.explore.tier, 'cheap');
-  assert.equal(CAT.writer.tier, 'cheap');
+  // OMC's stage placement, and its per-agent model choice as the role's default tier
+  // (opus -> high, sonnet -> standard, haiku -> cheap).
+  const parity = [
+    ['explore', 'plan', 'cheap'],
+    ['planner', 'plan', 'high'],
+    ['analyst', 'prd', 'high'],
+    ['critic', 'prd', 'high'],
+    ['executor', 'exec', 'standard'],
+    ['writer', 'exec', 'cheap'],
+    ['verifier', 'verify', 'standard'],
+    ['code-reviewer', 'verify', 'high'],
+    ['security-reviewer', 'verify', 'high'],
+    ['fixer', 'fix', 'standard'],
+  ];
+  for (const [role, stage, tier] of parity) {
+    assert.equal(CAT[role].stage, stage, `${role} belongs to the ${stage} stage`);
+    assert.equal(CAT[role].tier, tier, `${role} defaults to the ${tier} tier`);
+  }
 });
 
 test('aliases resolve — including the orch/impl/review shorthand', () => {

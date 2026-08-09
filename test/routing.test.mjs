@@ -1,4 +1,4 @@
-// routing.test.mjs — port of run_tests.sh routing blocks.
+// routing.test.mjs — the first-match-wins routing contract: which lane each task type lands in.
 // Asserts via router.decide() (in-process, fast) plus a few end-to-end `node route.mjs` stdin cases.
 
 import { test } from 'node:test';

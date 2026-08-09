@@ -43,17 +43,12 @@ test('a panel spec naming opencode survives into the panel', () => {
   assert.equal(split.question, 'what is the best caching strategy?', 'spec must not leak into the question');
 });
 
-test('expandPanel: count prefix 3:gemini -> three panelists, unique labels', () => {
+test('expandPanel: a count expands to N panelists with unique labels, either order', () => {
   const { panel } = expandPanel(['3:gemini']);
   assert.equal(panel.length, 3, '3:gemini expands to 3');
   assert.ok(panel.every((p) => p.backend === 'agy'), 'all gemini');
-  const labels = panel.map((p) => p.label);
-  assert.deepEqual(labels, ['gemini', 'gemini-2', 'gemini-3'], 'unique labels');
-  assert.equal(new Set(labels).size, 3, 'labels are unique');
-});
-
-test('expandPanel: gemini:3 (suffix form) also accepted', () => {
-  assert.equal(expandPanel(['gemini:3']).panel.length, 3, 'suffix count form');
+  assert.deepEqual(panel.map((p) => p.label), ['gemini', 'gemini-2', 'gemini-3'], 'unique labels');
+  assert.equal(expandPanel(['gemini:3']).panel.length, 3, 'suffix count form too');
 });
 
 test('expandPanel: cap clamps total panelists', () => {
@@ -82,16 +77,12 @@ test('parsePanel: spec parses, source spec', () => {
   assert.deepEqual(panel.map((p) => p.backend), ['agy', 'agy', 'native', 'codex']);
 });
 
-test('parsePanel: empty -> default panel + source default', () => {
-  const { panel, source } = parsePanel('');
-  assert.equal(source, 'default');
-  assert.deepEqual(panel.map((p) => p.token), ['opus', 'sonnet', 'gemini']);
-});
-
-test('parsePanel: garbage -> default panel + source default', () => {
-  const { panel, source } = parsePanel('banana,xyz,nope');
-  assert.equal(source, 'default', 'all-unknown spec falls back to default');
-  assert.deepEqual(panel.map((p) => p.token), ['opus', 'sonnet', 'gemini']);
+test('parsePanel: empty or all-unknown -> default panel + source default', () => {
+  for (const spec of ['', 'banana,xyz,nope']) {
+    const { panel, source } = parsePanel(spec);
+    assert.equal(source, 'default', `"${spec}" must fall back to the default panel`);
+    assert.deepEqual(panel.map((p) => p.token), ['opus', 'sonnet', 'gemini']);
+  }
 });
 
 test('parsePanel: respects cap', () => {
@@ -158,18 +149,14 @@ test('splitPanel: single bare alias as first word is NOT a spec (question preser
 // ── custom default panel flows through splitPanel + CLI --default flag ────────
 
 test('splitPanel: custom defaultPanel honored when no spec present', () => {
-  // Simulates the command passing the user's configured roster panel as the default.
+  // Simulates the command passing the user's configured roster panel as the default — any size.
   const r = splitPanel('explain monads', { defaultPanel: ['gemini', 'codex'] });
   assert.equal(r.source, 'default', 'source is default (no spec typed)');
   assert.equal(r.question, 'explain monads', 'question preserved');
   assert.deepEqual(r.panel.map((p) => p.token), ['gemini', 'codex'], 'roster custom panel honored');
-});
 
-test('splitPanel: custom defaultPanel with 4 models', () => {
-  const r = splitPanel('what is a monad', { defaultPanel: ['opus', 'sonnet', 'gemini', 'codex'] });
-  assert.equal(r.source, 'default');
-  assert.equal(r.panel.length, 4);
-  assert.deepEqual(r.panel.map((p) => p.token), ['opus', 'sonnet', 'gemini', 'codex']);
+  const four = splitPanel('what is a monad', { defaultPanel: ['opus', 'sonnet', 'gemini', 'codex'] });
+  assert.deepEqual(four.panel.map((p) => p.token), ['opus', 'sonnet', 'gemini', 'codex']);
 });
 
 test('splitPanel: per-invocation spec overrides custom defaultPanel', () => {

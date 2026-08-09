@@ -1,4 +1,4 @@
-// state.test.mjs — port of the state start/end + statusline-rendering unit blocks.
+// state.test.mjs — HUD state counters (start/end) and the three statusline render modes.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { STATUSLINE, tmp, runNode } from './helpers.mjs';
 
 // state.mjs reads MMT_STATE_DIR/MMT_STATE_FILE at call time, so drive it through a child process
-// with the env set (mirrors the bash oracle's subshell with MMT_STATE_DIR exported).
+// with MMT_STATE_DIR exported, so the test never touches the real HUD state file.
 const STATE_DRIVER = `
 import * as state from ${JSON.stringify(new URL('../src/lib/state.mjs', import.meta.url).href)};
 state.start({ id:'id1', backend:'agy', model:'Gemini 3.1 Pro (Low)', rule:'standard-coding', inChars:100 });

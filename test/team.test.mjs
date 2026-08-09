@@ -1,5 +1,5 @@
-// team.test.mjs — port of the team cap-spec parser, plan->manifest, --split boundary,
-// TSV-injection hardening, deps/verify tolerance, and gen-agents enable/disable blocks.
+// team.test.mjs — the backend-only spec grammar and its --split boundary, plan->manifest
+// (incl. TSV-injection hardening), and gen-agents enable/disable.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
