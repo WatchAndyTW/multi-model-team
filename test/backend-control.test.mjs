@@ -5,7 +5,7 @@
 //      surface honours it — the registry, the router, and run.mjs's chain walk;
 //   2. tier -> model resolution beyond the original cheap/standard pair, with aliases, per-shell
 //      overrides, and the "no model map means pass no flag" contract opencode relies on;
-//   3. opencode is wired as a real backend rather than a config stub.
+//   3. opencode and grok are wired as real backends rather than config stubs.
 //
 // Fully offline: no test here may spawn a real CLI. Anything that walks the fallback chain uses
 // disableAllBackends() so a live binary is never reached.
@@ -53,10 +53,10 @@ function withEnv(vars, fn) {
 
 test('backend registry: names, enabled/disabled split, native is never disable-able', () => {
   const names = backendNames(ROSTER);
-  assert.ok(names.includes('agy') && names.includes('codex') && names.includes('opencode'));
+  assert.ok(['agy', 'codex', 'opencode', 'grok'].every((n) => names.includes(n)));
   assert.ok(!names.some((n) => n.startsWith('_')), 'doc keys must not be reported as backends');
 
-  assert.deepEqual(enabledBackends(ROSTER).sort(), ['agy', 'codex', 'opencode']);
+  assert.deepEqual(enabledBackends(ROSTER).sort(), ['agy', 'codex', 'grok', 'opencode']);
   assert.deepEqual(disabledBackends(ROSTER), []);
 
   // native is always available — it is the guaranteed final fallback.
@@ -74,7 +74,7 @@ test('roster enabled:false disables a backend and is reported as reason "roster"
   assert.equal(backend(c, 'codex').enabled, false);
   assert.equal(backend(c, 'codex').roster_enabled, false);
   assert.deepEqual(disabledBackends(c), [{ name: 'codex', reason: 'roster' }]);
-  assert.deepEqual(enabledBackends(c).sort(), ['agy', 'opencode']);
+  assert.deepEqual(enabledBackends(c).sort(), ['agy', 'grok', 'opencode']);
 });
 
 test('MMT_DISABLE_BACKENDS turns backends off for the shell, reported as reason "env"', () => {
@@ -282,6 +282,44 @@ test('opencode claims no auto-route lane — it never silently steals agy/codex 
   assert.ok(!targets.has('opencode'), 'no shipped route targets opencode');
 });
 
+// ── grok (Grok Build) is a real backend ──────────────────────────────────────
+
+test('grok ships enabled, with an invoker kind and no model map', () => {
+  const g = backend(ROSTER, 'grok');
+  assert.equal(g.enabled, true);
+  assert.equal(g.kind, 'grok');
+  // `grok -p <PROMPT>` is the headless lane (verified live: prints to stdout and exits, through a
+  // plain pipe — no pty). `--prompt-file` returned nothing piped, which is why the prompt is argv.
+  assert.equal(g.oneshot_flag, '-p');
+  assert.equal(g.model_flag, '-m');
+  // Same design decision as opencode: no map -> omit -m -> grok's own configured default.
+  assert.deepEqual(g.model_tiers, {});
+});
+
+test('grok expresses read-only vs writable as a PERMISSION MODE, and needs no pty', () => {
+  const g = backend(ROSTER, 'grok');
+  assert.equal(g.permission_flag, '--permission-mode');
+  // VERIFIED LIVE: `plan` does NOT block a write (grok created the file anyway) — `default` does,
+  // by refusing a tool call it cannot get approved without a TTY, while still answering read tasks.
+  assert.equal(g.permission_mode, 'default', 'read-only lane must be the mode that actually blocks writes');
+  assert.equal(g.writable_permission_mode, 'bypassPermissions', '/team --writable lane');
+  assert.equal(g.use_winpty, false, 'piped stdout works — unlike agy, grok is not TTY-gated');
+  assert.equal(g.cwd_flag, '--cwd', 'confines a --writable subtask to its worktree');
+});
+
+test('grok has a dispatcher agent, a fallback slot, and is staffable by name', () => {
+  assert.equal(ROSTER.agents.grok.enabled, true);
+  assert.equal(ROSTER.agents.grok.backend, 'grok');
+  assert.ok(ROSTER.defaults.quota_fallback.includes('grok'), 'reachable via the fallback chain');
+  const staffed = parseRoleSpec('impl:grok:2', { roster: ROSTER }).assignments;
+  assert.deepEqual(staffed.map((a) => [a.role, a.backend]), [['executor', 'grok']], '/team may staff it');
+});
+
+test('grok claims no auto-route lane — it never silently steals agy/codex work', () => {
+  const targets = new Set((ROSTER.routes || []).map((r) => r.backend).filter(Boolean));
+  assert.ok(!targets.has('grok'), 'no shipped route targets grok');
+});
+
 // ── config passthrough regressions ───────────────────────────────────────────
 
 test('backend() forwards cost_per_1k_chars (it used to be dropped, zeroing every HUD cost)', () => {
@@ -370,7 +408,9 @@ test('a FORCED dispatch to an env-disabled backend names the env switch, not the
     args: ['--roster', r,
       '--decision', '{"backend":"agy","model":"","tier":"standard","rule":"forced","native":false}',
       'Write a SQL query to list users'],
-    env: { MMT_DISABLE_BACKENDS: 'agy,codex,opencode' },
+    // Derived from the roster, not hardcoded: a newly added backend must not quietly re-enter this
+    // chain and spawn a REAL CLI (grok did exactly that when it was added).
+    env: { MMT_DISABLE_BACKENDS: backendNames(ROSTER).join(',') },
   });
   assert.match(stdout, /MMT_NATIVE_HANDOFF/);
   assert.match(stderr, /MMT_DISABLE_BACKENDS/);

@@ -484,6 +484,59 @@ async function invokeCodex(cfg, prompt, opts) {
 //     read-only lane, `--agent build --auto` is full-auto. Both are roster-configurable.
 //   * NO MODEL FLAG by default: the roster ships `models: {}` so opencode uses whichever model the
 //     user configured in opencode itself. Set a tier in the roster to override.
+// ─── grok (Grok Build, xAI's harness) ────────────────────────────────────────
+//
+// `grok -p <PROMPT>` is the headless lane: "Single-turn prompt. Prints the response to stdout and
+// exits." Verified live through a plain pipe — no pty needed (unlike agy), so this is a runChild
+// lane like codex/opencode.
+//
+// The prompt rides as an ARGV ELEMENT, not stdin and not `--prompt-file`:
+//   · --prompt-file produced NOTHING through a pipe in testing (it appears to want the TUI), while
+//     -p returned immediately — so -p is the grounded choice.
+//   · the resolved binary is a real grok.exe, so Node passes argv straight to CreateProcess with no
+//     cmd.exe in between: a multi-line prompt survives intact (the bug that forced codex onto stdin
+//     does not apply) and nothing is ever shell-parsed, so the text stays injection-safe.
+// KNOWN LIMIT: argv means the Windows ~32k command-line cap applies. A /team payload that large
+// would be truncated by the OS — see PROBES.md.
+//
+// Read-only vs writable is a PERMISSION MODE, not a sandbox flag or an agent name:
+// `--permission-mode plan` (read-only) vs `bypassPermissions` (full-auto in the worktree).
+async function invokeGrok(cfg, prompt, opts) {
+  const bin = platform.resolveBinary('grok', {
+    envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
+    candidates: [...asArray(field(cfg, 'bin_candidates')), ...grokCandidates()],
+  });
+
+  const oneshot = field(cfg, 'oneshot_flag') || '-p';
+  const modelFlag = field(cfg, 'model_flag') || '-m';
+  // Empty model is legitimate: omit -m and let grok use its own configured default (`grok models`).
+  const model = chooseModel(cfg, opts);
+  const modeFlag = field(cfg, 'permission_flag') || '--permission-mode';
+  const mode = opts.writable
+    ? (field(cfg, 'writable_permission_mode') || '')
+    : (field(cfg, 'permission_mode') || '');
+
+  const argv = [bin, ...invocationExtra(cfg, opts.writable)];
+  if (model) argv.push(modelFlag, model);
+  if (mode && modeFlag) argv.push(modeFlag, mode);
+  // grok takes an explicit --cwd; pass it alongside the spawn cwd (same belt-and-braces as opencode,
+  // whose own project-root resolution ignored the spawn cwd and leaked writes into the parent repo).
+  const cwdFlag = field(cfg, 'cwd_flag') || '--cwd';
+  if (opts.cwd && cwdFlag) argv.push(cwdFlag, opts.cwd);
+  // Prompt LAST, as the value of the one-shot flag.
+  argv.push(oneshot, prompt);
+
+  const res = await runChild(argv, {
+    hardTimeout: timeoutMs(field(cfg, 'hard_timeout')),
+    cwd: opts.cwd || undefined,
+  });
+
+  const cleaned = clean(res.stdout);
+  const ok = res.code === 0 && cleaned.length > 0;
+  const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
+  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota, timedOut: !!res.timedOut };
+}
+
 async function invokeOpencode(cfg, prompt, opts) {
   const bin = platform.resolveBinary('opencode', {
     envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
@@ -526,6 +579,18 @@ async function invokeOpencode(cfg, prompt, opts) {
 }
 
 // opencode default install locations per-OS (bun/npm global installs land in these).
+function grokCandidates() {
+  switch (platform.PLATFORM) {
+    case 'win32':
+      return ['$HOME/.grok/bin/grok.exe', '$LOCALAPPDATA/grok/bin/grok.exe'];
+    case 'darwin':
+      return ['~/.grok/bin/grok', '/opt/homebrew/bin/grok', '/usr/local/bin/grok'];
+    case 'linux':
+    default:
+      return ['~/.grok/bin/grok', '~/.local/bin/grok', '/usr/local/bin/grok', '/usr/bin/grok'];
+  }
+}
+
 function opencodeCandidates() {
   switch (platform.PLATFORM) {
     case 'win32':
@@ -551,6 +616,8 @@ export async function invoke(backendCfg, prompt, opts = {}) {
       return invokeCodex(backendCfg, prompt, opts);
     case 'opencode':
       return invokeOpencode(backendCfg, prompt, opts);
+    case 'grok':
+      return invokeGrok(backendCfg, prompt, opts);
     default:
       // No invoker for this kind — caller falls through to the next backend / native (parity 127).
       return { ok: false, stdout: '', stderr: '', code: 127, quota: false };
@@ -577,6 +644,11 @@ async function _healthUncached(backendCfg) {
     bin = platform.resolveBinary('opencode', {
       envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
       candidates: [...asArray(field(backendCfg, 'bin_candidates')), ...opencodeCandidates()],
+    });
+  } else if (kind === 'grok') {
+    bin = platform.resolveBinary('grok', {
+      envVar: process.env.MMT_BE_BIN ? 'MMT_BE_BIN' : undefined,
+      candidates: [...asArray(field(backendCfg, 'bin_candidates')), ...grokCandidates()],
     });
   } else {
     return false;

@@ -279,6 +279,12 @@ export function backend(roster, name) {
     cwd_flag: be.cwd_flag ?? '',
     agent: be.agent ?? '',
     writable_agent: be.writable_agent ?? '',
+    // Per-invocation permission profile (grok: `--permission-mode default` read-only vs
+    // `bypassPermissions` writable). A third way to say the same thing as a sandbox flag or an
+    // agent name — each CLI picked its own, so all three shapes are forwarded.
+    permission_flag: be.permission_flag ?? '',
+    permission_mode: be.permission_mode ?? '',
+    writable_permission_mode: be.writable_permission_mode ?? '',
     // HUD cost estimate (USD per 1000 output chars). Previously dropped here, which silently
     // zeroed every cost figure run.mjs wrote to the statusline no matter what the roster declared.
     cost_per_1k_chars: Number(be.cost_per_1k_chars) || 0,

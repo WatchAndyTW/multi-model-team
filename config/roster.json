@@ -5,7 +5,7 @@
     "_comment": "preset biases tier (budget|balanced|premium). fallback is the final hop. quota_fallback is the ordered backend chain tried when the chosen backend is unavailable/exhausted — a DISABLED backend in this chain is simply skipped, so you can turn one off without editing the chain.",
     "preset": "balanced",
     "fallback": "native:sonnet",
-    "quota_fallback": ["agy", "codex", "opencode", "native:sonnet"],
+    "quota_fallback": ["agy", "codex", "opencode", "grok", "native:sonnet"],
     "_native_models_note": "The SINGLE place a routing tier becomes a concrete Claude model — used by the router, /team and /reasoning so native model choice is configured in one spot instead of three. `high` is the tier a route uses to ask for the strongest model without naming it.",
     "native_models": {
       "cheap": "haiku",
@@ -184,6 +184,41 @@
       "quota_patterns": ["rate limit", "quota", "429", "usage limit", "insufficient_quota", "too many requests"],
       "quota_exit_codes": [],
       "_note": "Invoked as `opencode run <flags>` with the PROMPT on STDIN (opencode reads stdin when no positional message is given) — same reason as codex: a multi-line prompt as an argv element is truncated at the first newline by a Windows .cmd wrapper. Needs NO pty (unlike agy): piped stdout works. The answer is on stdout; the `> plan · <model>` banner and ANSI colour go to stderr."
+    },
+
+    "grok": {
+      "enabled": true,
+      "kind": "grok",
+      "cmd": "grok",
+      "_oneshot_note": "`grok -p <PROMPT>` (alias --single) is the headless lane: 'Single-turn prompt. Prints the response to stdout and exits.' Verified live through a plain pipe — needs NO pty, unlike agy. NOTE: `--prompt-file` returned NOTHING through a pipe in testing (it appears to want the TUI), which is why the prompt goes as an argv element instead.",
+      "oneshot_flag": "-p",
+      "model_flag": "-m",
+      "_models_note": "INTENTIONALLY EMPTY, like opencode: grok runs on whichever model you configured in grok itself (`grok models` lists them and marks the default; ~/.grok/config.toml sets it). An empty map makes the invoker omit -m. To pin per tier, add e.g. {\"standard\":\"grok-4.5\"} — `grok-4.5` is xAI's model; a custom endpoint you add to grok's config is also nameable here.",
+      "models": {},
+      "_permission_note": "Read-only vs full-auto is a PERMISSION MODE here, not a sandbox flag (codex) or an agent name (opencode). Modes: default | acceptEdits | auto | dontAsk | bypassPermissions | plan. VERIFIED LIVE, and the result was surprising: `plan` did NOT block a write — grok created the file anyway — so it is NOT the read-only lane despite the name. `default` is: with no TTY to approve a tool call, a write is refused (the run ends with no output, which run.mjs treats as a failure and falls through LOUDLY to the next backend), while a pure read/answer task returns normally. That fail-safe shape is what the read-only lane needs. Deny rules were tried too and are NOT sufficient: `--deny Write` blocked the write tool and grok simply routed around it via the terminal.",
+      "permission_flag": "--permission-mode",
+      "permission_mode": "default",
+      "writable_permission_mode": "bypassPermissions",
+      "_cwd_flag_note": "grok takes an explicit --cwd. Passed alongside the spawn cwd whenever /team supplies one, so a --writable subtask is confined to its worktree (the same belt-and-braces opencode needed).",
+      "cwd_flag": "--cwd",
+      "extra": ["--output-format", "plain"],
+      "writable_extra": ["--output-format", "plain", "--always-approve"],
+      "health": "--version",
+      "list_models": "models",
+      "use_winpty": false,
+      "sandbox_flag": "",
+      "bin_candidates": [
+        "$HOME/.grok/bin/grok.exe",
+        "$LOCALAPPDATA/grok/bin/grok.exe"
+      ],
+      "_timeout_note": "Matches the other CLIs so a long /team --writable job isn't SIGKILLed mid-run. grok has no self-timeout flag, so hard_timeout is the only ceiling — and since the runChild fix that ceiling now holds even when the kill doesn't land.",
+      "hard_timeout": "30m",
+      "_cost_note": "tunable estimate, USD per 1000 output chars — for the HUD cost figure only.",
+      "cost_per_1k_chars": 0.0002,
+      "auth_patterns": ["not logged in", "please log in", "unauthorized", "invalid api key", "expired token", "authentication failed"],
+      "quota_patterns": ["rate limit", "quota", "429", "usage limit", "insufficient_quota", "too many requests"],
+      "quota_exit_codes": [],
+      "_note": "Grok Build (xAI's harness). The binary resolves to a real grok.exe, so Node passes argv straight through with no cmd.exe in between: a multi-line prompt survives as an argv element and is never shell-parsed. KNOWN LIMIT: argv means the Windows ~32k command-line cap applies to very large /team payloads. Like opencode, grok claims no auto-route lane — it runs only where you explicitly staff it, or via the fallback chain."
     }
   },
 
@@ -218,6 +253,16 @@
       "model": "haiku",
       "color": "green",
       "role": "Dispatcher for the opencode (OpenCode CLI) backend — a configurable, equal tool, not a fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and per-subtask /team assignments, not hardcoded here. opencode runs on WHICHEVER MODEL THE USER CONFIGURED IN OPENCODE ITSELF (the plugin deliberately passes no model flag), so it is the lane for work you want on your own opencode setup — a local or self-hosted model, a provider Claude/agy/codex don't cover, or simply a third independent opinion for /reasoning panels. By default it claims no auto-route lane, so it runs only when you explicitly pick it: spawning this agent, assigning it in /team, listing it in a /reasoning panel, or when it is reached through the quota-fallback chain. It uses opencode's read-only `plan` agent by default and its read/write `build` agent under /team --writable. Spawning this agent is an explicit choice to run on opencode: it relays the task to the CLI and returns the result verbatim; it does not re-route or refuse based on content."
+    },
+
+    "grok": {
+      "enabled": true,
+      "backend": "grok",
+      "tier": "standard",
+      "dispatch": "forced",
+      "model": "haiku",
+      "color": "yellow",
+      "role": "Dispatcher for the grok (Grok Build, xAI's harness) CLI backend — a configurable, equal tool, not a fixed task bucket. WHERE work routes is decided by config/roster.json (routes + tags.txt) and per-subtask /team assignments, not hardcoded here. grok runs on WHICHEVER MODEL IS CONFIGURED IN GROK ITSELF (the plugin passes no model flag by default; `grok models` lists them, and xAI's `grok-4.5` is available alongside any custom endpoint you have configured), so it is the lane for work you want on Grok or on your own grok-configured provider — or simply a further independent opinion for /reasoning panels. By default it claims no auto-route lane, so it runs only when you explicitly pick it: spawning this agent, staffing it in /team (`impl:grok:2`), listing it in a /reasoning panel, or when it is reached through the quota-fallback chain. IMPORTANT: grok's read-only lane is NOT enforced by a sandbox — see the roster note — so treat a grok dispatch as capable of changing files in the directory it runs in. Spawning this agent is an explicit choice to run on grok: it relays the task to the CLI and returns the result verbatim; it does not re-route or refuse based on content."
     }
   },
 

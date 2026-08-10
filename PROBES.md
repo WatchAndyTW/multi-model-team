@@ -275,3 +275,72 @@ reported **"quota/credit limit on 'codex'"** — pointing at billing when the fi
 Auth is now detected **before** quota (`backends.authFromResult`, roster `auth_patterns`) and
 surfaces as its own `auth` failure kind, with the handoff reason naming the login fix. Same
 failure-gate as quota: a successful answer is never an auth error however it words itself.
+
+---
+
+# grok (Grok Build, xAI's harness) — grounded findings
+
+Probed live against `grok 0.2.118` on Windows 11. Binary resolves to a **real `grok.exe`**
+(`~/.grok/bin/grok.exe`), so Node passes argv straight to `CreateProcess` — no `cmd.exe` in
+between, unlike the npm-shim CLIs.
+
+## P1 — `-p` is the headless lane; `--prompt-file` is not
+
+`grok -p <PROMPT>` (alias `--single`) is documented as "Single-turn prompt. Prints the response to
+stdout and exits", and **works through a plain pipe** — verified, returned in seconds. So grok needs
+**no pty** (unlike agy) and is a `runChild` lane like codex/opencode.
+
+`--prompt-file <PATH>` looks like the better fit (no command-line length limit) but produced
+**nothing at all** through a pipe across two runs, one waited out past 6 minutes. It appears to want
+the TUI. The prompt therefore rides as an **argv element**, which is safe here precisely because the
+binary is a real `.exe`: a multi-line prompt survives intact and nothing is ever shell-parsed.
+**Known limit:** argv means the Windows ~32k command-line cap applies to very large `/team` payloads.
+
+`grok agent {stdio|serve|headless}` is *not* an alternative — those are ACP/WebSocket protocol
+servers for SDK embedding, not a text-in/text-out lane.
+
+## P2 — read-only is `--permission-mode default`, and `plan` is a trap
+
+Modes: `default | acceptEdits | auto | dontAsk | bypassPermissions | plan`.
+
+**`plan` does NOT mean read-only.** Asked to create `PWNED.txt` under `--permission-mode plan
+--cwd <tmp>`, grok **created the file** and replied `DONE`. Picking it by name would have shipped a
+"read-only" lane that writes — the same shape of bug as opencode's ignored cwd.
+
+**`default` is the read-only lane, and it is fail-safe.** With no TTY to approve a tool call:
+- a write task is **refused** — no file created, and grok exits 0 with **empty stdout**, which
+  `run.mjs` already treats as a failure (falls through to the next backend, loudly);
+- a pure read/answer task **returns normally** (verified: read a file, answered `3`).
+
+**Deny rules are not sufficient.** `--deny Write --deny Edit --deny Bash` blocked the write tool and
+grok narrated *"The `write` tool was blocked by a permission policy, so let me create the file via
+the terminal instead"* — an agent will route around a partial denylist. A denylist can only be a
+guarantee if you enumerate the entire tool vocabulary correctly; `--sandbox` and `--disallowed-tools`
+also accept **bogus values silently**, so the vocabulary can't be discovered by probing.
+
+Verified end-to-end through `run.mjs` after wiring: the read-only lane answers, and the same write
+task leaves the target directory untouched.
+
+**Caveat worth knowing:** in read-only mode grok replied `DONE` to the write task it could not
+perform. It reports success for work it did not do — which is exactly what the `/team` verify stage
+is for.
+
+## P3 — models: user-configured, `grok-4.5` alongside
+
+`grok models` lists what is available and marks the default; `~/.grok/config.toml` sets it. On this
+machine: `grok-4.5` (xAI) plus a custom endpoint configured as the default. The roster ships
+`models: {}` — the same decision as opencode — so the invoker omits `-m` and grok uses its own
+configured default. Pin per tier only if you want to override that.
+
+## Invocation recipe (live)
+
+```
+grok --output-format plain --permission-mode default [-m <model>] [--cwd <dir>] -p "<prompt>"
+```
+`--version` for health (fast, not TTY-gated). `/team --writable` swaps the mode to
+`bypassPermissions` and adds `--always-approve`, confined to the subtask worktree via `--cwd`.
+
+## P4 — quota/limit error text (OPEN)
+
+`quota_patterns` / `auth_patterns` for grok are unvalidated defaults copied from the other CLIs.
+Harden them on the first real credential or rate-limit failure.

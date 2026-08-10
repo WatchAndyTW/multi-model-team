@@ -1,7 +1,8 @@
 # multi-model-team — project guide for Claude
 
 A Claude Code **plugin** that delegates token-heavy, self-contained tasks to local
-pre-authed CLI backends — **`agy`** (Gemini), **`codex`** (OpenAI Codex CLI) and **`opencode`** (OpenCode CLI) — choosing
+pre-authed CLI backends — **`agy`** (Gemini), **`codex`** (OpenAI Codex CLI), **`opencode`** (OpenCode CLI)
+and **`grok`** (Grok Build, xAI's harness) — choosing
 backend/model by task size and type, with credit-exhaustion fallback to native Claude and a
 glanceable statusline HUD.
 
@@ -9,9 +10,10 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **175/175** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **183/183** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
-Three live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI) and **opencode** (OpenCode CLI).
+Four live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI), **opencode** (OpenCode CLI) and
+**grok** (Grok Build).
 In `/team` any of them can be staffed as the reviewer (`review:codex:2`); unstaffed, review falls to
 Claude. See `README.md` (user-facing), `PROBES.md` (grounded CLI findings), and
 `docs/REASONING.md` (the `/reasoning` design contract).
@@ -80,6 +82,25 @@ on the dev machine); pin a faster model or raise the timeout if that bites.
 opencode claims **no auto-route lane** by default: it never silently takes work from agy/codex, and
 runs only when explicitly chosen (its agent, `/team`, a `/reasoning` panel, or the fallback chain).
 
+### grok (Grok Build) — no TTY, prompt as argv, and `plan` is NOT read-only
+
+`grok -p <prompt>` is the headless lane (prints to stdout and exits) and works through a plain pipe —
+**no pty**, like codex/opencode. The prompt rides as an **argv element**: `--prompt-file` emits
+nothing through a pipe (it wants the TUI), and argv is safe here because the binary is a real
+`grok.exe`, so Node passes it straight to `CreateProcess` with no `cmd.exe` to truncate at the first
+newline and no shell to parse it. Known limit: the Windows ~32k command-line cap applies to very
+large `/team` payloads.
+
+**The trap:** read-only is `--permission-mode default`, **not** `plan`. `plan` sounds read-only and
+is not — grok created a file under it. `default` is fail-safe: with no TTY to approve a tool call a
+write is refused (exit 0 + empty stdout, which `run.mjs` already reads as a failure and falls through
+loudly), while a read/answer task returns normally. Deny rules are not a substitute — grok routed
+around `--deny Write` via the terminal. `/team --writable` swaps to `bypassPermissions`, confined to
+the worktree by `--cwd`. Full detail in `PROBES.md`.
+
+Models come from `grok models` (`grok-4.5` plus whatever you configure); the roster ships
+`models: {}` so grok uses its own default, the same decision as opencode.
+
 ### codex — no TTY needed
 
 `codex` is invoked with the prompt delivered **via stdin** (`codex exec … -` reads from stdin),
@@ -145,7 +166,7 @@ src/bin/team.mjs                scripted CLI-backend fan-out (replaces team.sh)
 src/bin/reason.mjs              scripted panel fan-out engine for /reasoning (no-agents path)
 src/bin/setup.mjs               /mmt-setup engine: create/reset ~/.claude/mmt-roster.json
 statusline/statusline.mjs       fork-free HUD (replaces statusline.sh)
-agents/{agy,codex,opencode}.md   GENERATED from roster.json (gen-agents.mjs)
+agents/{agy,codex,opencode,grok}.md  GENERATED from roster.json (gen-agents.mjs)
 commands/{team,reasoning,mmt-setup}.md   /team = multi-agent fan-out; /reasoning = Fusion pipeline; /mmt-setup = durable personal roster setup
 workflows/team.mjs              Ultracode dynamic-workflow fan-out (Workflow tool)
 workflows/reasoning.mjs         Ultracode Fusion workflow: Panel → Judge → Synthesize
@@ -471,7 +492,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 175/175 routing + unit tests (no backend calls)
+npm test                         # offline: 183/183 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`

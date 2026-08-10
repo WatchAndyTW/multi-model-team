@@ -8,7 +8,7 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js&logoColor=white)
 ![Type](https://img.shields.io/badge/module-ESM-f7df1e)
-![Tests](https://img.shields.io/badge/tests-175%2F175%20passing-3fb950)
+![Tests](https://img.shields.io/badge/tests-183%2F183%20passing-3fb950)
 ![Platforms](https://img.shields.io/badge/platform-win%20%7C%20linux%20%7C%20macOS-555)
 ![Deps](https://img.shields.io/badge/runtime%20deps-1%20(node--pty)-blue)
 
@@ -17,9 +17,9 @@ Multi-model orchestration for Claude Code. Route by task, fan out in parallel, f
 ---
 
 A Claude Code **plugin** that offloads token-heavy, self-contained tasks to local pre-authed CLI
-backends — **`agy`** (Gemini), **`codex`** (OpenAI Codex CLI) and **`opencode`** (OpenCode CLI) —
-picking the backend and model by task size and type, with credit-exhaustion fallback through the
-chain to native Claude, and a glanceable statusline HUD.
+backends — **`agy`** (Gemini), **`codex`** (OpenAI Codex CLI), **`opencode`** (OpenCode CLI) and
+**`grok`** (Grok Build, xAI's harness) — picking the backend and model by task size and type, with
+credit-exhaustion fallback through the chain to native Claude, and a glanceable statusline HUD.
 
 The core idea:
 
@@ -109,6 +109,7 @@ assignments, so the "default lane" below is tunable roster policy, not a hard li
 | **`agy`** | Commodity, easily-verifiable work + Gemini's edges — UI/CSS, scaffolding, CRUD, scripts, SQL, regex, configs, tests, data transforms, web-research/summarization, audio/video | agy |
 | **`codex`** | Code review, test-writing, verification (and the default `/team` verifier; writes code full-auto under `--writable`) | codex |
 | **`opencode`** | Whatever you want on **your own** opencode model — a local/self-hosted model, a provider the others don't cover, or a third independent opinion. No auto-route lane: it runs only when you pick it | opencode |
+| **`grok`** | Grok Build (xAI). Runs on whatever `grok models` says is your default (`grok-4.5` is available). No auto-route lane — staff it (`impl:grok:2`) or pick its agent | grok |
 
 The shipped routing keeps RE/injection/systems-hard work **native by default** — that's roster policy
 you can retune, not a property of the agents (there's intentionally no RE/injection agent). An explicit
@@ -405,7 +406,7 @@ docs/INTERFACES.md           module interface contract (Node ESM port signatures
 ## 🧪 Testing
 
 ```bash
-npm test                # offline: 175/175 routing + unit tests (no backend calls)
+npm test                # offline: 183/183 routing + unit tests (no backend calls)
 ```
 
 The suite is fully offline — no backend calls. Live agy/codex behaviour is verified by hand (run a
