@@ -132,7 +132,9 @@ export function parseCaps(spec, opts = {}) {
   // The four historical keys are ALWAYS present (callers index them directly). A backend the roster
   // declares beyond those keeps its own key, so `2:grok` is not silently lost.
   const out = { gemini: 0, codex: 0, opencode: 0, claude: 0 };
-  for (const [k, v] of Object.entries(caps)) out[k] = _clamp(v);
+  // Each PAIR was clamped as it was parsed; the per-backend total is reported as-is so it matches
+  // the staffing (see _capsFromStaffing).
+  for (const [k, v] of Object.entries(caps)) out[k] = v;
   out.total = Object.values(out).reduce((n, v) => n + v, 0);
   out.source = 'spec';
   out.note = notes.join('; ');
@@ -240,8 +242,11 @@ function _capsFromStaffing(staffing, source) {
   const caps = { gemini: 0, codex: 0, opencode: 0, claude: 0 };
   for (const a of (staffing.workers || [])) {
     // The four historical keys keep their names; any other roster backend counts under its own.
+    // NOT clamped: each assignment was already clamped at parse time, and clamping the SUM made
+    // `.caps` disagree with the staffing it claims to describe (impl:codex:10,codex:10 -> 20 workers
+    // staffed, caps reporting 16). A projection that contradicts its source is worse than a big number.
     const key = BACKEND_TO_CAP[a.backend] || a.backend;
-    caps[key] = _clamp((caps[key] ?? 0) + a.count);
+    caps[key] = (caps[key] ?? 0) + a.count;
   }
   return {
     ...caps,

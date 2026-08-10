@@ -354,24 +354,48 @@ export function splitRoleSpec(rawText, opts = {}) {
 
   if (!looksLikeRoleSpec(text, catalog)) return null;
 
-  // The spec runs up to the first whitespace that is NOT inside the spec grammar. Role specs never
-  // contain spaces in practice, but tolerate them around the `;` and `,` separators so
-  // `orch:claude:2; impl:opencode:1` parses. Consume greedily while the next token still looks like
-  // spec syntax, then treat the remainder as the task.
-  const specTokenRe = /^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*(?:\s*[,;]\s*)?/;
-  let spec = '';
-  for (;;) {
-    const m = specTokenRe.exec(text);
-    if (!m) break;
-    const chunk = m[0];
-    spec += chunk;
-    text = text.slice(chunk.length);
-    // Keep going only while the chunk ended on a separator — otherwise the spec is complete.
-    if (!/[,;]\s*$/.test(chunk)) break;
-    text = text.replace(/^\s+/, '');
-  }
+  // Scan the spec off the front, CONTEXT-AWARE. The old greedy regex consumed any word-shaped token
+  // after a separator, so `review:codex:2; which is a problem` ate `which` out of the user's task
+  // text; and it stopped dead at a space after a colon, so `review: codex:2 task` lost the `codex:2`
+  // and left the task starting with a stray `:`. Both are silent corruption of what the user typed.
+  //
+  // So: track what may legitimately come next and stop the moment it doesn't.
+  //   after `;` -> a ROLE starts the next group
+  //   after `,` -> another assignment: a BACKEND (`impl:opencode:1,claude:2`) or a role
+  //   after `:` -> a BACKEND or a COUNT
+  // Whitespace is tolerated around every separator, including after a colon.
+  const TOKEN = /^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*/;
+  const head = (tok) => String(tok).split(':')[0];
+  const isRole = (tok) => normalizeRole(head(tok), catalog) !== null;
+  const isBackend = (tok) => normalizeBackend(head(tok), opts.roster) !== null;
+  const accepts = {
+    role: isRole,
+    assignment: (tok) => isBackend(tok) || isRole(tok),
+    value: (tok) => isBackend(tok) || /^\d+$/.test(head(tok)),
+  };
 
-  text = text.trim();
+  let i = 0;          // cursor
+  let end = 0;        // index just past the last character that is definitely part of the spec
+  let expect = null;  // null = the first token, already validated by looksLikeRoleSpec above
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i++;
+    const m = TOKEN.exec(text.slice(i));
+    if (!m) break;
+    const tok = m[0];
+    if (expect && !accepts[expect](tok)) break;   // not spec syntax -> the task starts here
+    i += tok.length;
+    end = i;
+    // A separator (or a dangling colon) means the spec continues; anything else ends it.
+    let j = i;
+    while (j < text.length && /\s/.test(text[j])) j++;
+    const sep = text[j];
+    if (sep === ';') { i = j + 1; end = i; expect = 'role'; continue; }
+    if (sep === ',') { i = j + 1; end = i; expect = 'assignment'; continue; }
+    if (sep === ':') { i = j + 1; end = i; expect = 'value'; continue; }
+    break;
+  }
+  const spec = text.slice(0, end);
+  text = text.slice(end).trim();
   peelFlags();   // `roles --writable task`
 
   const parsed = parseRoleSpec(spec, opts);
@@ -451,11 +475,20 @@ export function resolveStaffing(input, opts = {}) {
   // 3 · everything still unstaffed falls back to Claude at the role's own tier. A core entry may
   //     name its own fallback `backend` (e.g. "always review on codex"); a disabled one reverts to
   //     the global default rather than staffing a backend that can't run.
+  //
+  // `default_backend` is user-editable and can itself name a DISABLED backend — in which case every
+  // unstaffed job (i.e. the whole pipeline, for a bare `/team <task>`) was being auto-staffed onto a
+  // backend that cannot run, silently defeating the switch. The global fallback must be usable too;
+  // `native` is the guaranteed final option, which is exactly why it can never be disabled.
+  const globalDefault = usable(defaultBackend) ? defaultBackend : 'native';
+  if (globalDefault !== defaultBackend) {
+    notes.push(`default_backend '${defaultBackend}' is disabled — unstaffed jobs fall back to native`);
+  }
   const defaulted = [];
   for (const [role, spec] of Object.entries(core)) {
     const meta = catalog[role];
     if (covered(meta.stage)) continue;
-    const pref = spec.backend && usable(spec.backend) ? spec.backend : defaultBackend;
+    const pref = spec.backend && usable(spec.backend) ? spec.backend : globalDefault;
     out.push({
       role, stage: meta.stage, backend: pref,
       count: Math.max(1, Math.min(MAX_PER_ASSIGNMENT, spec.count || defaultCount)),
@@ -494,12 +527,17 @@ export function resolveStaffing(input, opts = {}) {
   };
 }
 
-/** One entry per (role, backend): a count on a reviewer bounds parallelism, not reviews per result. */
+/**
+ * One entry per (role, backend, TIER). A count on a reviewer bounds parallelism, not reviews per
+ * result — but a different TIER is a different reviewer, not a duplicate. Keying by (role, backend)
+ * alone silently collapsed `verify:opus:1,sonnet:1` to the opus one: the same tier-collapse that hit
+ * worker slots, on the verify side. The user staffed two reviewers and got one.
+ */
 function _dedupe(list) {
   const seen = new Set();
   const out = [];
   for (const a of list) {
-    const key = `${a.role}|${a.backend}`;
+    const key = `${a.role}|${a.backend}|${a.tier}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(a);

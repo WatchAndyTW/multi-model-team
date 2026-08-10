@@ -95,6 +95,16 @@ test('splitSpec deterministic boundary', () => {
   assert.deepEqual(bare.roles.backends, ['native']);
 });
 
+test('caps agree with the staffing they are projected from', () => {
+  // `.caps` clamped the accumulated per-backend SUM to 16 while the staffing kept all 20 workers,
+  // so the projection contradicted its own source. Each pair is still clamped as it is parsed.
+  const s = splitSpec('impl:codex:10,codex:10 do it', { roster: ROSTER });
+  const staffed = s.roles.workers.reduce((n, a) => n + a.count, 0);
+  assert.equal(staffed, 20);
+  assert.equal(s.caps.codex, staffed, 'caps must describe what actually runs');
+  assert.equal(parseCaps('99:gemini').gemini, 16, 'a single pair is still clamped at parse time');
+});
+
 // ── team plan -> manifest ────────────────────────────────────────────────────
 test('plan -> manifest: AGY/NATIVE rows, empty task skipped, task file written', () => {
   const d = tmp('tp-');

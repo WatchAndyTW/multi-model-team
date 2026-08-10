@@ -307,10 +307,19 @@ Modes: `default | acceptEdits | auto | dontAsk | bypassPermissions | plan`.
 --cwd <tmp>`, grok **created the file** and replied `DONE`. Picking it by name would have shipped a
 "read-only" lane that writes — the same shape of bug as opencode's ignored cwd.
 
-**`default` is the read-only lane, and it is fail-safe.** With no TTY to approve a tool call:
-- a write task is **refused** — no file created, and grok exits 0 with **empty stdout**, which
-  `run.mjs` already treats as a failure (falls through to the next backend, loudly);
-- a pure read/answer task **returns normally** (verified: read a file, answered `3`).
+**`default` is the read-only lane. It blocks writes, but the refusal is not always clean.** With no
+TTY to approve a tool call:
+- a write task is **refused** — no file created. In the isolated probe grok exited 0 with **empty
+  stdout**, which `run.mjs` already treats as a failure and falls through loudly;
+- a pure read/answer task **returns normally** (verified: read a file, answered `3`);
+- **but** on a real review it emitted 296 chars of narration, reached a tool call it needed to RUN,
+  and exited 0 with that partial text — ending mid-sentence on
+  *"Now let me confirm suspected defects by running the actual code…"*. `run.mjs` scores
+  exit-0-plus-output as SUCCESS, so a **truncated stub is returned as if it were the answer**.
+
+That is the honest shape: the lane never writes, but it can return an unfinished answer, and only the
+empty-output flavour of the refusal falls through. Treat a read-only grok result as **unverified**
+(what `/team`'s verify stage is for), and staff grok `--writable` for work that must run commands.
 
 **Deny rules are not sufficient.** `--deny Write --deny Edit --deny Bash` blocked the write tool and
 grok narrated *"The `write` tool was blocked by a permission policy, so let me create the file via

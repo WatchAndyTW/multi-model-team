@@ -286,6 +286,53 @@ test('a disabled backend cannot be staffed — the switch beats the spec', () =>
   assert.deepEqual(shape(s.workers), ['executor/nativex4'], 'the job falls back to Claude, not to another CLI');
 });
 
+// ── review findings (agy, via the fallback chain) — all reproduced, then fixed ───────────────────
+
+test('a DISABLED default_backend cannot swallow the whole pipeline', () => {
+  // `default_backend` is user-editable and was applied without the usable() check that guards every
+  // explicit assignment. Point it at a disabled backend and a bare `/team <task>` staffed EVERY
+  // unstaffed job onto a backend that cannot run — the switch silently defeated.
+  const clone = JSON.parse(JSON.stringify(ROSTER));
+  clone.roles.default_backend = 'codex';
+  clone.backends.codex.enabled = false;
+  const s = resolveStaffing([], { roster: clone });
+  assert.deepEqual(s.backends, ['native'], 'must fall back to native, never to a disabled backend');
+  assert.ok(s.verifiers.every((v) => v.backend === 'native'));
+  assert.match(s.note, /default_backend 'codex' is disabled/, 'and it says so');
+});
+
+test('a trailing separator does not eat the first word of the task', () => {
+  // `review:codex:2; which is a problem` used to consume `which` as an unknown role, silently
+  // deleting it from the user's task text.
+  const s = splitRoleSpec('review:codex:2; which is a problem', R);
+  assert.equal(s.task, 'which is a problem', 'the task text is preserved verbatim');
+  assert.deepEqual(shape(s.assignments), ['code-reviewer/codexx2']);
+});
+
+test('a space after a colon is tolerated, not mis-parsed', () => {
+  // `review: codex:2 task` used to stop at the space: codex:2 was lost, the reviewer defaulted to
+  // native, and the task kept a stray leading colon.
+  const s = splitRoleSpec('review: codex:2 task', R);
+  assert.equal(s.task, 'task');
+  assert.deepEqual(shape(s.assignments), ['code-reviewer/codexx2'], 'the backend is recovered');
+
+  // …and a dangling colon with no backend after it still yields a clean task.
+  const dangling = splitRoleSpec('review: fix the bug', R);
+  assert.equal(dangling.task, 'fix the bug', 'no stray colon left in the task');
+  assert.deepEqual(shape(dangling.assignments), ['code-reviewer/nativex1']);
+});
+
+test('two reviewers at different tiers both survive — the verify-side tier collapse', () => {
+  // The same collapse that hit worker slots, on the verify side: _dedupe keyed by (role, backend)
+  // only, so `verify:opus:1,sonnet:1` kept the opus reviewer and silently dropped the sonnet one.
+  const s = resolveStaffing(parseRoleSpec('verify:opus:1,sonnet:1', R), R);
+  assert.deepEqual(s.verifiers.map((v) => v.tier), ['high', 'standard'], 'both tiers staffed');
+
+  // A repeated (role, backend, tier) is still one reviewer — a count bounds parallelism, not reviews.
+  const dup = resolveStaffing(parseRoleSpec('verify:sonnet:1,sonnet:2', R), R);
+  assert.equal(dup.verifiers.length, 1, 'identical reviewers still collapse');
+});
+
 // ── config-driven ────────────────────────────────────────────────────────────
 
 test('the catalog comes from the roster, so it is tunable without code', () => {

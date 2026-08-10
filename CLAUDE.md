@@ -10,7 +10,7 @@ glanceable statusline HUD.
 (the agy lane runs under a real pseudo-terminal — ConPTY on Windows, forkpty on POSIX); everything
 else is Node stdlib. Cross-platform (Windows/Linux/macOS). `package.json` `"type":"module"`.
 
-**Status:** built, adversarially reviewed, and green. `npm test` passes **183/183** offline
+**Status:** built, adversarially reviewed, and green. `npm test` passes **188/188** offline
 (no backend calls; live agy/codex behaviour is smoke-tested by hand, not via a `npm test` gate).
 Four live backends: **agy** (Gemini), **codex** (OpenAI Codex CLI), **opencode** (OpenCode CLI) and
 **grok** (Grok Build).
@@ -92,11 +92,17 @@ newline and no shell to parse it. Known limit: the Windows ~32k command-line cap
 large `/team` payloads.
 
 **The trap:** read-only is `--permission-mode default`, **not** `plan`. `plan` sounds read-only and
-is not — grok created a file under it. `default` is fail-safe: with no TTY to approve a tool call a
-write is refused (exit 0 + empty stdout, which `run.mjs` already reads as a failure and falls through
-loudly), while a read/answer task returns normally. Deny rules are not a substitute — grok routed
-around `--deny Write` via the terminal. `/team --writable` swaps to `bypassPermissions`, confined to
-the worktree by `--cwd`. Full detail in `PROBES.md`.
+is not — grok created a file under it. `default` does block writes: with no TTY, a tool call needing
+approval is refused, and a read/answer task returns normally. Deny rules are not a substitute — grok
+routed around `--deny Write` via the terminal.
+
+**But the refusal is not always clean, so this lane is not fail-safe.** Observed live: grok emitted
+partial narration, hit a tool call it needed to RUN, and exited 0 with that stub — and `run.mjs`
+scores exit-0-plus-output as SUCCESS, so a truncated answer comes back as if it were the result
+(only the empty-output flavour falls through). The lane never writes, but it can return an
+unfinished answer: treat a read-only grok result as **unverified** (what `/team`'s verify stage is
+for), and staff grok `--writable` — `bypassPermissions`, confined to the worktree by `--cwd` — for
+work that must execute commands. Full detail in `PROBES.md`.
 
 Models come from `grok models` (`grok-4.5` plus whatever you configure); the roster ships
 `models: {}` so grok uses its own default, the same decision as opencode.
@@ -492,7 +498,7 @@ fallback hop.
 ## Testing
 
 ```bash
-npm test                         # offline: 183/183 routing + unit tests (no backend calls)
+npm test                         # offline: 188/188 routing + unit tests (no backend calls)
 ```
 
 Keep the suite green. Add cases for any routing or behavior change. Tests live in `test/*.test.mjs`

@@ -10,11 +10,12 @@ description: >-
   provider — or simply a further independent opinion for /reasoning panels. By default it
   claims no auto-route lane, so it runs only when you explicitly pick it: spawning this agent,
   staffing it in /team (`impl:grok:2`), listing it in a /reasoning panel, or when it is
-  reached through the quota-fallback chain. IMPORTANT: grok's read-only lane is NOT enforced
-  by a sandbox — see the roster note — so treat a grok dispatch as capable of changing files
-  in the directory it runs in. Spawning this agent is an explicit choice to run on grok: it
-  relays the task to the CLI and returns the result verbatim; it does not re-route or refuse
-  based on content.
+  reached through the quota-fallback chain. IMPORTANT: grok's read-only lane blocks writes but
+  is NOT fail-safe — a refused tool call can end the run early, returning a TRUNCATED answer
+  that looks like a complete one (see the roster note). Treat a read-only grok result as
+  unverified, and prefer grok for work that only needs to read and reason. Spawning this agent
+  is an explicit choice to run on grok: it relays the task to the CLI and returns the result
+  verbatim; it does not re-route or refuse based on content.
 tools: Bash
 model: haiku
 color: yellow
