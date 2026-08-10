@@ -46,15 +46,37 @@ import { backendNames, isBackendEnabled } from './config.mjs';
 
 // ─── backend vocabulary ──────────────────────────────────────────────────────
 //
-// The spec's backend words, mapped to roster backend names. Kept in step with team-spec.mjs's cap
-// vocabulary so `claude` means native in both, and shares opencode's `oc` alias.
+// Every backend declared in the roster is nameable by its OWN key automatically, so adding one to
+// roster.json makes it staffable with no code change here. This map covers the two things roster
+// keys can't: the nicknames (`gemini` for agy, `chatgpt` for codex, `claude` for native), and the
+// shipped backends' own names as a fail-safe for when the roster is missing/unreadable (the same
+// reason FALLBACK_CATALOG exists). Kept in step with team-spec.mjs's cap vocabulary.
 const BACKEND_ALIASES = new Map(Object.entries({
-  gemini: 'agy', agy: 'agy', flash: 'agy', pro: 'agy', google: 'agy',
+  agy: 'agy', gemini: 'agy', flash: 'agy', pro: 'agy', google: 'agy',
   codex: 'codex', chatgpt: 'codex', openai: 'codex', gpt: 'codex',
   opencode: 'opencode', oc: 'opencode',
   claude: 'native', native: 'native', sonnet: 'native', opus: 'native', haiku: 'native',
   anthropic: 'native',
 }));
+
+/** Backend keys the roster declares (documentation `_keys` excluded). */
+function rosterBackendNames(roster) {
+  const b = (roster && roster.backends) || {};
+  return Object.keys(b).filter((k) => !k.startsWith('_') && b[k] && typeof b[k] === 'object');
+}
+
+/**
+ * Every backend word this roster understands: its own declared keys, plus `native`, plus the
+ * friendly aliases. Exported so the cap grammar (team-spec.mjs) can build the same vocabulary
+ * instead of keeping a second hardcoded copy that drifts.
+ * @param {object} roster
+ * @returns {string[]} lowercase words, longest first (for regex alternation)
+ */
+export function backendWords(roster) {
+  const words = new Set(['native', ...rosterBackendNames(roster).map((n) => n.toLowerCase())]);
+  for (const alias of BACKEND_ALIASES.keys()) words.add(alias);
+  return [...words].sort((a, b) => b.length - a.length);
+}
 
 // A tier the user can pin directly on a native assignment (`orch:opus:1`). Native-only: for a CLI
 // backend the tier comes from the role, and the model ladder resolves it per backend.
@@ -163,9 +185,18 @@ export function normalizeRole(name, catalog) {
   return aliasIndex(catalog).get(lc) ?? null;
 }
 
-/** Resolve a typed backend word to a roster backend name. */
-function normalizeBackend(name) {
+/**
+ * Resolve a typed backend word to a roster backend name. A roster's OWN key always wins, so a newly
+ * declared backend is staffable immediately; the alias map only covers nicknames.
+ * @param {string} name
+ * @param {object} [roster]
+ */
+function normalizeBackend(name, roster) {
   const lc = String(name ?? '').trim().toLowerCase();
+  if (!lc) return null;
+  if (lc === 'native') return 'native';
+  const declared = rosterBackendNames(roster).find((n) => n.toLowerCase() === lc);
+  if (declared) return declared;
   return BACKEND_ALIASES.get(lc) ?? null;
 }
 
@@ -242,14 +273,14 @@ export function parseRoleSpec(spec, opts = {}) {
       // Lenient like the cap spec: find the backend part and the numeric part in any order, so
       // `opencode:2` and `2:opencode` both work, and a bare `opencode` means "one".
       const parts = item.split(':').map((p) => p.trim()).filter(Boolean);
-      const backendWord = parts.find((p) => normalizeBackend(p) !== null);
+      const backendWord = parts.find((p) => normalizeBackend(p, opts.roster) !== null);
       const countWord = parts.find((p) => /^\d+$/.test(p));
 
       if (!backendWord) {
         notes.push(`ignored '${item}' in role '${role}' (no known backend)`);
         continue;
       }
-      const backend = normalizeBackend(backendWord);
+      const backend = normalizeBackend(backendWord, opts.roster);
       const count = countWord === undefined ? defaultCount : clampCount(countWord);
       if (count === 0) {
         notes.push(`'${role}:${backendWord}' set to 0 — skipped`);

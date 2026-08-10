@@ -127,6 +127,17 @@ test("an unstaffed role's tier picks the Claude model — that is what a tier is
   assert.equal(c2.find((c) => c.label.includes('planner:p')).model, 'opus');
 });
 
+test('a role staffed at TWO tiers keeps both — the pin is not collapsed to one', async () => {
+  // `impl:opus:1,haiku:2` staffs three executors on native at two different tiers. Keying the tier
+  // by ROLE let the last assignment win, so the opus worker was silently downgraded to haiku. Slots
+  // are consumed in spec order, so the first executor subtask must run on opus and the rest on haiku.
+  const { calls } = await runTeam('impl:opus:1,haiku:2 build it', [
+    sub('a', 'native', 'executor'), sub('b', 'native', 'executor'), sub('c', 'native', 'executor'),
+  ]);
+  const models = calls.filter((c) => c.phase === 'Dispatch').map((c) => c.model);
+  assert.deepEqual(models, ['opus', 'haiku', 'haiku'], 'one opus worker + two haiku workers, as staffed');
+});
+
 test('the fixer shares the executor backend: a fix goes back to whoever did the work', async () => {
   const { out, calls } = await runTeam('impl:opencode:2 ship it', [sub('work', 'opencode', 'executor')],
     { failLabels: ['verifier:work'] });

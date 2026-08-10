@@ -61,13 +61,17 @@ const NATIVE_MODELS = { cheap: 'haiku', haiku: 'haiku', standard: 'sonnet', sonn
 // Claude. There is no second, competing assignment mechanism: no eligible-backend list, no
 // per-backend cap panel, no configured verifier. A backend runs where it was staffed and nowhere
 // else, and the decompose may only use a (role, backend) pair that exists in this table.
-const KNOWN = ['agy', 'codex', 'opencode', 'native']
+// No hardcoded backend list here. The staffing table arrives already validated against the roster
+// (roles.mjs resolves names, drops disabled ones), so a backend added to roster.json is dispatchable
+// without editing this file — `native` is the only name with special meaning (solve in-context
+// rather than relay to a CLI).
+const isBackend = (b) => typeof b === 'string' && b.trim().length > 0
 const VERIFY_STAGE = 'verify'
 const FIX_STAGE = 'fix'
 
 const STAFF = (A.roles && typeof A.roles === 'object') ? A.roles : {}
 let ASSIGN = Array.isArray(STAFF.assignments)
-  ? STAFF.assignments.filter((a) => a && a.role && KNOWN.includes(a.backend) && Number(a.count) > 0)
+  ? STAFF.assignments.filter((a) => a && a.role && isBackend(a.backend) && Number(a.count) > 0)
   : []
 // Self-sufficient: a caller that passed no staffing gets exactly what resolveStaffing would have
 // produced with an empty spec — the whole pipeline on Claude, nothing silently on a CLI.
@@ -98,16 +102,19 @@ const DISPATCH = [...new Set(WORKERS.map((a) => a.backend))]
 const ROLE_NAMES = [...new Set(WORKERS.map((a) => a.role))]
 const WORKER_STAGES = STAGE_ORDER.filter((st) => WORKERS.some((a) => a.stage === st))
 
-// role -> its stage / tier / description; (role,backend) -> how many workers were staffed.
+// role -> its stage / description. (role,backend) -> ONE SLOT PER STAFFED WORKER, each carrying its
+// own tier. A per-ROLE tier would be wrong: `impl:opus:1,haiku:2` staffs three executors on native
+// at two different tiers, and keying by role alone let the last one win — silently downgrading the
+// opus worker to haiku. Slots are consumed in spec order, so each subtask gets the tier of the
+// worker it actually occupies.
 const ROLE_STAGE = {}
-const ROLE_TIER = {}
 const ROLE_DESC = {}
 const ROLE_SLOTS = {}
 for (const a of WORKERS) {
   ROLE_STAGE[a.role] = a.stage
-  ROLE_TIER[a.role] = a.tier
   if (a.desc) ROLE_DESC[a.role] = a.desc
-  ROLE_SLOTS[`${a.role}|${a.backend}`] = (ROLE_SLOTS[`${a.role}|${a.backend}`] ?? 0) + a.count
+  const slot = (ROLE_SLOTS[`${a.role}|${a.backend}`] ??= [])
+  for (let i = 0; i < a.count; i++) slot.push(a.tier)
 }
 
 // A fix normally goes back to whoever did the work (that is what "fixer follows executor" means),
@@ -176,7 +183,7 @@ function safeLabel(label) {
 // The verifiers come from the staffing table (VERIFIERS, above) — whoever staffs the `verify`
 // stage reviews each result, defaulting to Claude. `A.verifier` remains as a one-shot in-session
 // override ("verify with gemini"): it replaces the staffed reviewers for this run only.
-if (A.verifier && KNOWN.includes(String(A.verifier))) {
+if (A.verifier && isBackend(A.verifier)) {
   VERIFIERS.length = 0
   VERIFIERS.push({ role: 'verifier', stage: VERIFY_STAGE, backend: String(A.verifier), count: 1, tier: 'standard', source: 'override',
                    desc: 'Check each result against its acceptance criterion with evidence.' })
@@ -440,19 +447,21 @@ const used = {}
 for (const s of raw) {
   const role = s.role
   const key = `${role}|${s.backend}`
-  const slots = ROLE_SLOTS[key] ?? 0
-  if (!role || slots === 0) {
+  const slots = ROLE_SLOTS[key]
+  if (!role || !slots || slots.length === 0) {
     log(`dropping subtask '${s.label}' — role/backend pair ${role || '(none)'}/${s.backend} was not staffed`)
     continue
   }
-  if ((used[key] ?? 0) >= slots) {
-    log(`dropping subtask '${s.label}' — ${role}/${s.backend} already at its ${slots} staffed worker(s)`)
+  const idx = used[key] ?? 0
+  if (idx >= slots.length) {
+    log(`dropping subtask '${s.label}' — ${role}/${s.backend} already at its ${slots.length} staffed worker(s)`)
     continue
   }
-  used[key] = (used[key] ?? 0) + 1
-  // The role's stage and default tier are authoritative; a decompose that picked a different
-  // tier for a staffed role is corrected here so the model actually matches what was staffed.
-  kept.push({ ...s, stage: ROLE_STAGE[role], tier: ROLE_TIER[role] ?? s.tier })
+  used[key] = idx + 1
+  // The staffing is authoritative: the subtask takes the stage of its role and the tier of the
+  // specific WORKER SLOT it occupies, so a decompose that guessed a different tier is corrected and
+  // a role staffed at several tiers keeps each one.
+  kept.push({ ...s, stage: ROLE_STAGE[role], tier: slots[idx] ?? s.tier })
 }
 
 // Graceful fallback: if nothing survived, run the whole task as one subtask on the first staffed
@@ -947,7 +956,7 @@ const usage = {
   note: 'Per-agent token counts are not visible inside the workflow; see the run notification\'s aggregate subagent_tokens. This is the executor split + output-size proxy.',
   cli: {
     subtasks: cliRecords.length,
-    byBackend: Object.fromEntries(KNOWN.filter((b) => b !== 'native').map((b) => [b, records.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
+    byBackend: Object.fromEntries(DISPATCH.filter((b) => b !== 'native').map((b) => [b, records.filter((r) => r.ranOn === b).length]).filter(([, n]) => n > 0)),
     output_chars: cliRecords.reduce((n, r) => n + approxChars(r), 0),
     comment: 'ran on the CLI backend — off Claude\'s token budget (only the relay agent spent native tokens)',
   },

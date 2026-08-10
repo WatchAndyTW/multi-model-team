@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import {
   roleCatalog, normalizeRole, looksLikeRoleSpec, parseRoleSpec, splitRoleSpec, describeRoles,
-  resolveStaffing, staffingFromBackends,
+  resolveStaffing, staffingFromBackends, backendWords,
 } from '../src/lib/roles.mjs';
 import { splitSpec, parseCaps } from '../src/lib/team-spec.mjs';
 import { ROSTER } from './helpers.mjs';
@@ -295,6 +295,35 @@ test('the catalog comes from the roster, so it is tunable without code', () => {
   assert.equal(s.assignments[0].role, 'pen-tester');
   assert.equal(s.assignments[0].stage, 'verify');
   assert.equal(s.assignments[0].tier, 'high');
+});
+
+test('a backend added to the roster is staffable with NO code change (both grammars)', () => {
+  // The docs promise that adding a backend means an invoker in backends.mjs + `enabled` — nothing
+  // else. That was false: the backend word also had to be added by hand to roles.mjs, team-spec.mjs
+  // and workflows/team.mjs, or it was invisible to /team. The vocabulary is now derived from the
+  // roster, so a brand-new key works everywhere at once.
+  const clone = JSON.parse(JSON.stringify(ROSTER));
+  clone.backends.futurecli = { enabled: true, kind: 'grok', cmd: 'futurecli', models: {} };
+  const O = { roster: clone };
+
+  // 1 · the ROLE grammar names it directly
+  const byRole = parseRoleSpec('impl:futurecli:2', O);
+  assert.deepEqual(shape(byRole.assignments), ['executor/futureclix2']);
+
+  // 2 · it is part of the shared backend vocabulary
+  assert.ok(backendWords(clone).includes('futurecli'));
+
+  // 3 · the BACKEND-ONLY grammar sees it too — spec boundary and all
+  const byCap = splitSpec('3:futurecli build a thing', O);
+  assert.equal(byCap.task, 'build a thing', 'the spec must not leak into the task');
+  assert.equal(byCap.caps.futurecli, 3, 'counted under its own key');
+  assert.deepEqual(shape(byCap.roles.workers), ['executor/futureclix3'], 'staffed as the executor');
+
+  // 4 · and disabling it is still honoured
+  clone.backends.futurecli.enabled = false;
+  const off = resolveStaffing(parseRoleSpec('impl:futurecli:2', O), O);
+  assert.match(off.note, /futurecli.*disabled/);
+  assert.deepEqual(off.backends, ['native'], 'falls back to Claude, not to another CLI');
 });
 
 test('a missing roles section degrades to the built-in catalog instead of failing', () => {

@@ -202,6 +202,34 @@ function winCmdWrap(argv) {
   return [comspec, '/d', '/s', '/c', cmd, ...rest];
 }
 
+// How long to wait for a killed child to actually die before settling anyway. The kill is the
+// polite path; this is the guarantee. Short — by this point we are already past hard_timeout.
+const KILL_GRACE_MS = 5000;
+
+/**
+ * Kill a child AND its descendants. `child.kill()` alone is not enough for a CLI that spawns its
+ * own workers: on win32 it maps to TerminateProcess on the direct child only, and on POSIX it
+ * signals one pid, so grandchildren survive — holding our stdio pipes open and keeping 'close'
+ * from ever firing. Best-effort by design; runChild's grace timer is what makes the timeout hold
+ * when even this fails.
+ * @param {import('node:child_process').ChildProcess} child
+ */
+export function killTree(child) {
+  if (!child || child.pid == null) return;
+  const direct = () => { try { child.kill('SIGKILL'); } catch { /* already gone */ } };
+  try {
+    if (process.platform === 'win32') {
+      // No signals on Windows. /T walks the process tree, /F forces termination.
+      const tk = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      tk.on('error', direct);        // taskkill missing from PATH -> fall back to the direct kill
+      if (typeof tk.unref === 'function') tk.unref();
+    } else {
+      // detached:true put the child at the head of its own group; a negative pid signals the group.
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { direct(); }
+    }
+  } catch { direct(); }
+}
+
 // Spawn a child, capture stdout/stderr, enforce a hard timeout (SIGKILL on expiry), and control
 // the stdin lifecycle. When keepStdinOpen is true the stdin pipe is created but NEVER ended until
 // the child exits — this is the agy "open, idle stdin" requirement (replaces the bash held-open
@@ -215,6 +243,11 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env, cwd }) {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         env: env ? { ...process.env, ...env } : process.env,
+        // POSIX: give the child its OWN process group so the timeout can kill the whole tree with
+        // process.kill(-pid) — without this, a CLI that forks leaves orphans behind after the kill
+        // (and killing our own group would take us down with it). No effect on win32, which has no
+        // process groups; killTree() shells taskkill /T there instead.
+        ...(process.platform !== 'win32' ? { detached: true } : {}),
         // cwd: in /team --writable mode this is the subtask's git worktree, so the CLI writes there.
         // Undefined -> inherit the parent's cwd (read-only/default behaviour, unchanged).
         ...(cwd ? { cwd } : {}),
@@ -228,10 +261,20 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env, cwd }) {
     const errChunks = [];
     let settled = false;
     let timedOut = false;
+    let graceTimer = null;
 
     const timer = setTimeout(() => {
       timedOut = true;
-      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      killTree(child);
+      // The kill is BEST-EFFORT and hard_timeout must hold even when it fails. Observed live: an
+      // opencode run hit its 30m ceiling, child.kill('SIGKILL') did NOT terminate it (win32 kills
+      // only the direct process, and a surviving grandchild keeps our stdio pipes open), 'close'
+      // never fired, and run.mjs sat at state:"running" past 32m until the process was killed by
+      // hand. Since 'close' is the ONLY other way this promise settles, an unkillable child used to
+      // hang the executor forever. Settle on our own after a short grace period regardless of what
+      // the OS actually managed to do — a ceiling that depends on the kill working is not a ceiling.
+      graceTimer = setTimeout(() => finish(124), KILL_GRACE_MS);
+      if (typeof graceTimer.unref === 'function') graceTimer.unref();
     }, hardTimeout);
     if (typeof timer.unref === 'function') timer.unref();
 
@@ -256,6 +299,7 @@ function runChild(argv, { hardTimeout, keepStdinOpen, stdinData, env, cwd }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       if (keepStdinOpen && child.stdin && !child.stdin.destroyed) {
         try { child.stdin.end(); } catch { /* ignore */ }
       }

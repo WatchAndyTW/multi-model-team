@@ -24,9 +24,12 @@
  * added here — `/team 2:opencode <task>` silently lost both the cap and the spec boundary.
  */
 
-import { splitRoleSpec, resolveStaffing, staffingFromBackends } from './roles.mjs';
+import { splitRoleSpec, resolveStaffing, staffingFromBackends, backendWords } from './roles.mjs';
 
 // ─── alias sets ──────────────────────────────────────────────────────────────
+//
+// FRIENDLY names only, exactly as in roles.mjs. A backend declared in the roster is nameable by its
+// own key automatically (via backendWords/_backendOf), so adding one needs no edit here.
 
 const GEMINI_ALIASES   = new Set(['gemini', 'agy', 'flash', 'pro', 'google']);
 const CODEX_ALIASES    = new Set(['codex', 'chatgpt', 'openai', 'gpt']);
@@ -50,13 +53,33 @@ function _clamp(n) {
   return Math.max(0, Math.min(MAX_PER_BACKEND, i));
 }
 
-function _normalize(name) {
+/**
+ * A typed word -> the CAP key it counts against. The four historical keys stay stable; any other
+ * backend the roster declares counts under its own name, so a new backend is spec-able the moment
+ * it exists in roster.json.
+ * @param {string} name
+ * @param {object} [roster]
+ */
+function _normalize(name, roster) {
   const lc = String(name ?? '').trim().toLowerCase();
+  if (!lc) return null;
   if (GEMINI_ALIASES.has(lc))   return 'gemini';
   if (CODEX_ALIASES.has(lc))    return 'codex';
   if (OPENCODE_ALIASES.has(lc)) return 'opencode';
   if (CLAUDE_ALIASES.has(lc))   return 'claude';
-  return null;
+  // Not a friendly alias — accept it if the roster declares a backend by that key.
+  const declared = _rosterNames(roster).find((n) => n.toLowerCase() === lc);
+  return declared ?? null;
+}
+
+function _rosterNames(roster) {
+  const b = (roster && roster.backends) || {};
+  return Object.keys(b).filter((k) => !k.startsWith('_') && b[k] && typeof b[k] === 'object');
+}
+
+/** CAP key -> roster backend name (the four historical keys; anything else is already a key). */
+function _backendOf(capKey) {
+  return CAP_TO_BACKEND[capKey] || capKey;
 }
 
 // ─── parseCaps ───────────────────────────────────────────────────────────────
@@ -67,7 +90,7 @@ function _normalize(name) {
  * @param {string} spec  e.g. "5:gemini,2:claude" or "gemini:3,codex:2"
  * @returns {{ gemini:number, codex:number, claude:number, total:number, source:string, note:string }}
  */
-export function parseCaps(spec) {
+export function parseCaps(spec, opts = {}) {
   const s = String(spec ?? '').trim();
   if (!s) {
     return _defaults('');
@@ -88,7 +111,7 @@ export function parseCaps(spec) {
 
     // Lenient: find the numeric part and the backend part (handles 3-token "5:gemini:standard").
     const nums  = parts.filter(p => /^\d+$/.test(p));
-    const names = parts.filter(p => _normalize(p) !== null);
+    const names = parts.filter(p => _normalize(p, opts.roster) !== null);
 
     if (!nums.length || !names.length) {
       notes.push(`ignored unparseable pair '${pair}'`);
@@ -98,7 +121,7 @@ export function parseCaps(spec) {
       notes.push(`used ${nums[0]}:${names[0]} from '${pair}'`);
     }
 
-    const key = _normalize(names[0]);
+    const key = _normalize(names[0], opts.roster);
     caps[key] = (caps[key] ?? 0) + _clamp(nums[0]);
   }
 
@@ -106,13 +129,14 @@ export function parseCaps(spec) {
     return _defaults(notes.join('; ') || 'no usable pairs in spec');
   }
 
-  const gemini   = _clamp(caps.gemini   ?? 0);
-  const codex    = _clamp(caps.codex    ?? 0);
-  const opencode = _clamp(caps.opencode ?? 0);
-  const claude   = _clamp(caps.claude   ?? 0);
-  return { gemini, codex, opencode, claude,
-           total: gemini + codex + opencode + claude,
-           source: 'spec', note: notes.join('; ') };
+  // The four historical keys are ALWAYS present (callers index them directly). A backend the roster
+  // declares beyond those keeps its own key, so `2:grok` is not silently lost.
+  const out = { gemini: 0, codex: 0, opencode: 0, claude: 0 };
+  for (const [k, v] of Object.entries(caps)) out[k] = _clamp(v);
+  out.total = Object.values(out).reduce((n, v) => n + v, 0);
+  out.source = 'spec';
+  out.note = notes.join('; ');
+  return out;
 }
 
 /**
@@ -175,9 +199,9 @@ export function splitSpec(rawText, opts = {}) {
   peelFlags();
 
   // Build alternation of all known aliases, longest-first (mirrors Python's re.escape sort).
-  const allAliases = [...GEMINI_ALIASES, ...CODEX_ALIASES, ...OPENCODE_ALIASES, ...CLAUDE_ALIASES];
-  allAliases.sort((a, b) => b.length - a.length);
-  const aliasAlt = allAliases.map(_reEscape).join('|');
+  // One vocabulary, shared with roles.mjs: the friendly aliases PLUS every backend the roster
+  // declares — so `/team 2:grok <task>` starts working the moment `grok` exists in roster.json.
+  const aliasAlt = backendWords(opts.roster).map(_reEscape).join('|');
 
   // A single N:backend or backend:N pair (digits and known backend, colon-separated).
   const pairPat = `(?:\\d+\\s*:\\s*(?:${aliasAlt})|(?:${aliasAlt})\\s*:\\s*\\d+)`;
@@ -189,7 +213,7 @@ export function splitSpec(rawText, opts = {}) {
   let m = reFull.exec(text);
   if (m) {
     const specStr = m[1].trim();
-    const caps    = parseCaps(specStr);
+    const caps    = parseCaps(specStr, opts);
     text = m[2].trim();
     peelFlags();   // `caps --writable task` — the flag may also trail the spec
     return _withFlags(caps, text, opts, flags);
@@ -199,7 +223,7 @@ export function splitSpec(rawText, opts = {}) {
   const reOnly = new RegExp(`^\\s*(${specPat})\\s*$`, 'i');
   m = reOnly.exec(text);
   if (m) {
-    return _withFlags(parseCaps(m[1].trim()), '', opts, flags);
+    return _withFlags(parseCaps(m[1].trim(), opts), '', opts, flags);
   }
 
   // No spec at all — the staffing resolver still returns a full table, all of it Claude.
@@ -215,12 +239,13 @@ export function splitSpec(rawText, opts = {}) {
 function _capsFromStaffing(staffing, source) {
   const caps = { gemini: 0, codex: 0, opencode: 0, claude: 0 };
   for (const a of (staffing.workers || [])) {
-    const key = BACKEND_TO_CAP[a.backend];
-    if (key) caps[key] = _clamp(caps[key] + a.count);
+    // The four historical keys keep their names; any other roster backend counts under its own.
+    const key = BACKEND_TO_CAP[a.backend] || a.backend;
+    caps[key] = _clamp((caps[key] ?? 0) + a.count);
   }
   return {
     ...caps,
-    total: caps.gemini + caps.codex + caps.opencode + caps.claude,
+    total: Object.values(caps).reduce((n, v) => n + v, 0),
     source,
     note: staffing.note || '',
   };
@@ -233,8 +258,9 @@ function _capsFromStaffing(staffing, source) {
  */
 function _withFlags(caps, task, opts, flags) {
   const counts = {};
-  for (const [key, backend] of Object.entries(CAP_TO_BACKEND)) {
-    if (caps[key] > 0) counts[backend] = caps[key];
+  for (const [key, n] of Object.entries(caps)) {
+    if (key === 'total' || key === 'source' || key === 'note') continue;
+    if (typeof n === 'number' && n > 0) counts[_backendOf(key)] = n;
   }
   const staffing = staffingFromBackends(counts, opts);
   return {

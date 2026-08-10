@@ -168,8 +168,9 @@ Sections (keys prefixed `_comment`/`_about` are inline docs the parsers ignore):
 | **`config/tags.txt`** | (separate flat file) keyword → task-type classification. |
 
 Routing changes need no code edit — dry-run one with `node src/bin/route.mjs --explain`
-(task on stdin). Adding a future backend: add
-`invoke`/`health` cases in `src/lib/backends.mjs` and flip `enabled`.
+(task on stdin). Adding a backend: declare it under `backends` and add `invoke`/`health` cases in
+`src/lib/backends.mjs`. Nothing else — the `/team` spec vocabulary is derived from the roster keys,
+so `impl:<name>:2` and `2:<name>` work the moment it exists.
 
 ## 📺 Statusline HUD
 

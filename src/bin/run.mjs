@@ -414,9 +414,18 @@ async function main() {
     // Model precedence: --model flag > the decision's own model (a forced dispatch may pin one) >
     // the backend's tier map. An empty result is legitimate — it means "pass no model flag", which
     // is how opencode is wired (run on whatever the user configured in opencode itself).
-    const decisionModel = (!decision.native && typeof decision.model === 'string'
-      && decision.model && !decision.model.startsWith('native:')) ? decision.model : '';
-    let model = opts.model || decisionModel || modelForTier(beCfg, D_tier);
+    //
+    // A pinned model is BACKEND-SPECIFIC and must NOT survive a fallback hop: `nixabe/deepseek-v4-
+    // flash` means something to opencode and nothing to agy or codex. Observed live — an opencode
+    // pin was carried onto agy when opencode timed out, and agy died in 6s with exit 1. So a pin
+    // (from --model or the decision) applies ONLY to the backend it was chosen for; every later hop
+    // re-resolves from its own tier map.
+    const isPinnedHop = be === decision.backend;
+    const pinnedModel = isPinnedHop
+      ? (opts.model || ((!decision.native && typeof decision.model === 'string'
+          && decision.model && !decision.model.startsWith('native:')) ? decision.model : ''))
+      : '';
+    let model = pinnedModel || modelForTier(beCfg, D_tier);
 
     // Health-gate: an unhealthy backend (or a kind with no invoker) is skipped. This used to be a
     // SILENT skip — no lastErr, no failures.log, no status record — so a backend that failed its

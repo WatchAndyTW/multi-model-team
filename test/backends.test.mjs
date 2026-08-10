@@ -4,8 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, chmodSync, readFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { clean, quotaExhausted, quotaFromResult } from '../src/lib/backends.mjs';
+import { clean, quotaExhausted, quotaFromResult, killTree } from '../src/lib/backends.mjs';
 import { backend, teamConfig } from '../src/lib/config.mjs';
 import { ROSTER, ROSTER_PATH, BIN_RUN, tmp, writeRosterVariant, runNode, disableAllBackends } from './helpers.mjs';
 
@@ -306,6 +307,93 @@ test('run.mjs --cwd --writable: CLI runs IN the worktree cwd and gets the writab
 // lastErr, no failures.log, no status record — just a bare "backend options exhausted" handoff. Now
 // a health skip is LOUD: named in the handoff reason, appended to failures.log (kind:"health"), and
 // recorded as a failed status. Fake CLI exits non-zero on --version (and everything else) twice.
+// ── Regression: hard_timeout must hold even when the kill does not land ──────────────────────────
+// Found by dogfooding: an opencode dispatch hit its 30m ceiling, child.kill('SIGKILL') did NOT
+// terminate it (win32 kills only the direct process, and a surviving descendant kept our stdio
+// pipes open so 'close' never fired), and run.mjs sat at state:"running" past 32m until the process
+// was killed by hand. 'close' was the ONLY way runChild settled, so an unkillable child hung the
+// executor forever. The fix kills the process TREE and, regardless of whether that worked, settles
+// on its own after a short grace period.
+test('killTree kills the DESCENDANTS too, not just the direct child', async () => {
+  // This is the half of the fix that a plain child.kill() got wrong: it terminates one pid, so a CLI
+  // that forked leaves orphans behind — and on win32 those orphans keep our stdio pipes open, which
+  // is why 'close' never fired and the executor hung past its ceiling.
+  const d = tmp('ekilltree-');
+  const pidFile = join(d, 'grandchild.pid');
+  const parentSrc = join(d, 'parent.mjs');
+  writeFileSync(parentSrc,
+    "import { spawn } from 'node:child_process';\n" +
+    "import { writeFileSync } from 'node:fs';\n" +
+    "const g = spawn(process.execPath, ['-e', 'setTimeout(()=>process.exit(0), 60000)'],\n" +
+    "  { detached: true, stdio: 'ignore' });\n" +
+    `writeFileSync(${JSON.stringify(pidFile)}, String(g.pid));\n` +
+    "setInterval(() => {}, 1000);\n");
+
+  const parent = spawn(process.execPath, [parentSrc], { stdio: 'ignore' });
+  // wait for the grandchild pid to be published
+  const deadline = Date.now() + 10000;
+  while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(existsSync(pidFile), 'the fixture must publish its grandchild pid');
+  const gpid = parseInt(readFileSync(pidFile, 'utf8').trim(), 10);
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  assert.ok(alive(gpid), 'grandchild is running before the kill');
+
+  killTree(parent);
+
+  const gone = async (pid) => {
+    const end = Date.now() + 10000;
+    while (Date.now() < end) {
+      if (!alive(pid)) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return !alive(pid);
+  };
+  assert.ok(await gone(parent.pid), 'direct child terminated');
+  assert.ok(await gone(gpid), 'DESCENDANT terminated too — a plain child.kill() would leave it running');
+});
+
+// ── Regression: a pinned model must not ride along to the next backend ───────────────────────────
+// Found by dogfooding: a decision pinning `nixabe/deepseek-v4-flash` (an OPENCODE model) fell back
+// to agy when opencode timed out, and run.mjs handed agy that same id — agy died in 6s with exit 1.
+// A model pin belongs to the backend it was chosen for; later hops re-resolve from their own map.
+test('run.mjs: a pinned model applies only to its own backend, never to a fallback hop', () => {
+  const d = tmp('epin-');
+  const argsLog = join(d, 'argv.log');
+  const fake = join(d, process.platform === 'win32' ? 'reccli.cmd' : 'reccli.sh');
+  if (process.platform === 'win32') {
+    writeFileSync(fake,
+      '@echo off\r\n' +
+      'if "%1"=="--version" ( echo reccli 1.0 & exit /b 0 )\r\n' +
+      `echo %* >> "${argsLog.replace(/\\/g, '\\\\')}"\r\n` +
+      'exit /b 1\r\n');
+  } else {
+    writeFileSync(fake,
+      '#!/usr/bin/env bash\n' +
+      'case "${1:-}" in\n' +
+      '  --version) echo "reccli 1.0" ;;\n' +
+      `  *) echo "$@" >> ${JSON.stringify(argsLog)}; exit 1 ;;\n` +
+      'esac\n');
+    chmodSync(fake, 0o755);
+  }
+
+  const r = writeRosterVariant(d, 'r.json', (c) => {
+    c.backends.agy.enabled = false;
+    c.defaults.quota_fallback = ['opencode', 'codex', 'native:sonnet'];
+  });
+  runNode(BIN_RUN, {
+    args: ['--roster', r,
+           '--decision', '{"backend":"opencode","model":"pinned-xyz","tier":"standard","rule":"review","native":false}',
+           'review this'],
+    env: { MMT_BE_BIN: fake, MMT_LOG_DIR: join(d, 'logs') },
+  });
+
+  const lines = readFileSync(argsLog, 'utf8').trim().split('\n').filter(Boolean);
+  assert.ok(lines.length >= 2, `expected the opencode hop AND a codex fallback hop, got ${lines.length}`);
+  assert.match(lines[0], /pinned-xyz/, 'the pin reaches the backend it was chosen for');
+  assert.doesNotMatch(lines[1], /pinned-xyz/, 'the pin must NOT ride along to the fallback backend');
+  assert.match(lines[1], /gpt-5\.5/, 'the fallback resolves its OWN tier model instead');
+});
+
 test('run.mjs: a backend that fails health is logged LOUDLY as kind:"health", not silently skipped', () => {
   const d = tmp('ehealth-');
   const fake = join(d, process.platform === 'win32' ? 'deadcodex.cmd' : 'deadcodex.sh');

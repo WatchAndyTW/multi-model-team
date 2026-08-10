@@ -411,9 +411,12 @@ the parsers ignore):
 
 - **`defaults`** — `preset`, `fallback`, `quota_fallback` (ordered backend chain).
 - **`backends`** — each key is a backend a route can target. `enabled` gates use; `kind` selects
-  the invoker in `src/lib/backends.mjs`. **`gemini` (agy), `codex` and `opencode` all have live
-  invokers.** Adding a future backend = add `invoke`/`health` dispatch cases in `backends.mjs` and
-  flip `enabled`; no other code changes.
+  the invoker in `src/lib/backends.mjs`. **`gemini` (agy), `codex`, `opencode` and `grok` all have
+  live invokers.** Adding a future backend = add `invoke`/`health` dispatch cases in `backends.mjs`
+  and declare it here; no other code changes. That claim is now enforced: the /team spec vocabulary
+  is DERIVED from the roster's backend keys (`roles.backendWords`), so a new backend is staffable
+  (`impl:<name>:2`), spec-able (`2:<name>`) and dispatchable at once. It used to be false — the name
+  also had to be hand-added to three hardcoded lists in roles.mjs, team-spec.mjs and team.mjs.
 - **`agents`** — each delegation subagent: `enabled`, `backend`, `tier`, `dispatch`
   (`route`=let the router decide; `forced`=pin backend+tier), `model`, `color`, `role`. The
   `.md` files in `agents/` are **generated** from this by `src/lib/gen-agents.mjs` — edit the
