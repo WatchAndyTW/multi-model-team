@@ -559,3 +559,35 @@ test('roster: agy --print-timeout < hard_timeout (graceful self-terminate before
   // codex has no self-timeout flag; hard_timeout is its only ceiling — just assert it's set + sane.
   assert.ok(durMs(ROSTER.backends.codex.hard_timeout) >= 60000, 'codex hard_timeout must be >= 60s');
 });
+
+// Regression: agy and grok deliver the PROMPT as an argv element, so a large /team payload overflows
+// the OS command-line ceiling. Observed live on Windows with a 40KB prompt: agy died in ~1s with
+// "Cannot create process, error code: 206" and grok in ~11ms with "spawn ENAMETOOLONG" — both of
+// which read as "the CLI is unavailable", so run.mjs walked the whole chain and handed the subtask to
+// native. That is the "I staffed agy and everything ran on Claude" bug. The guard turns an opaque
+// errno into a named, actionable failure BEFORE spawning.
+test('argvOverflow: catches an oversized prompt before spawn, passes a normal one', async () => {
+  const { argvOverflow } = await import('../src/lib/backends.mjs');
+
+  // A normal dispatch fits and must not be blocked.
+  assert.equal(argvOverflow(['C:/agy.exe', '--print', 'summarize this file', '--model', 'flash']), 0);
+
+  // A 40KB payload — the size a /team subtask brief reaches — must be caught.
+  const big = 'x'.repeat(40_000);
+  const over = argvOverflow(['C:/agy.exe', '--print', big]);
+  assert.ok(over > 40_000, `expected an overflow size, got ${over}`);
+});
+
+// The guard's message has to survive run.mjs's sanitizeErr(), which keeps only the LAST 240 chars.
+// An over-long message would be truncated to its tail and lose the part naming the cause, which is
+// the whole point of the guard.
+test('argv overflow message fits run.mjs sanitizeErr 240-char window', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/backends.mjs'), 'utf8');
+  const m = src.match(/prompt too large for '\$\{name\}':[\s\S]*?`,\n/);
+  assert.ok(m, 'argvOverflowResult message not found');
+  // Reconstruct the longest realistic rendering (worst-case backend name + sizes).
+  const rendered = m[0]
+    .replace(/`\s*\+\s*`/g, '').replace(/^\s*stderr:\s*`/, '').replace(/`,\n$/, '')
+    .replace(/\$\{name\}/g, 'opencode').replace(/\$\{size\}/g, '1234567').replace(/\$\{ARGV_LIMIT\}/g, '120000');
+  assert.ok(rendered.length <= 240, `message is ${rendered.length} chars, must be <= 240:\n${rendered}`);
+});

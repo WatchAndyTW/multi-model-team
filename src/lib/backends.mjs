@@ -94,6 +94,51 @@ function timeoutMs(raw) {
   return Math.round(n * mult[(m[2] || '').toLowerCase()]);
 }
 
+// --- argv size ceiling -------------------------------------------------------
+//
+// agy and grok deliver the PROMPT as an argv ELEMENT (agy because its pty lane passes argv to the
+// child; grok because -p is its only headless flag). Every OS caps a process command line, so a big
+// /team payload blows straight past it — and the failure is BRUTALLY misleading:
+//   · agy  → "Cannot create process, error code: 206" (ERROR_FILENAME_EXCED_RANGE) after ~1s
+//   · grok → "spawn ENAMETOOLONG" after ~11ms
+// Both read as "the CLI is broken/unavailable", so run.mjs falls through the whole chain to native.
+// Reproduced live with a 40KB prompt: agy died in 1s, grok in 11ms, and the pipeline handed the work
+// to Claude — exactly the "I staffed a CLI and everything ran on native" symptom.
+//
+// Windows caps lpCommandLine at 32,767 UTF-16 chars (CreateProcess); POSIX ARG_MAX is typically
+// ~2 MB but the single-argument cap (MAX_ARG_STRLEN) is 128 KB on Linux. Stay under both with
+// headroom for the exe path, flags, and the quoting the OS adds when it rebuilds the line.
+const ARGV_LIMIT = platform.isWindows() ? 30_000 : 120_000;
+
+/**
+ * Would this argv exceed the OS command-line ceiling? Returns the measured size when it would
+ * (truthy), or 0 when it fits. Checked BEFORE spawning so the caller can report the real cause
+ * instead of letting the OS surface an opaque errno.
+ * @param {string[]} argv
+ * @returns {number} 0 if it fits, else the measured command-line length
+ */
+export function argvOverflow(argv) {
+  // +3 per element covers the space separator plus the pair of quotes the OS adds around any element
+  // containing whitespace — which the prompt always does.
+  const size = argv.reduce((n, a) => n + String(a).length + 3, 0);
+  return size > ARGV_LIMIT ? size : 0;
+}
+
+/** The failure a backend returns when its prompt cannot fit on the command line. */
+function argvOverflowResult(name, size) {
+  return {
+    ok: false,
+    stdout: '',
+    // Kept under run.mjs's 240-char sanitizeErr window so the whole message survives into
+    // failures.log and the native-handoff reason instead of being truncated to its tail.
+    stderr: `prompt too large for '${name}': ${size} chars of command line vs this OS's `
+      + `${ARGV_LIMIT} limit. '${name}' takes its prompt as an argv element. Split into smaller `
+      + `subtasks, or staff a stdin backend (codex, opencode).`,
+    code: 1,
+    quota: false,
+  };
+}
+
 // Read normalized fields from a backend cfg, tolerating BOTH the raw roster.json shape
 // (oneshot_flag / model_flag / models{cheap,standard} / extra) AND the config.mjs-normalized
 // shape (print_flag / model_tiers{cheap,standard} / extra). This keeps backends.mjs working
@@ -404,6 +449,12 @@ async function invokeGemini(cfg, prompt, opts) {
   // cwd: in /team --writable mode this is the subtask's git worktree, so agy writes there.
   const cwd = opts.cwd || undefined;
   const hardTimeout = timeoutMs(field(cfg, 'hard_timeout'));
+
+  // The prompt is an argv element here — check it fits before the OS rejects the whole command line
+  // with an opaque "Cannot create process, error code: 206".
+  const over = argvOverflow([bin, ...args]);
+  if (over) return argvOverflowResult('agy', over);
+
   let res;
   if (platform.isWindows() || ptyAvailable()) {
     // node-pty path: REQUIRED on Windows (ConPTY — winpty can't allocate a console from a headless
@@ -425,10 +476,16 @@ async function invokeGemini(cfg, prompt, opts) {
   // ok = exited 0 AND produced usable (non-empty) cleaned stdout. An empty result is the classic
   // agy "silent no-op" — treat as failure so run.sh falls through (parity with run.sh contract).
   const ok = res.code === 0 && cleaned.length > 0;
+  // A pty is ONE merged stream, so runPty always reports stderr:''. That meant a FAILED agy call
+  // handed run.mjs nothing to report and it logged the generic "no usable output (exit 1)" — while
+  // agy's own explanation (an unknown model id, a tool permission denied in headless mode, a
+  // context-length error) sat in the merged stream and was thrown away. That is what made this lane's
+  // failures undiagnosable in failures.log. On failure, surface the merged output AS the error.
+  const stderr = res.stderr || (ok ? '' : cleaned);
   // quota is gated on FAILURE (see quotaFromResult): a successful answer is never exhaustion, even
   // if its prose happens to contain "quota"/"429"/… (e.g. agy summarizing a doc about rate limits).
   const quota = quotaFromResult(res, cleaned, asArray(field(cfg, 'quota_patterns')), asArray(field(cfg, 'quota_exit_codes')));
-  return { ok, stdout: cleaned, stderr: res.stderr, code: res.code, quota, timedOut: !!res.timedOut };
+  return { ok, stdout: cleaned, stderr, code: res.code, quota, timedOut: !!res.timedOut };
 }
 
 // --- codex (OpenAI Codex CLI) ------------------------------------------------
@@ -525,6 +582,11 @@ async function invokeGrok(cfg, prompt, opts) {
   if (opts.cwd && cwdFlag) argv.push(cwdFlag, opts.cwd);
   // Prompt LAST, as the value of the one-shot flag.
   argv.push(oneshot, prompt);
+
+  // Same argv ceiling as agy: grok's -p puts the whole payload on the command line, and Node surfaces
+  // the overflow as a bare "spawn ENAMETOOLONG" that looks like a missing binary.
+  const over = argvOverflow(argv);
+  if (over) return argvOverflowResult('grok', over);
 
   const res = await runChild(argv, {
     hardTimeout: timeoutMs(field(cfg, 'hard_timeout')),

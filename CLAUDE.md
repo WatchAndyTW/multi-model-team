@@ -88,8 +88,25 @@ runs only when explicitly chosen (its agent, `/team`, a `/reasoning` panel, or t
 **no pty**, like codex/opencode. The prompt rides as an **argv element**: `--prompt-file` emits
 nothing through a pipe (it wants the TUI), and argv is safe here because the binary is a real
 `grok.exe`, so Node passes it straight to `CreateProcess` with no `cmd.exe` to truncate at the first
-newline and no shell to parse it. Known limit: the Windows ~32k command-line cap applies to very
-large `/team` payloads.
+newline and no shell to parse it.
+
+**The argv size ceiling — shared with agy, and it does NOT truncate, it FAILS the spawn.** Both
+argv-delivering lanes (grok's `-p`, agy's `--print`) hit the OS command-line cap on a large `/team`
+payload. Measured live with a 40KB prompt: **agy** died in ~1s with `Cannot create process, error
+code: 206` (`ERROR_FILENAME_EXCED_RANGE`) and **grok** in ~11ms with `spawn ENAMETOOLONG`. Neither
+reads as "payload too big" — both look like a broken or missing CLI, so `run.mjs` walked the entire
+fallback chain and handed the subtask to native. That is the "I staffed agy and everything ran on
+Claude" symptom. `backends.argvOverflow` now checks the assembled argv **before** spawning and returns
+a named, actionable failure (`prompt too large for 'agy': N chars of command line vs …`), kept under
+`run.mjs`'s 240-char `sanitizeErr` window so it survives intact into `failures.log` and the handoff
+reason. Limits: 30 000 chars on Windows (under `CreateProcess`'s 32 767), 120 000 on POSIX (under
+Linux's 128 KB `MAX_ARG_STRLEN`). **codex and opencode are unaffected — their prompt rides on stdin**,
+so they are the lanes to staff for a genuinely large payload.
+
+Transports that do NOT work for a large agy prompt, both tested and rejected: writing the payload into
+the pty's stdin (agy in `--print` mode ignores it and answers as if given no prompt), and `@file`
+inclusion (model-mediated — a probe pointed at one file returned the contents of an unrelated stale
+artifact elsewhere in the repo).
 
 **The trap:** read-only is `--permission-mode default`, **not** `plan`. `plan` sounds read-only and
 is not — grok created a file under it. `default` does block writes: with no TTY, a tool call needing

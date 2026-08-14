@@ -255,7 +255,12 @@ test('opencode ships enabled, with an invoker kind and no model map', () => {
   // read-only vs writable is expressed by AGENT, not a sandbox flag.
   assert.equal(oc.agent, 'plan');
   assert.equal(oc.writable_agent, 'build');
-  assert.deepEqual(oc.writable_extra, ['--auto']);
+  // --auto is what makes the writable lane full-auto; --print-logs routes opencode's diagnostics to
+  // stderr so a FAILED run reports the real cause (a provider it cannot reach) instead of its own
+  // banner. Assert the meaningful members rather than the exact array, so adding a diagnostic flag
+  // does not read as a behaviour change.
+  assert.ok(oc.writable_extra.includes('--auto'), 'writable lane must be full-auto');
+  assert.ok(oc.writable_extra.includes('--print-logs'), 'failures must carry a real reason');
 });
 
 test('opencode declares a cwd_flag — it ignores the spawned process cwd', () => {
