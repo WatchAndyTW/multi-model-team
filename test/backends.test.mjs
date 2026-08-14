@@ -391,7 +391,13 @@ test('run.mjs: a pinned model applies only to its own backend, never to a fallba
   assert.ok(lines.length >= 2, `expected the opencode hop AND a codex fallback hop, got ${lines.length}`);
   assert.match(lines[0], /pinned-xyz/, 'the pin reaches the backend it was chosen for');
   assert.doesNotMatch(lines[1], /pinned-xyz/, 'the pin must NOT ride along to the fallback backend');
-  assert.match(lines[1], /gpt-5\.5/, 'the fallback resolves its OWN tier model instead');
+  // Read the expected model from the ROSTER rather than hardcoding an id: the behaviour under test is
+  // "the fallback re-resolves from its own tier map", which is independent of WHICH model that map
+  // names. A literal id here turned a routine model bump into a spurious failure of a bug guard.
+  const codexStandard = ROSTER.backends.codex.models.standard;
+  assert.ok(codexStandard, 'roster must declare a codex standard model for this test to mean anything');
+  assert.ok(lines[1].includes(codexStandard),
+    `the fallback resolves its OWN tier model instead (expected ${codexStandard} in: ${lines[1]})`);
 });
 
 test('run.mjs: a backend that fails health is logged LOUDLY as kind:"health", not silently skipped', () => {

@@ -52,8 +52,10 @@ and fell through to codex/native. node-pty (ConPTY) removes that constraint enti
 (winpty/script) in `platform.mjs` is retained but no longer on the agy path. Full detail in `PROBES.md`.
 
 Real model names come from `agy models`; the roster uses the **ID form** (left column) —
-`gemini-3.1-pro-low` (standard), `gemini-3.6-flash-low` (cheap), `gemini-3.1-pro-high` (high).
-The display strings (`Gemini 3.1 Pro (Low)`) also work but carry spaces and parens. Binary auto-resolves via `platform.resolveBinary`: `$MMT_AGY_BIN`
+`gemini-3.7-flash-medium` (standard), `gemini-3.7-flash-low` (cheap), `gemini-3.7-flash-high` (high):
+one generation across all three tiers, so a tier change is a reasoning-effort change, not a model
+swap. No tier reaches Gemini **Pro** any more — the `pro`/`pro-hi` aliases are the only way to ask
+for it. The display strings (`Gemini 3.7 Flash (Medium)`) also work but carry spaces and parens. Binary auto-resolves via `platform.resolveBinary`: `$MMT_AGY_BIN`
 → PATH scan → default candidates (`$LOCALAPPDATA/agy/bin/agy.exe` on Windows;
 `~/.local/bin/agy`, `/usr/local/bin/agy`, `/usr/bin/agy` on Linux; same + `/opt/homebrew/bin/agy`
 on macOS).
@@ -271,14 +273,14 @@ exact tier  >  backend default_tier  >  standard  >  cheap  >  first declared  >
 ```
 
 An empty result is meaningful: **pass no model flag**, letting the CLI use its own default (how
-opencode is wired). `model_aliases` give short handles (`flash` → `gemini-3.6-flash-low`) usable in
+opencode is wired). `model_aliases` give short handles (`flash` → `gemini-3.7-flash-low`) usable in
 a tier, `--model`, or the env override. The `high` tier asks a backend for its strongest model and
 falls back safely when it declares none. `defaults.native_models` is the **single** place a tier
 becomes a Claude model — `team.tier_models` (which duplicated it) is gone; `teamConfig()` forwards
 this map instead, and a /team role's `tier` is what selects through it.
 
 agy's shipped models use the **ID form** from the left column of `agy models`
-(`gemini-3.1-pro-low`), not the display strings — both work, but ids carry no spaces or parens.
+(`gemini-3.7-flash-medium`), not the display strings — both work, but ids carry no spaces or parens.
 
 ---
 

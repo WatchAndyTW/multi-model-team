@@ -88,18 +88,19 @@
       "extra": ["--dangerously-skip-permissions", "--print-timeout", "29m"],
       "_writable_note": "Flags used INSTEAD of `extra` in /team --writable mode (full-auto: agy may write files + run commands in its worktree cwd). agy's --dangerously-skip-permissions already lets it act; the writable lane only differs by running in the worktree cwd. Same flags here = no sandbox swap needed for agy, just cwd.",
       "writable_extra": ["--dangerously-skip-permissions", "--print-timeout", "29m"],
-      "_models_note": "Tier -> model id. These are the ID-form names from the LEFT column of `agy models` (verified live: `--model gemini-3.6-flash-low` works). The right column's display strings (\"Gemini 3.1 Pro (Low)\") are also accepted, but the ids are preferred — no spaces or parens to survive a command line. Any tier key is allowed; a route asking for a tier this map lacks falls back through default_tier -> standard -> cheap. Run `agy models` to see the current list.",
+      "_models_note": "Tier -> model id. These are the ID-form names from the LEFT column of `agy models` (verified live: `--model gemini-3.7-flash-high` answers). The right column's display strings (\"Gemini 3.7 Flash (High)\") are also accepted, but the ids are preferred — no spaces or parens to survive a command line. All three tiers are ONE generation (3.7 Flash) at low/medium/high reasoning, so changing tier changes effort, not model family; no tier reaches Gemini Pro any more, which is what the pro/pro-hi aliases are for. Any tier key is allowed; a route asking for a tier this map lacks falls back through default_tier -> standard -> cheap. Run `agy models` to see the current list.",
       "models": {
-        "cheap": "gemini-3.6-flash-low",
-        "standard": "gemini-3.1-pro-low",
-        "high": "gemini-3.1-pro-high"
+        "cheap": "gemini-3.7-flash-low",
+        "standard": "gemini-3.7-flash-medium",
+        "high": "gemini-3.7-flash-high"
       },
       "default_tier": "standard",
       "_aliases_note": "Short handles usable anywhere a model is named (roster tiers, --model, MMT_MODEL_AGY).",
+      "_aliases_note": "The flash handles track whatever generation the TIERS use, so `--model flash` never silently means an older generation than an unpinned call. pro/pro-hi are kept deliberately: the tiers no longer reach Gemini Pro, so these are the only way to ask for it.",
       "model_aliases": {
-        "flash": "gemini-3.6-flash-low",
-        "flash-mid": "gemini-3.6-flash-medium",
-        "flash-hi": "gemini-3.6-flash-high",
+        "flash": "gemini-3.7-flash-low",
+        "flash-mid": "gemini-3.7-flash-medium",
+        "flash-hi": "gemini-3.7-flash-high",
         "pro": "gemini-3.1-pro-low",
         "pro-hi": "gemini-3.1-pro-high"
       },
@@ -135,9 +136,9 @@
       "_writable_note": "Flags used INSTEAD of `extra` in /team --writable mode. Full-auto: `--dangerously-bypass-approvals-and-sandbox` lets codex write files, run commands, and use the network — confined to the worktree cwd the orchestrator passes via --cwd. Drop --skip-git-repo-check since a worktree IS a git repo.",
       "writable_extra": ["--dangerously-bypass-approvals-and-sandbox", "--color", "never"],
       "_models_note": "Tier -> model id, passed as `-m <id>`. Any tier key is allowed; a tier this map lacks resolves through default_tier -> standard -> cheap, so a `high` route lands on `standard` until you add a `high` entry. Leave the map EMPTY to use whatever ~/.codex/config.toml defaults to. `model_aliases` gives short handles usable in --model / MMT_MODEL_CODEX.",
-      "models": { "cheap": "gpt-5.4-mini", "standard": "gpt-5.5" },
+      "models": { "cheap": "gpt-5.6-terra", "standard": "gpt-5.6-sol" },
       "default_tier": "standard",
-      "model_aliases": { "mini": "gpt-5.4-mini", "full": "gpt-5.5" },
+      "model_aliases": { "mini": "gpt-5.6-terra", "full": "gpt-5.6-sol" },
       "_auth_note": "Credential failures are matched BEFORE quota patterns so an expired login is reported as an auth error (fix: `codex login`) instead of being mislabelled a credit limit — a live probe returned `401 … invalid_api_key` and the broad quota list swallowed it.",
       "auth_patterns": ["invalid_api_key", "incorrect api key", "unauthorized", "auth error", "not logged in", "please log in", "expired token"],
       "health": "--version",

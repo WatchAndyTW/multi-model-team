@@ -318,8 +318,8 @@ node src/lib/roles.mjs --staff    # feed it a spec on stdin: the resolved staffi
 each tier's model:
 
 ```
-agy       enabled           kind=gemini    cheap=gemini-3.6-flash-low standard=gemini-3.1-pro-low high=gemini-3.1-pro-high
-codex     DISABLED (env)    kind=codex     cheap=gpt-5.4-mini standard=gpt-5.5
+agy       enabled           kind=gemini    cheap=gemini-3.7-flash-low standard=gemini-3.7-flash-medium high=gemini-3.7-flash-high
+codex     DISABLED (env)    kind=codex     cheap=gpt-5.4-mini standard=gpt-5.6-sol
 opencode  enabled           kind=opencode  <no model map — the CLI uses its own default>
 native    always on         kind=claude    cheap=haiku standard=sonnet high=opus
 ```
@@ -345,7 +345,7 @@ Per backend, `models` maps a tier to a model and accepts **any** tier keys (`che
 --model flag  >  MMT_MODEL_<BACKEND>  >  exact tier  >  default_tier  >  standard  >  cheap  >  no flag
 ```
 
-`model_aliases` give short handles — `--model flash` instead of `gemini-3.6-flash-low`. An empty
+`model_aliases` give short handles — `--model flash` instead of `gemini-3.7-flash-low`. An empty
 `models` map means "pass no flag, let the CLI decide" (how opencode is wired).
 `defaults.native_models` is the one place a tier becomes a Claude model.
 

@@ -112,7 +112,7 @@ async function main() {
       '\nTurn a backend off permanently: set backends.<name>.enabled = false in the roster.\n' +
       'Turn one off for this shell only:  MMT_DISABLE_BACKENDS=codex,agy\n' +
       'Run only one backend:              MMT_ONLY_BACKENDS=agy\n' +
-      'Override a model for this shell:   MMT_MODEL_AGY=gemini-3.6-flash-high\n',
+      'Override a model for this shell:   MMT_MODEL_AGY=gemini-3.7-flash-high\n',
     );
     process.exit(0);
   }
