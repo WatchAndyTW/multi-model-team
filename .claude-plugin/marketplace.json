@@ -10,7 +10,7 @@
     {
       "name": "multi-model-team",
       "description": "Delegates token-heavy, self-contained tasks to local CLI backends chosen by task size and type, with credit-exhaustion fallback through the backend chain to native Claude and a glanceable statusline HUD. Routing and shipped backend behavior are configured in config/roster.json; adding a new backend kind requires invoker and health support in code. /team runs a staffed decompose → dispatch → verify → fix → synthesize pipeline: you assign roles to backends and anything unstaffed runs on Claude.",
-      "version": "0.9.1",
+      "version": "0.9.2",
       "author": {
         "name": "WatchAndyTW",
         "email": "watchandytw@gmail.com"
@@ -29,5 +29,5 @@
       ]
     }
   ],
-  "version": "0.9.1"
+  "version": "0.9.2"
 }
